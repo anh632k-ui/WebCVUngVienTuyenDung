@@ -1,0 +1,43 @@
+@startuml
+left to right direction
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+title USE CASE - PHÂN HỆ MATCHING & ANALYTICS
+
+actor Candidate
+actor HR
+actor Admin
+
+rectangle "Matching & Analytics" {
+  usecase "UC15 Tính mức độ tương thích" as UC15
+  usecase "Skill Matching" as M1
+  usecase "Semantic/Text Matching" as M2
+  usecase "Experience Matching" as M3
+  usecase "Tổng hợp Overall Score" as M4
+  usecase "UC16 Xem kết quả & Skill Gap" as UC16
+  usecase "UC17 Xem leaderboard" as UC17
+  usecase "UC18 Cấu hình trọng số" as UC18
+  usecase "UC19 Xuất báo cáo [Advanced]" as UC19
+  usecase "LLM/XAI giải thích [Advanced]" as M5
+}
+
+Candidate --> UC15
+Candidate --> UC16
+HR --> UC15
+HR --> UC16
+HR --> UC17
+HR --> UC18
+HR --> UC19
+Admin --> UC17
+
+UC15 ..> M1 : <<include>>
+UC15 ..> M2 : <<include>>
+UC15 ..> M3 : <<include>>
+UC15 ..> M4 : <<include>>
+M5 ..> UC16 : <<extend>>
+UC19 ..> UC17 : <<extend>>
+
+@enduml
