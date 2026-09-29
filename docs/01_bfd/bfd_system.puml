@@ -1,0 +1,58 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+title BFD - SƠ ĐỒ PHÂN RÃ CHỨC NĂNG HỆ THỐNG
+
+rectangle "0. HỆ THỐNG PHÂN TÍCH CV & MATCHING JD" as SYS {
+  rectangle "1. Xác thực & Tài khoản" as F1 {
+    rectangle "1.1 Đăng ký" as F11
+    rectangle "1.2 Đăng nhập / Phiên" as F12
+    rectangle "1.3 Hồ sơ tài khoản" as F13
+    rectangle "1.4 Đổi mật khẩu" as F14
+    rectangle "1.5 Quản trị user / RBAC" as F15
+  }
+
+  rectangle "2. CV & NLP" as F2 {
+    rectangle "2.1 Upload / lưu CV" as F21
+    rectangle "2.2 Bóc text PDF/DOCX" as F22
+    rectangle "2.3 Trích xuất thực thể" as F23
+    rectangle "2.4 Chuẩn hóa kỹ năng" as F24
+    rectangle "2.5 Sinh embedding CV" as F25
+    rectangle "2.6 Rà soát / chỉnh dữ liệu" as F26
+    rectangle "2.7 Quản lý kho CV" as F27
+  }
+
+  rectangle "3. JD & NLP" as F3 {
+    rectangle "3.1 CRUD JD" as F31
+    rectangle "3.2 Bóc tách yêu cầu" as F32
+    rectangle "3.3 Phân loại MANDATORY/OPTIONAL" as F33
+    rectangle "3.4 Chuẩn hóa Skill Taxonomy" as F34
+    rectangle "3.5 Sinh embedding JD" as F35
+    rectangle "3.6 Rà soát criteria" as F36
+    rectangle "3.7 Công bố / đóng JD" as F37
+  }
+
+  rectangle "4. Matching & Analytics" as F4 {
+    rectangle "4.1 Yêu cầu matching" as F41
+    rectangle "4.2 Skill Score" as F42
+    rectangle "4.3 Semantic/Text Score" as F43
+    rectangle "4.4 Experience Score" as F44
+    rectangle "4.5 Overall Score" as F45
+    rectangle "4.6 Skill Gap" as F46
+    rectangle "4.7 Leaderboard" as F47
+    rectangle "4.8 Điều chỉnh trọng số" as F48
+    rectangle "4.9 Xuất báo cáo [Advanced]" as F49
+  }
+
+  rectangle "5. AI Explainability & Thực nghiệm" as F5 {
+    rectangle "5.1 Giải thích/gợi ý [Advanced]" as F51
+    rectangle "5.2 Bộ dữ liệu benchmark" as F52
+    rectangle "5.3 MAE / Pearson" as F53
+    rectangle "5.4 NDCG@K / Precision@K" as F54
+  }
+}
+
+@enduml
