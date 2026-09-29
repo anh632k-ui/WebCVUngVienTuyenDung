@@ -8,12 +8,14 @@ title COMPONENT ARCHITECTURE - BACKEND & AI PIPELINE
 package "FastAPI API Layer" {
   [auth.py] as AuthAPI
   [users.py] as UsersAPI
+  [skills.py] as SkillsAPI
   [resumes.py] as ResumeAPI
   [jobs.py] as JobsAPI
   [matching.py] as MatchAPI
   [router.py] as Router
   Router --> AuthAPI
   Router --> UsersAPI
+  Router --> SkillsAPI
   Router --> ResumeAPI
   Router --> JobsAPI
   Router --> MatchAPI
@@ -27,6 +29,7 @@ package "Core" {
 
 package "Service Layer" {
   [auth/user service] as UserService
+  [skill_service.py] as SkillService
   [resume_service.py] as ResumeService
   [job_service.py] as JobService
   [match_service.py] as MatchService
@@ -56,17 +59,20 @@ queue "Redis/Celery [when enabled]" as Queue
 
 AuthAPI --> UserService
 UsersAPI --> UserService
+SkillsAPI --> SkillService
 ResumeAPI --> ResumeService
 JobsAPI --> JobService
 MatchAPI --> MatchService
 
 AuthAPI --> DTO
 UsersAPI --> DTO
+SkillsAPI --> DTO
 ResumeAPI --> DTO
 JobsAPI --> DTO
 MatchAPI --> DTO
 
 UserService --> ORM
+SkillService --> ORM
 ResumeService --> ORM
 JobService --> ORM
 MatchService --> ORM
