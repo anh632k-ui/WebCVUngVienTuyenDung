@@ -1,0 +1,32 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+
+title CDM - MÔ HÌNH DỮ LIỆU KHÁI NIỆM
+
+entity "Người dùng" as User
+entity "Hồ sơ CV" as Resume
+entity "Thông tin ứng viên từ CV" as CandidateProfile
+entity "Kỹ năng chuẩn" as Skill
+entity "Kinh nghiệm" as Experience
+entity "Học vấn" as Education
+entity "Tin tuyển dụng (JD)" as Job
+entity "Kết quả so khớp" as Match
+
+User ||--o{ Resume : "sở hữu / tải lên"
+User ||--o{ Job : "đăng tuyển"
+Resume ||--|| CandidateProfile : "được bóc tách thành"
+Resume ||--o{ Experience : "có"
+Resume ||--o{ Education : "có"
+Resume }o--o{ Skill : "thể hiện"
+Job }o--o{ Skill : "yêu cầu"
+Resume ||--o{ Match : "được đánh giá"
+Job ||--o{ Match : "làm tiêu chí"
+
+note bottom of Skill
+Quan hệ N:N với Resume/JD
+được triển khai thành bảng liên kết ở LDM/PDM.
+end note
+
+@enduml
