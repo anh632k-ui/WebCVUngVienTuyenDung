@@ -8,7 +8,7 @@ actor "Candidate/HR" as User
 participant "Next.js" as FE
 participant "Resume API" as API
 participant "Resume Service" as Service
-folder "File Storage" as Storage
+participant "File Storage" as Storage
 database "PostgreSQL" as DB
 participant "Task Dispatcher" as Dispatcher
 queue "Redis/Celery" as Queue
