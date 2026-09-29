@@ -70,7 +70,15 @@ CREATE TABLE resumes (
     deleted_at TIMESTAMPTZ,
     CONSTRAINT chk_resume_parsed_payload CHECK (
         parsing_status <> 'PARSED'
-        OR (raw_text IS NOT NULL AND parsed_at IS NOT NULL)
+        OR (
+            raw_text IS NOT NULL
+            AND resume_embedding IS NOT NULL
+            AND embedding_model IS NOT NULL
+            AND parsed_at IS NOT NULL
+        )
+    ),
+    CONSTRAINT chk_resume_deleted_at CHECK (
+        is_deleted = FALSE OR deleted_at IS NOT NULL
     )
 );
 
@@ -166,7 +174,7 @@ CREATE TABLE resume_educations (
     field_of_study VARCHAR(150),
     start_year SMALLINT,
     graduation_year SMALLINT,
-    gpa NUMERIC(4,2),
+    gpa NUMERIC(5,2),
     description TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -215,11 +223,20 @@ CREATE TABLE job_descriptions (
     CONSTRAINT chk_job_weights CHECK (
         (w_skill + w_semantic + w_experience) = 1.000
     ),
-    CONSTRAINT chk_active_job_is_parsed CHECK (
-        status <> 'ACTIVE' OR parsing_status = 'PARSED'
+    CONSTRAINT chk_job_parsed_payload CHECK (
+        parsing_status <> 'PARSED'
+        OR (
+            job_embedding IS NOT NULL
+            AND embedding_model IS NOT NULL
+            AND parsed_at IS NOT NULL
+        )
     ),
-    CONSTRAINT chk_job_parsed_timestamp CHECK (
-        parsing_status <> 'PARSED' OR parsed_at IS NOT NULL
+    CONSTRAINT chk_active_job_ready CHECK (
+        status <> 'ACTIVE'
+        OR (parsing_status = 'PARSED' AND is_criteria_verified = TRUE)
+    ),
+    CONSTRAINT chk_job_deleted_at CHECK (
+        is_deleted = FALSE OR deleted_at IS NOT NULL
     )
 );
 
