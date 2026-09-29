@@ -1,0 +1,36 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title SEQUENCE - HUMAN-IN-THE-LOOP REVIEW CV
+
+actor "Candidate/HR" as User
+participant "Next.js" as FE
+participant "Resume API" as API
+participant "Resume Service" as Service
+database "PostgreSQL" as DB
+participant "Embedding Service" as Embedding
+
+User -> FE : mở CV đã PARSED
+FE -> API : GET /resumes/{id}
+API -> Service : get_detail(current_user,id)
+Service -> DB : authorize owner + SELECT structured data
+DB --> Service : resume/profile/skills/experience/education
+Service --> API : detail DTO
+API --> FE : 200
+
+User -> FE : chỉnh thông tin AI bóc sai
+FE -> API : PUT /resumes/{id}/parsed-data
+API -> Service : update_parsed_data(current_user,id,payload)
+Service -> DB : verify ownership + current PARSED
+Service -> Service : validate taxonomy IDs/dates/duplicates
+Service -> DB : BEGIN; update profile; replace child rows
+Service -> Embedding : rebuild canonical CV embedding
+Embedding --> Service : vector + model id
+Service -> DB : update embedding + is_manually_edited=true; COMMIT
+DB --> Service : committed
+Service --> API : updated detail/version
+API --> FE : 200
+FE --> User : hiển thị dữ liệu mới
+
+@enduml
