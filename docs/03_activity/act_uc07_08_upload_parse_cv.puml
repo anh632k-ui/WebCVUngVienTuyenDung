@@ -1,0 +1,63 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC07 UPLOAD CV & UC08 PHÂN TÍCH CV
+
+start
+:Candidate/HR chọn PDF/DOCX;
+:Frontend pre-check size/extension;
+:POST /api/v1/resumes/upload (multipart);
+:Backend xác thực user;
+:Kiểm tra <= 5 MB và MIME/Magic Bytes;
+if (File hợp lệ?) then (Có)
+  :Sinh storage key an toàn;
+  :Lưu file vật lý;
+  :INSERT resumes
+  owner_user_id=current_user.id,
+  parsing_status=PENDING;
+  :Kích hoạt parse task;
+  :202 Accepted + resume_id;
+else (Không)
+  :413 hoặc 415;
+  stop
+endif
+
+:Worker/Background handler nhận resume_id;
+:UPDATE parsing_status=PROCESSING;
+:Đọc file;
+if (DOCX?) then (Có)
+  :python-docx extract text;
+else (PDF)
+  :pdfplumber/PyMuPDF extract text;
+  if (Text layer đủ dùng?) then (Có)
+  else (Không)
+    if (OCR module bật?) then (Có)
+      :OCR fallback;
+    else (Không)
+      :Đánh dấu lỗi thiếu text;
+    endif
+  endif
+endif
+
+if (Có raw text hợp lệ?) then (Có)
+  :Normalize Unicode / whitespace;
+  :Section segmentation;
+  :Regex/NER trích thông tin;
+  :Trích experience/education;
+  :Map skill -> Skill Taxonomy;
+  :Sinh resume_embedding cùng model version;
+  :BEGIN TRANSACTION;
+  :UPSERT candidate_profiles;
+  :Replace/Upsert resume_skills;
+  :Replace resume_experiences;
+  :Replace resume_educations;
+  :UPDATE resumes raw_text, embedding,
+  parsing_status=PARSED, parsed_at=NOW();
+  :COMMIT;
+else (Không)
+  :UPDATE resumes parsing_status=FAILED,
+  error_message;
+endif
+stop
+@enduml
