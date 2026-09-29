@@ -1,0 +1,58 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC15 TÍNH MỨC ĐỘ TƯƠNG THÍCH
+
+start
+:Candidate/HR chọn JD và CV;
+:POST /api/v1/matching/calculate
+{ job_id, resume_ids[] };
+:Backend xác thực role + ownership;
+if (Caller có quyền với JD/CV?) then (Có)
+  :Kiểm tra CV PARSED, JD PARSED,
+  chưa soft-delete;
+  if (Candidate?) then (Có)
+    :Kiểm tra JD status=ACTIVE;
+  endif
+  if (Tài nguyên sẵn sàng?) then (Có)
+    :UPSERT match_results status=PENDING,
+    reset scores/error;
+    :Queue một task cho mỗi resume_id;
+    :202 + match_ids[];
+  else (Không)
+    :422 Resource not ready;
+    stop
+  endif
+else (Không)
+  :403/404;
+  stop
+endif
+
+:Worker nhận match_id;
+:UPDATE status=PROCESSING;
+:Load normalized CV skills + JD skills;
+:Compute Skill Score
+(MANDATORY ưu tiên hơn OPTIONAL);
+:Load resume_embedding + job_embedding;
+:Compute Cosine Similarity;
+if (BM25 được bật?) then (Có)
+  :Compute normalized BM25 lexical score;
+  :Blend cosine + BM25 thành Semantic/Text Score;
+else (Không)
+  :Semantic Score = normalized cosine;
+endif
+:Compute Experience Score;
+:Overall = w_skill*Skill
++ w_semantic*Semantic
++ w_experience*Experience;
+:Build matched_skills + missing_skills;
+if (Tính toán thành công?) then (Có)
+  :UPDATE scores 0..100,
+  status=COMPLETED,
+  calculated_at=NOW();
+else (Không)
+  :UPDATE status=FAILED, error_message;
+endif
+stop
+@enduml
