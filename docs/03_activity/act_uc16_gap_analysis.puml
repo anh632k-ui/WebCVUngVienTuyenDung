@@ -1,0 +1,37 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC16 XEM KẾT QUẢ & SKILL GAP
+
+start
+:User mở kết quả matching;
+:GET /api/v1/matching/{match_id};
+:Backend kiểm Candidate owner CV
+hoặc HR owner JD hoặc Admin;
+if (Có quyền?) then (Có)
+  if (status=COMPLETED?) then (Có)
+    :Trả overall + component scores
+    + matched/missing skills;
+  else (PROCESSING/PENDING)
+    :Trả trạng thái hiện tại;
+    stop
+  endif
+else (Không)
+  :404/403;
+  stop
+endif
+
+:GET /api/v1/matching/{match_id}/gap-analysis;
+:Phân loại missing skills:
+MANDATORY => CRITICAL,
+OPTIONAL => MINOR;
+:Tạo recommendation rule-based từ taxonomy;
+if (LLM/XAI được bật?) then (Có)
+  :Đưa dữ liệu score/gap đã xác định
+cho LLM tạo giải thích bổ sung;
+  :Không cho LLM thay score/matched set;
+endif
+:200 Gap Analysis;
+stop
+@enduml
