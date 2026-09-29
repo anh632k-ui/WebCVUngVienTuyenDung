@@ -1,0 +1,93 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+
+title COMPONENT ARCHITECTURE - BACKEND & AI PIPELINE
+
+package "FastAPI API Layer" {
+  [auth.py] as AuthAPI
+  [users.py] as UsersAPI
+  [resumes.py] as ResumeAPI
+  [jobs.py] as JobsAPI
+  [matching.py] as MatchAPI
+  [router.py] as Router
+  Router --> AuthAPI
+  Router --> UsersAPI
+  Router --> ResumeAPI
+  Router --> JobsAPI
+  Router --> MatchAPI
+}
+
+package "Core" {
+  [config.py] as Config
+  [database.py] as Database
+  [security.py] as Security
+}
+
+package "Service Layer" {
+  [auth/user service] as UserService
+  [resume_service.py] as ResumeService
+  [job_service.py] as JobService
+  [match_service.py] as MatchService
+}
+
+package "AI Pipeline" {
+  [pdf/docx_extractor.py] as Extractor
+  [entity_recognizer.py] as Entity
+  [skill_normalizer.py] as Normalizer
+  [vector_embedding.py] as Vector
+  [matching_engine.py] as Engine
+  [xai_adapter.py\noptional] as XAI
+}
+
+package "ORM / Schema" {
+  [SQLAlchemy Models] as ORM
+  [Pydantic Schemas] as DTO
+}
+
+package "Tasks" {
+  [task_dispatcher] as Dispatcher
+  [celery_tasks.py] as Tasks
+}
+
+database "PostgreSQL + pgvector" as DB
+queue "Redis/Celery [when enabled]" as Queue
+
+AuthAPI --> UserService
+UsersAPI --> UserService
+ResumeAPI --> ResumeService
+JobsAPI --> JobService
+MatchAPI --> MatchService
+
+AuthAPI --> DTO
+UsersAPI --> DTO
+ResumeAPI --> DTO
+JobsAPI --> DTO
+MatchAPI --> DTO
+
+UserService --> ORM
+ResumeService --> ORM
+JobService --> ORM
+MatchService --> ORM
+ORM --> Database
+Database --> DB
+
+ResumeService --> Dispatcher
+JobService --> Dispatcher
+MatchService --> Dispatcher
+Dispatcher --> Queue
+Queue --> Tasks
+Tasks --> Extractor
+Tasks --> Entity
+Tasks --> Normalizer
+Tasks --> Vector
+Tasks --> Engine
+Engine --> XAI
+Tasks --> ORM
+
+Security --> UserService
+Config --> Database
+Config --> Security
+
+@enduml
