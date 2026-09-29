@@ -1,0 +1,42 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title SEQUENCE - LOGIN
+
+actor User
+participant "Next.js" as FE
+participant "FastAPI Auth API" as API
+participant "User/Auth Service" as Service
+database "PostgreSQL" as DB
+participant "Security/JWT" as Sec
+database "Redis [refresh enabled]" as Redis
+
+User -> FE : nhập email/password
+FE -> API : POST /api/v1/auth/login
+API -> Service : login(email,password)
+Service -> DB : SELECT user BY normalized email
+DB --> Service : user/password_hash
+Service -> Sec : verify_password()
+Sec --> Service : valid/invalid
+alt invalid credential
+  Service --> API : Unauthorized
+  API --> FE : 401
+else account disabled
+  Service --> API : Forbidden
+  API --> FE : 403
+else success
+  Service -> Sec : create_access_token(user)
+  Sec --> Service : access_token
+  opt refresh session enabled
+    Service -> Sec : create_refresh_token/session_id
+    Sec --> Service : refresh token
+    Service -> Redis : store hashed token/session metadata
+    Redis --> Service : OK
+  end
+  Service --> API : tokens + user summary
+  API --> FE : 200 + access_token\nSet-Cookie HttpOnly (if enabled)
+  FE --> User : redirect dashboard
+end
+
+@enduml
