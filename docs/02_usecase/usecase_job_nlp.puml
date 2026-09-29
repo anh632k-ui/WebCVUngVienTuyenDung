@@ -28,7 +28,7 @@ HR --> UC13
 Admin --> UC11
 Candidate --> UC14
 
-UC11 ..> UC12 : <<include>>
+UC12 ..> UC11 : <<extend>>\n[tạo mới hoặc raw_content thay đổi]
 UC12 ..> J1 : <<include>>
 UC12 ..> J2 : <<include>>
 UC12 ..> J3 : <<include>>
