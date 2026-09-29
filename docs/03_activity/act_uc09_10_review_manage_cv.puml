@@ -1,0 +1,50 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC09 RÀ SOÁT CV & UC10 QUẢN LÝ KHO CV
+
+start
+:User mở danh sách CV;
+:GET /api/v1/resumes?page&limit&filters;
+:Backend scope theo owner_user_id
+(Candidate/HR) hoặc Admin;
+:200 danh sách CV;
+
+if (User chọn một CV?) then (Có)
+  :GET /api/v1/resumes/{id};
+  :Backend kiểm ownership/role;
+  if (Có quyền?) then (Có)
+    :Trả file metadata + candidate_profile
+    + skills + experiences + educations;
+  else (Không)
+    :404/403 theo policy;
+    stop
+  endif
+endif
+
+if (User chỉnh dữ liệu đã bóc tách?) then (Có)
+  :PUT /api/v1/resumes/{id}/parsed-data;
+  :Validate payload;
+  :BEGIN TRANSACTION;
+  :Update candidate_profile;
+  :Replace/Upsert skills;
+  :Replace experiences/educations;
+  :UPDATE resumes is_manually_edited=true,
+  updated_at=NOW();
+  :COMMIT;
+  :200 OK;
+endif
+
+if (User tải file gốc?) then (Có)
+  :GET /api/v1/resumes/{id}/download;
+  :Stream file;
+endif
+
+if (User xóa CV?) then (Có)
+  :DELETE /api/v1/resumes/{id};
+  :UPDATE is_deleted=true, deleted_at=NOW();
+  :204 No Content;
+endif
+stop
+@enduml
