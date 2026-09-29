@@ -36,8 +36,9 @@ Các quy tắc dưới đây là chuẩn nghiệp vụ dùng để kiểm tra Us
 - **BR-JOB-03**: Candidate chỉ xem/match JD `ACTIVE`, chưa xóa mềm.
 - **BR-JOB-04**: HR chỉ sửa/xóa/cấu hình JD do mình sở hữu; Admin có quyền quản trị.
 - **BR-JOB-05**: Skill của JD có importance `MANDATORY` hoặc `OPTIONAL`.
-- **BR-JOB-06**: Khi `raw_content` thay đổi, kết quả bóc tách cũ không còn được coi là đã xác minh; hệ thống đặt `parsing_status=PENDING` và `is_criteria_verified=false` trước khi phân tích lại.
+- **BR-JOB-06**: Khi `raw_content` thay đổi, kết quả bóc tách cũ không còn được coi là đã xác minh. Hệ thống bắt buộc đưa JD về `status=DRAFT`, đặt `parsing_status=PENDING`, `is_criteria_verified=false`, vô hiệu embedding/parsed timestamp cũ rồi mới phân tích lại. Quy tắc này tránh để một JD đang `ACTIVE` tồn tại với criteria/embedding đã lỗi thời.
 - **BR-JOB-07**: `w_skill + w_semantic + w_experience = 1.00`; mỗi trọng số nằm trong [0,1].
+- **BR-JOB-08**: JD chỉ được chuyển sang `ACTIVE` khi `parsing_status=PARSED`, `is_criteria_verified=true`, chưa bị xóa mềm và có embedding hợp lệ.
 
 ## Matching
 
