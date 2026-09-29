@@ -1,0 +1,62 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title SEQUENCE - UPLOAD & PARSE CV
+
+actor "Candidate/HR" as User
+participant "Next.js" as FE
+participant "Resume API" as API
+participant "Resume Service" as Service
+folder "File Storage" as Storage
+database "PostgreSQL" as DB
+participant "Task Dispatcher" as Dispatcher
+queue "Redis/Celery" as Queue
+participant "CV Worker" as Worker
+participant "Text Extractor" as Extractor
+participant "Entity/Skill Pipeline" as NLP
+participant "Embedding Service" as Embedding
+
+User -> FE : chọn CV
+FE -> API : POST /resumes/upload multipart
+API -> Service : validate + create upload
+Service -> Service : check size/MIME/magic bytes
+Service -> Storage : save bytes with safe storage_key
+Storage --> Service : stored
+Service -> DB : INSERT resumes(PENDING, owner_user_id)
+DB --> Service : resume_id
+Service -> Dispatcher : enqueue parse(resume_id)
+Dispatcher -> Queue : task message
+Service --> API : accepted
+API --> FE : 202 + resume_id + PENDING
+
+Queue -> Worker : parse task
+Worker -> DB : UPDATE PROCESSING
+Worker -> DB : SELECT resume metadata
+DB --> Worker : storage_key/mime
+Worker -> Storage : read file
+Storage --> Worker : bytes/path
+Worker -> Extractor : extract text
+alt PDF scan / no text layer
+  Extractor -> Extractor : OCR fallback if enabled
+end
+Extractor --> Worker : raw text / failure
+alt extraction failed
+  Worker -> DB : UPDATE FAILED + error_message
+else extracted
+  Worker -> NLP : parse entities/sections/skills
+  NLP --> Worker : structured CV
+  Worker -> Embedding : encode canonical CV text
+  Embedding --> Worker : vector(1024) + model id
+  Worker -> DB : transaction upsert profile/skills/exp/edu\nupdate resume raw_text+embedding+PARSED
+  DB --> Worker : commit
+end
+
+FE -> API : GET /resumes/{id}/status
+API -> Service : authorize owner
+Service -> DB : SELECT parsing_status
+DB --> Service : status
+Service --> API : status
+API --> FE : 200
+
+@enduml
