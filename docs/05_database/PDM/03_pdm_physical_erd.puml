@@ -94,7 +94,7 @@ entity "resume_educations" as resume_educations {
   field_of_study : VARCHAR(150)
   start_year : SMALLINT
   graduation_year : SMALLINT
-  gpa : NUMERIC(4,2)
+  gpa : NUMERIC(5,2)
   description : TEXT
   * created_at : TIMESTAMPTZ
   * updated_at : TIMESTAMPTZ
@@ -167,13 +167,22 @@ jobs ||--o{ matches : job_id
 resumes ||--o{ matches : resume_id
 
 note right of resumes
-HNSW index:
-resume_embedding vector_cosine_ops
+PARSED requires raw_text,
+embedding_model, embedding,
+parsed_at.
+HNSW: resume_embedding vector_cosine_ops
 end note
 
 note right of jobs
-HNSW index:
-job_embedding vector_cosine_ops
+ACTIVE requires PARSED
+and is_criteria_verified=true.
+PARSED requires embedding + model + parsed_at.
+HNSW: job_embedding vector_cosine_ops
+end note
+
+note right of matches
+Scores may be NULL before COMPLETED.
+COMPLETED requires 4 scores + calculated_at.
 end note
 
 @enduml
