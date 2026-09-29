@@ -1,6 +1,6 @@
 # PTTK MASTER — WEBCVUNGVIENTUYENDUNG
 
-**Status:** Design baseline v1 — phải audit xong trước khi code nghiệp vụ.
+**Status:** `DESIGN_LOCKED_FOR_REVIEW` — baseline nội bộ đã được đồng bộ; chỉ triển khai code sau khi Pull Request được review và database mới được tạo từ schema canonical.
 
 ## 1. Căn cứ phạm vi
 
@@ -34,7 +34,7 @@ Next.js App Router + TypeScript + Tailwind
              /             \
 PostgreSQL 18 + pgvector   File Storage
              \
-      Redis/Celery when background/session features enabled
+      Redis/Celery khi background/session features được bật
 ```
 
 ## 3. Actor được khóa
@@ -44,7 +44,7 @@ PostgreSQL 18 + pgvector   File Storage
 - HR
 - Admin
 
-Celery Worker, Redis, PostgreSQL, AI model không phải actor nghiệp vụ.
+Celery Worker, Redis, PostgreSQL và AI model là thành phần kỹ thuật, không phải actor nghiệp vụ.
 
 ## 4. Aggregate / bảng được khóa
 
@@ -61,7 +61,7 @@ Database canonical có **10 bảng**:
 9. `job_skills`
 10. `match_results`
 
-`candidate_profiles` là snapshot được bóc từ từng CV và cố ý tách khỏi `users`.
+`candidate_profiles` là snapshot nghề nghiệp được bóc từ từng CV và cố ý tách khỏi profile tài khoản trong `users`.
 
 ## 5. Naming được khóa
 
@@ -71,6 +71,7 @@ Database canonical có **10 bảng**:
 - Mức độ bắt buộc trong JD: `job_skills.importance = MANDATORY|OPTIONAL`.
 - Không dùng `job_skills.skill_type` để tránh nhầm với hard/soft.
 - Embedding: `resume_embedding`, `job_embedding`, hiện `vector(1024)`.
+- Model/version embedding được lưu ở `embedding_model` để không trộn vector từ model khác nhau.
 
 ## 6. State được khóa
 
@@ -79,16 +80,19 @@ Database canonical có **10 bảng**:
 - Job business: `DRAFT|ACTIVE|CLOSED`.
 - Match: `PENDING|PROCESSING|COMPLETED|FAILED`.
 
-JD ACTIVE phải đã PARSED.
+JD chỉ được `ACTIVE` khi đã `PARSED` **và** `is_criteria_verified=true`.
 
 ## 7. API decision được khóa
 
-- Base `/api/v1`.
+- Base URL: `/api/v1`.
 - Matching single/batch dùng **một endpoint**: `POST /matching/calculate` với `resume_ids[]`.
-- Không dùng `/matching/single-match` và `/matching/batch-match`.
-- Candidate không có quyền xem leaderboard của người khác.
+- Không dùng `/matching/single-match` hoặc `/matching/batch-match`.
+- `GET /matching` cung cấp lịch sử kết quả theo ownership để client không phải tự nhớ `match_id`.
+- `GET /skills` là nguồn taxonomy duy nhất cho autocomplete/Human-in-the-loop ở CV và JD.
+- Candidate không được xem leaderboard của ứng viên khác.
 - HR chỉ quản lý JD do mình sở hữu.
 - Candidate/HR chỉ quản lý CV trong kho sở hữu ở MVP.
+- Refresh Token HttpOnly nếu bật phải do backend gửi bằng `Set-Cookie`.
 
 ## 8. Matching decision được khóa
 
@@ -100,13 +104,13 @@ Overall = w_skill * SkillScore
         + w_experience * ExperienceScore
 ```
 
-Mặc định 0.50 / 0.30 / 0.20, tổng = 1.
+Mặc định `0.50 / 0.30 / 0.20`, tổng = 1.
 
 - Skill Score: taxonomy/rule matching, MANDATORY nặng hơn OPTIONAL.
 - Semantic Score: cosine similarity của embedding cùng model.
 - Experience Score: tỷ lệ đáp ứng kinh nghiệm tối thiểu, cap 100%.
-- `rank_bm25`: lexical/retrieval/experiment signal trong v1, chưa cộng thẳng vào final score vì raw BM25 không có thang cố định.
-- LLM/XAI: explanation/recommendation only, không sửa deterministic scores.
+- `rank_bm25`: lexical/retrieval/experiment signal trong v1, chưa cộng thẳng vào Final Score vì raw BM25 không có thang cố định giữa corpus.
+- LLM/XAI: explanation/recommendation only; không sửa deterministic scores.
 
 ## 9. Thứ tự nguồn chuẩn khi triển khai
 
@@ -118,19 +122,20 @@ Khi code có mâu thuẫn, ưu tiên theo thứ tự:
 4. Use Case / Activity / Sequence / Architecture.
 5. Code implementation.
 
-Nếu muốn thay đổi API/database/enum, **sửa PTTK trước**, audit traceability, sau đó mới sửa code.
+Muốn thay đổi API/database/enum phải **sửa PTTK trước**, audit traceability, sau đó mới sửa code.
 
 ## 10. Gate trước khi code
 
-Không bắt đầu ORM/Auth nghiệp vụ trước khi:
+Trước khi viết ORM/Auth nghiệp vụ:
 
-- không còn docs cũ mâu thuẫn trong branch;
-- OpenAPI parse được;
-- PlantUML core không có lỗi cú pháp rõ ràng;
-- schema.sql thống nhất với Data Dictionary/PDM;
+- legacy docs mâu thuẫn đã được loại khỏi branch;
+- OpenAPI phải parse được và không có local `$ref` hỏng;
+- PlantUML phải vượt static syntax audit và nên render thử trên máy phát triển;
+- `schema.sql` phải thống nhất với Data Dictionary/PDM;
 - Traceability Matrix không chỉ tới endpoint/table không tồn tại;
-- có kế hoạch reset database cũ;
-- user review Pull Request PTTK.
+- Pull Request PTTK phải được user review/merge;
+- database thực nghiệm cũ phải được reset và tạo lại từ schema canonical;
+- `schema.sql` phải chạy thành công trên PostgreSQL 18 + pgvector trước khi viết ORM.
 
 ## 11. Cấu trúc tài liệu
 
