@@ -1,0 +1,179 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+
+title PDM - POSTGRESQL 18 + PGVECTOR
+
+entity "users" as users {
+  * id : UUID <<PK>>
+  * email : VARCHAR(255) <<UQ>>
+  * password_hash : VARCHAR(255)
+  * full_name : VARCHAR(100)
+  phone_number : VARCHAR(20)
+  * role : VARCHAR(20) <<CHECK>>
+  * is_active : BOOLEAN
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "skills" as skills {
+  * id : SERIAL <<PK>>
+  * name : VARCHAR(100) <<UQ>>
+  * normalized_name : VARCHAR(100) <<UQ>>
+  * skill_kind : VARCHAR(10) <<CHECK>>
+  * category : VARCHAR(50)
+  description : TEXT
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "resumes" as resumes {
+  * id : UUID <<PK>>
+  * owner_user_id : UUID <<FK>>
+  * file_name : VARCHAR(255)
+  * storage_key : VARCHAR(500) <<UQ>>
+  * file_size : INTEGER <<CHECK>>
+  * mime_type : VARCHAR(100)
+  * parsing_status : VARCHAR(20) <<CHECK>>
+  raw_text : TEXT
+  resume_embedding : vector(1024)
+  embedding_model : VARCHAR(100)
+  error_message : TEXT
+  * is_manually_edited : BOOLEAN
+  * is_deleted : BOOLEAN
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+  parsed_at : TIMESTAMPTZ
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "candidate_profiles" as candidate_profiles {
+  * id : BIGSERIAL <<PK>>
+  * resume_id : UUID <<FK,UQ>>
+  full_name : VARCHAR(150)
+  email : VARCHAR(255)
+  phone_number : VARCHAR(30)
+  current_title : VARCHAR(150)
+  location : VARCHAR(150)
+  linkedin_url : VARCHAR(500)
+  github_url : VARCHAR(500)
+  professional_summary : TEXT
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "resume_skills" as resume_skills {
+  * id : BIGSERIAL <<PK>>
+  * resume_id : UUID <<FK>>
+  * skill_id : INTEGER <<FK>>
+  years_of_experience : NUMERIC(4,1)
+  proficiency_level : VARCHAR(30)
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "resume_experiences" as resume_experiences {
+  * id : BIGSERIAL <<PK>>
+  * resume_id : UUID <<FK>>
+  * company_name : VARCHAR(150)
+  * job_title : VARCHAR(150)
+  start_date : DATE
+  end_date : DATE
+  * is_current : BOOLEAN
+  description : TEXT
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "resume_educations" as resume_educations {
+  * id : BIGSERIAL <<PK>>
+  * resume_id : UUID <<FK>>
+  * institution_name : VARCHAR(150)
+  degree : VARCHAR(100)
+  field_of_study : VARCHAR(150)
+  start_year : SMALLINT
+  graduation_year : SMALLINT
+  gpa : NUMERIC(4,2)
+  description : TEXT
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "job_descriptions" as jobs {
+  * id : UUID <<PK>>
+  * recruiter_id : UUID <<FK>>
+  * title : VARCHAR(200)
+  * job_level : VARCHAR(50)
+  location : VARCHAR(150)
+  * raw_content : TEXT
+  * min_experience_years : NUMERIC(4,1)
+  education_requirement : VARCHAR(255)
+  job_embedding : vector(1024)
+  embedding_model : VARCHAR(100)
+  * parsing_status : VARCHAR(20) <<CHECK>>
+  parsing_error_message : TEXT
+  * is_criteria_verified : BOOLEAN
+  * w_skill : NUMERIC(4,3)
+  * w_semantic : NUMERIC(4,3)
+  * w_experience : NUMERIC(4,3)
+  * status : VARCHAR(20) <<CHECK>>
+  * is_deleted : BOOLEAN
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+  parsed_at : TIMESTAMPTZ
+  deleted_at : TIMESTAMPTZ
+}
+
+entity "job_skills" as job_skills {
+  * id : BIGSERIAL <<PK>>
+  * job_id : UUID <<FK>>
+  * skill_id : INTEGER <<FK>>
+  * importance : VARCHAR(20) <<CHECK>>
+  * min_years_required : NUMERIC(4,1)
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "match_results" as matches {
+  * id : UUID <<PK>>
+  * job_id : UUID <<FK>>
+  * resume_id : UUID <<FK>>
+  overall_score : NUMERIC(5,2)
+  skill_score : NUMERIC(5,2)
+  semantic_score : NUMERIC(5,2)
+  experience_score : NUMERIC(5,2)
+  * matched_skills : JSONB
+  * missing_skills : JSONB
+  gap_analysis_summary : TEXT
+  * algorithm_version : VARCHAR(50)
+  * status : VARCHAR(20) <<CHECK>>
+  error_message : TEXT
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+  calculated_at : TIMESTAMPTZ
+}
+
+users ||--o{ resumes : owner_user_id
+users ||--o{ jobs : recruiter_id
+resumes ||--|| candidate_profiles : resume_id
+resumes ||--o{ resume_skills : resume_id
+skills ||--o{ resume_skills : skill_id
+resumes ||--o{ resume_experiences : resume_id
+resumes ||--o{ resume_educations : resume_id
+jobs ||--o{ job_skills : job_id
+skills ||--o{ job_skills : skill_id
+jobs ||--o{ matches : job_id
+resumes ||--o{ matches : resume_id
+
+note right of resumes
+HNSW index:
+resume_embedding vector_cosine_ops
+end note
+
+note right of jobs
+HNSW index:
+job_embedding vector_cosine_ops
+end note
+
+@enduml
