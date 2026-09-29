@@ -1,0 +1,28 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC01 ĐĂNG KÝ
+
+start
+:Guest nhập email, mật khẩu, họ tên, role;
+:Frontend kiểm tra định dạng cơ bản;
+if (Hợp lệ phía client?) then (Có)
+  :POST /api/v1/auth/register;
+  :Backend validate schema + password policy;
+  if (Email đã tồn tại?) then (Có)
+    :409 Conflict;
+  else (Không)
+    if (Role = CANDIDATE hoặc HR?) then (Có)
+      :Hash mật khẩu;
+      :INSERT users (is_active=true);
+      :201 Created;
+    else (Không)
+      :422 Validation Error;
+    endif
+  endif
+else (Không)
+  :Hiển thị lỗi tại form;
+endif
+stop
+@enduml
