@@ -1,0 +1,32 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC06 QUẢN TRỊ NGƯỜI DÙNG
+
+start
+:Admin mở màn hình Users;
+:GET /api/v1/admin/users;
+:Backend kiểm JWT + role ADMIN;
+if (Là Admin?) then (Có)
+  :Truy vấn danh sách có filter/pagination;
+  :200 User List;
+else (Không)
+  :403 Forbidden;
+  stop
+endif
+
+:Admin chọn user và thao tác;
+:PATCH /api/v1/admin/users/{id};
+if (target_id = current_admin_id và thao tác tự khóa/tự hạ quyền?) then (Có)
+  :400 Bad Request;
+else (Không)
+  :Validate role/is_active mới;
+  :UPDATE users;
+  if (Tài khoản bị khóa?) then (Có)
+    :Revoke refresh sessions nếu Redis/session module bật;
+  endif
+  :200 Updated;
+endif
+stop
+@enduml
