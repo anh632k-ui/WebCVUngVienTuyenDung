@@ -1,0 +1,62 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title SEQUENCE - HYBRID MATCHING CV <-> JD
+
+actor "Candidate/HR" as User
+participant "Next.js" as FE
+participant "Matching API" as API
+participant "Matching Service" as Service
+database "PostgreSQL + pgvector" as DB
+participant "Task Dispatcher" as Dispatcher
+queue "Redis/Celery" as Queue
+participant "Matching Worker" as Worker
+participant "Hybrid Matching Engine" as Engine
+
+User -> FE : chọn JD + CV(s)
+FE -> API : POST /matching/calculate\n{job_id,resume_ids[]}
+API -> Service : calculate(current_user,payload)
+Service -> DB : load JD/CVs + role/ownership/status
+DB --> Service : resources
+alt unauthorized/not owned
+  Service --> API : forbidden/not found
+  API --> FE : 403/404
+else resource not PARSED/ACTIVE as required
+  Service --> API : precondition error
+  API --> FE : 422
+else valid
+  loop each resume_id
+    Service -> DB : UPSERT match_results(PENDING), reset stale scores
+    DB --> Service : match_id
+    Service -> Dispatcher : enqueue_match(match_id)
+    Dispatcher -> Queue : task
+  end
+  Service --> API : match_ids[]
+  API --> FE : 202 QUEUED
+end
+
+Queue -> Worker : match_id
+Worker -> DB : UPDATE status=PROCESSING
+Worker -> DB : load JD criteria + job skills + CV skills + embeddings + experience
+DB --> Worker : matching input
+Worker -> Engine : compute hybrid-v1(input)
+Engine -> Engine : skill score
+Engine -> Engine : cosine semantic score
+Engine -> Engine : experience score
+Engine -> Engine : weighted overall + gaps
+Engine --> Worker : scores + evidence
+alt success
+  Worker -> DB : UPDATE scores/evidence/status=COMPLETED/calculated_at
+else failure
+  Worker -> DB : UPDATE status=FAILED/error_message
+end
+
+FE -> API : GET /matching/{match_id}
+API -> Service : authorize result
+Service -> DB : SELECT match
+DB --> Service : result/status
+Service --> API : result DTO
+API --> FE : 200
+
+@enduml
