@@ -1,0 +1,67 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title Sơ đồ hoạt động - UC13: Tính điểm tương thích theo mô hình Lai (Hybrid Engine)
+
+start
+:AI Matching Engine lấy tác vụ từ Hàng đợi:
+{ match_id, resume_id, job_id };
+
+:UPDATE `match_results` SET status = 'PROCESSING';
+
+partition "Tầng 1: Rule-based Skill Matching" {
+  :Lấy danh sách Skill từ JD (chia thành Mandatory & Optional);
+  :Lấy danh sách Skill từ CV;
+  
+  :Tìm tập hợp Giao (Intersection): Matched Skills;
+  :Tìm tập hợp Thiếu (Difference): Missing Skills;
+  
+  :Tính Điểm Kỹ Năng Bắt Buộc (Mandatory Score):
+  Score_Man = (Số kỹ năng bắt buộc có trong CV) / (Tổng kỹ năng bắt buộc JD);
+  
+  :Tính Điểm Kỹ Năng Ưu Tiên (Optional Score):
+  Score_Opt = (Số kỹ năng ưu tiên có trong CV) / (Tổng kỹ năng ưu tiên JD);
+  
+  :Điểm Kỹ Năng Tổng (Skill_Score) = (0.7 * Score_Man) + (0.3 * Score_Opt);
+}
+
+partition "Tầng 2: Semantic Cosine Matching" {
+  :Lấy Vector nhúng của JD (job_embedding);
+  :Tạo hoặc lấy Vector nhúng của CV (resume_embedding);
+  
+  :Tính Cosine Similarity giữa 2 vector:
+  Cosine_Sim = (V_resume . V_job) / (||V_resume|| * ||V_job||);
+  
+  :Chuẩn hóa Cosine_Sim về thang điểm [0 - 1]:
+  Semantic_Score = normalize(Cosine_Sim);
+}
+
+partition "Tầng 3: Experience Matching" {
+  :So sánh Số năm kinh nghiệm thực tế (CV) với Yêu cầu (JD);
+  if (Exp_CV >= Exp_JD?) then (Đạt hoặc vượt)
+    :Exp_Score = 1.0;
+  else (Thiếu kinh nghiệm)
+    :Exp_Score = Exp_CV / Exp_JD;
+  endif
+}
+
+partition "Tổng hợp Điểm số & Lưu Database" {
+  :Lấy bộ trọng số hiện tại (w_skill, w_semantic, w_exp);
+  :Tính Điểm Cuối Cùng (Final Score):
+  Total_Score = (w_skill * Skill_Score) + (w_semantic * Semantic_Score) + (w_exp * Exp_Score);
+  
+  :UPDATE bảng `match_results`:
+  - overall_score = Total_Score * 100
+  - skill_score = Skill_Score * 100
+  - semantic_score = Semantic_Score * 100
+  - experience_score = Exp_Score * 100
+  - matched_skills = JSON(Matched Skills)
+  - missing_skills = JSON(Missing Skills)
+  - status = 'COMPLETED', calculated_at = NOW();
+}
+
+:Gửi tín hiệu hoàn tất (Event: MATCH_CALCULATED);
+
+stop
+@enduml

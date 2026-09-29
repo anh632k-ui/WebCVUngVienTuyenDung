@@ -1,0 +1,35 @@
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam monochrome true
+skinparam linetype ortho
+
+actor "Nhà tuyển dụng\n(HR)" as HR
+actor "Ứng viên\n(Candidate)" as Candidate
+actor "Tiến trình nền AI\n(Background AI Worker)" as AIWorker
+
+rectangle "Phân hệ 3: Quản lý Bản mô tả công việc (JD)" {
+  usecase "UC10: Quản lý tin tuyển dụng (JD)\n(CRUD, Đóng/Mở đợt tuyển)" as UC10
+  usecase "UC10.1: Xem danh sách & Chi tiết JD" as UC10_1
+  usecase "UC11: Bóc tách cấu trúc yêu cầu JD\n(NLP Engine)" as UC11
+  usecase "UC11.1: Phân loại kỹ năng\n(Bắt buộc vs Ưu tiên)" as UC11_1
+  usecase "UC11.2: Chuẩn hóa kỹ năng JD\n(Skill Taxonomy Mapping)" as UC11_2
+  usecase "UC11.3: Rà soát & Điều chỉnh tiêu chí JD" as UC11_3
+}
+
+' Phân quyền thao tác
+HR --> UC10
+Candidate --> UC10_1
+
+' Worker xử lý ngầm bóc tách JD
+UC11 <-- AIWorker
+
+' Quan hệ phụ thuộc kỹ thuật
+UC10 <.. UC10_1 : <<extend>>
+UC10 ..> UC11 : <<trigger>>
+UC11 ..> UC11_1 : <<include>>
+UC11 ..> UC11_2 : <<include>>
+UC11 <.. UC11_3 : <<extend>>
+
+@enduml

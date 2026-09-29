@@ -1,0 +1,39 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title Sơ đồ hoạt động - UC02.1: Quay vòng Refresh Token (Rotation)
+
+start
+:Client gửi API request mang Access Token;
+
+if (Access Token hết hạn (401 Expired)?) then (Hết hạn)
+  :Frontend tự động gửi POST /api/v1/auth/refresh
+  mang theo Refresh Token;
+  
+  partition "Token Rotation Service" {
+    :Kiểm tra chữ ký (Signature) & hạn của Refresh Token;
+    :Tra cứu Token trong Redis / Database;
+    
+    if (Token hợp lệ và chưa từng bị thu hồi?) then (Hợp lệ)
+      :Vô hiệu hóa Refresh Token hiện tại (Revoke);
+      :Tạo cặp mới: Access Token mới + Refresh Token mới;
+      :Lưu Refresh Token mới vào Redis;
+      :Trả về HTTP 200 kèm cặp token mới;
+    else (Phát hiện dùng lại Token cũ / Giả mạo)
+      :Kích hoạt cảnh báo bảo mật (Replay Attack detected);
+      :Thu hồi TOÀN BỘ phiên đăng nhập của user này;
+      :Trả về HTTP 401 Unauthorized;
+      :Bắt buộc người dùng đăng nhập lại;
+      end
+    endif
+  }
+  
+  :Frontend cập nhật lại Access Token mới;
+  :Thực hiện lại API request ban đầu bị gián đoạn;
+else (Còn hạn)
+  :Thực thi API bình thường;
+endif
+
+stop
+@enduml

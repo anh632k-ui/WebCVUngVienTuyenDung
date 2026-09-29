@@ -1,0 +1,225 @@
+openapi: 3.0.3
+info:
+  title: Smart Recruitment & Resume Matching API
+  description: Hệ thống bóc tách CV và so khớp JD tự động bằng NLP & AI
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local Development Server
+
+paths:
+  # ==================== AUTHENTICATION ====================
+  /auth/register:
+    post:
+      summary: Đăng ký tài khoản mới
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, full_name, role]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: candidate@example.com
+                password:
+                  type: string
+                  example: SecurePassword123@
+                full_name:
+                  type: string
+                  example: Bùi Thế Anh
+                phone_number:
+                  type: string
+                  example: "0912345678"
+                role:
+                  type: string
+                  enum: [CANDIDATE, HR]
+                  example: CANDIDATE
+      responses:
+        '201':
+          description: Đăng ký thành công
+        '409':
+          description: Email đã tồn tại
+        '422':
+          description: Dữ liệu nhập không hợp lệ
+
+  /auth/login:
+    post:
+      summary: Đăng nhập hệ thống (Lấy JWT Token)
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  example: candidate@example.com
+                password:
+                  type: string
+                  example: SecurePassword123@
+      responses:
+        '200':
+          description: Đăng nhập thành công, trả về Access Token
+        '401':
+          description: Sai email hoặc mật khẩu
+
+  # ==================== RESUMES ====================
+  /resumes/upload:
+    post:
+      summary: Tải lên file CV (PDF/DOCX)
+      tags: [Resumes]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: Tải lên thành công, đưa vào hàng đợi phân tích
+        '400':
+          description: File sai định dạng
+        '413':
+          description: File vượt quá 5MB
+
+  /resumes/{id}:
+    get:
+      summary: Lấy dữ liệu chi tiết CV đã bóc tách
+      tags: [Resumes]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Trả về thông tin ứng viên, danh sách kỹ năng, kinh nghiệm
+
+  # ==================== JOBS ====================
+  /jobs:
+    post:
+      summary: HR tạo tin tuyển dụng mới (JD)
+      tags: [Jobs]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, job_level, raw_content]
+              properties:
+                title:
+                  type: string
+                  example: Backend Python Developer
+                job_level:
+                  type: string
+                  example: Junior
+                location:
+                  type: string
+                  example: Hồ Chí Minh
+                raw_content:
+                  type: string
+                  example: Yêu cầu thành thạo Python, FastAPI, PostgreSQL...
+                min_experience_years:
+                  type: number
+                  example: 1.0
+                w_skill:
+                  type: number
+                  example: 0.50
+                w_semantic:
+                  type: number
+                  example: 0.30
+                w_experience:
+                  type: number
+                  example: 0.20
+      responses:
+        '201':
+          description: Tạo JD thành công, bắt đầu bóc tách tiêu chí
+
+  # ==================== MATCHING & ANALYTICS ====================
+  /matching/calculate:
+    post:
+      summary: Kích hoạt so khớp hồ sơ CV với JD
+      tags: [Matching]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_id, resume_ids]
+              properties:
+                job_id:
+                  type: string
+                  format: uuid
+                resume_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        '202':
+          description: Đã tiếp nhận yêu cầu tính toán điểm số
+
+  /jobs/{id}/leaderboard:
+    get:
+      summary: Bảng xếp hạng ứng viên theo JD
+      tags: [Matching]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Danh sách ứng viên sắp xếp theo điểm tổng hợp cao nhất
+
+  /matching/{match_id}/gap-analysis:
+    get:
+      summary: Báo cáo phân tích khoảng trống kỹ năng (Skill Gap)
+      tags: [Matching]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: match_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Chi tiết điểm thành phần, danh sách kỹ năng thiếu và đề xuất
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

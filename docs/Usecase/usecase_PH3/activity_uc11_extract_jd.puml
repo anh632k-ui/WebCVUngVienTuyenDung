@@ -1,0 +1,65 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title Sơ đồ hoạt động - UC11: Pipeline Bóc tách Yêu cầu JD bằng NLP
+
+start
+:Worker (AI Service) nhận Message từ Hàng đợi:
+{ "job_id": UUID, "content": raw_text };
+
+:Cập nhật trạng thái bảng `job_descriptions`:
+parsing_status = 'PROCESSING';
+
+partition "Text Preprocessing & Sectioning" {
+  :Chuẩn hóa text (Unicode NFC, loại bỏ ký tự điều khiển);
+  :Phân đoạn văn bản JD thành các khối logic:
+  - Khối Mô tả công việc (Job Responsibilities)
+  - Khối Yêu cầu bắt buộc (Requirements / Must-have)
+  - Khối Điểm cộng/Ưu tiên (Nice-to-have / Preferred)
+  - Khối Quyền lợi (Benefits);
+}
+
+partition "Information Extraction Engine" {
+  :Trích xuất Số năm kinh nghiệm yêu cầu:
+  (Dùng Regex + Rule: vd "Tối thiểu 2 năm kinh nghiệm" -> min_exp: 2);
+  
+  :Trích xuất Cấp bậc (Level):
+  (Intern, Fresher, Junior, Middle, Senior, Lead);
+  
+  :Trích xuất Yêu cầu Học vấn/Bằng cấp:
+  (Đại học, Cao đẳng, Ngành CNTT hoặc liên quan);
+}
+
+partition "Skill Extraction & Classification" {
+  :Bóc tách danh sách kỹ năng xuất hiện trong từng khối;
+  :Đối chiếu từ điển Skill Taxonomy (chuẩn hóa tên Skill ID);
+  
+  if (Kỹ năng nằm trong khối Must-have?) then (Bắt buộc)
+    :Gán nhãn `skill_type = MANDATORY` (Trọng số cao);
+  else (Nằm trong Preferred hoặc chung)
+    :Gán nhãn `skill_type = OPTIONAL` (Trọng số điểm cộng);
+  endif
+}
+
+partition "Semantic Vectorization" {
+  :Tạo Vector Embedding cho khối Trách nhiệm & Yêu cầu
+  (Sử dụng Sentence-Transformers / BERT Embedding);
+  :Lưu chuỗi Vector vào cột `job_embedding` (định dạng Vector/JSON);
+}
+
+partition "Database Commit" {
+  :INSERT danh sách kỹ năng vào bảng `job_skills`:
+  (job_id, skill_id, skill_type, min_years_required);
+  
+  :UPDATE bảng `job_descriptions`:
+  min_experience_years = X,
+  education_level = Y,
+  job_embedding = vector_data,
+  parsing_status = 'COMPLETED';
+}
+
+:Phát thông báo hoàn tất qua WebSocket (Event: JD_PARSED_SUCCESS);
+
+stop
+@enduml

@@ -1,0 +1,21 @@
+@startuml
+skinparam linetype ortho
+skinparam monochrome true
+skinparam shadowing false
+
+entity "Người Dùng (User)" as User
+entity "Kỹ Năng Chuẩn (Skill)" as Skill
+entity "Hồ Sơ Ứng Viên (Resume)" as Resume
+entity "Tin Tuyển Dụng (Job Description)" as Job
+entity "Kết Quả So Khớp (Match Result)" as Match
+
+User ||..o{ Resume : "Tải lên / Sở hữu"
+User ||..o{ Job : "Đăng tuyển / Quản lý"
+
+Resume }o..o{ Skill : "Thể hiện năng lực"
+Job }o..o{ Skill : "Đòi hỏi tiêu chuẩn"
+
+Resume ||..o{ Match : "Tham gia đánh giá"
+Job ||..o{ Match : "Dùng làm tiêu chí so"
+
+@enduml

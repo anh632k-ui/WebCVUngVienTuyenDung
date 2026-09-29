@@ -1,0 +1,59 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title Sơ đồ hoạt động - UC06: Tải lên hồ sơ CV
+
+start
+:Người dùng (Candidate/HR) chọn file CV
+hoặc kéo thả vào vùng dropzone;
+
+partition "Frontend Pre-check" {
+  if (Định dạng file thuộc [.pdf, .docx]?) then (Hợp lệ)
+    if (Kích thước mỗi file <= 5MB?) then (Hợp lệ)
+      :Hiển thị thanh tiến trình (Upload Progress Bar);
+      :Gửi POST /api/v1/resumes/upload (FormData);
+    else (Quá dung lượng)
+      :Báo lỗi "Kích thước file vượt quá 5MB";
+      end
+    endif
+  else (Sai định dạng)
+    :Báo lỗi "Chỉ hỗ trợ file định dạng PDF hoặc DOCX";
+    end
+  endif
+}
+
+partition "Backend File Handling" {
+  :Xác thực Token người dùng (JWT);
+  :Kiểm tra Magic Bytes (MIME type thực tế);
+  if (MIME type đúng PDF/DOCX?) then (Chuẩn)
+    :Tạo mã định danh duy nhất (UUID v4);
+    :Lưu file vào hệ thống lưu trữ vật lý
+    (Đường dẫn: /storage/resumes/{UUID}.pdf);
+    
+    :Ghi bản ghi vào bảng `resumes`:
+    - id = UUID
+    - user_id = current_user
+    - file_name = original_name
+    - file_path = path
+    - parsing_status = 'PENDING';
+    
+    :Đẩy Message vào RabbitMQ/Redis Queue:
+    { "resume_id": UUID, "file_path": path };
+    
+    :Trả về HTTP 202 Accepted
+    kèm { "resume_id": UUID, "status": "PENDING" };
+  else (Giả mạo phần mở rộng file)
+    :Xóa tệp tạm thời;
+    :Trả về HTTP 415 Unsupported Media Type;
+    end
+  endif
+}
+
+partition "Frontend" {
+  :Cập nhật trạng thái "Đang chờ phân tích...";
+  :Lắng nghe trạng thái (Polling hoặc WebSocket);
+}
+
+stop
+@enduml

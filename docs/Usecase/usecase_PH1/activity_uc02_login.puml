@@ -1,0 +1,47 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title Sơ đồ hoạt động - UC02: Đăng nhập hệ thống & Cấp Token
+
+start
+:Người dùng nhập Email và Mật khẩu;
+:Bấm nút "Đăng nhập";
+:Gửi POST /api/v1/auth/login;
+
+partition "Auth Service Processing" {
+  :Truy vấn `users` theo Email;
+  
+  if (Tài khoản tồn tại?) then (Có)
+    :Kiểm tra Hash mật khẩu (Bcrypt compare);
+    if (Mật khẩu trùng khớp?) then (Đúng)
+      if (Tài khoản đang Active?) then (Active)
+        :Sinh Access Token (JWT - hạn 15 phút);
+        :Sinh Refresh Token (Hạn 7 ngày);
+        :Lưu mã băm Refresh Token vào Redis;
+        :Trả về HTTP 200 kèm Token pair;
+      else (Bị khóa)
+        :Trả về HTTP 403 Forbidden
+        ("Tài khoản bị tạm khóa");
+        end
+      endif
+    else (Sai)
+      :Trả về HTTP 401 Unauthorized;
+      :Báo lỗi "Thông tin đăng nhập không hợp lệ";
+      end
+    endif
+  else (Không tìm thấy)
+    :Trả về HTTP 401 Unauthorized;
+    :Báo lỗi "Thông tin đăng nhập không hợp lệ";
+    end
+  endif
+}
+
+partition "Client App" {
+  :Lưu Access Token vào Bộ nhớ (Memory State);
+  :Lưu Refresh Token vào HttpOnly, Secure Cookie;
+  :Chuyển hướng về Dashboard theo Role;
+}
+
+stop
+@enduml

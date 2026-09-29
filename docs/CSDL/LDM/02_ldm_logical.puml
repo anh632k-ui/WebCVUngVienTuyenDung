@@ -1,0 +1,111 @@
+@startuml
+skinparam linetype ortho
+skinparam monochrome true
+skinparam shadowing false
+
+entity "USER" as User {
+  + user_id [PK]
+  --
+  email
+  password_hash
+  full_name
+  phone_number
+  role
+  is_active
+}
+
+entity "SKILL" as Skill {
+  + skill_id [PK]
+  --
+  skill_name
+  normalized_name
+  category
+}
+
+entity "RESUME" as Resume {
+  + resume_id [PK]
+  --
+  # user_id [FK]
+  file_name
+  file_path
+  parsing_status
+  raw_text
+}
+
+entity "RESUME_SKILL" as ResumeSkill {
+  + resume_skill_id [PK]
+  --
+  # resume_id [FK]
+  # skill_id [FK]
+  years_of_experience
+  proficiency_level
+}
+
+entity "RESUME_EXPERIENCE" as ResumeExp {
+  + experience_id [PK]
+  --
+  # resume_id [FK]
+  company_name
+  job_title
+  start_date
+  end_date
+  description
+}
+
+entity "RESUME_EDUCATION" as ResumeEdu {
+  + education_id [PK]
+  --
+  # resume_id [FK]
+  institution_name
+  degree
+  field_of_study
+  graduation_year
+}
+
+entity "JOB_DESCRIPTION" as Job {
+  + job_id [PK]
+  --
+  # recruiter_id [FK]
+  title
+  job_level
+  min_experience_years
+  status
+}
+
+entity "JOB_SKILL" as JobSkill {
+  + job_skill_id [PK]
+  --
+  # job_id [FK]
+  # skill_id [FK]
+  skill_type
+  min_years_required
+}
+
+entity "MATCH_RESULT" as Match {
+  + match_id [PK]
+  --
+  # job_id [FK]
+  # resume_id [FK]
+  overall_score
+  skill_score
+  semantic_score
+  experience_score
+  status
+}
+
+User ||--o{ Resume
+User ||--o{ Job
+
+Resume ||--o{ ResumeSkill
+Resume ||--o{ ResumeExp
+Resume ||--o{ ResumeEdu
+
+Skill ||--o{ ResumeSkill
+Skill ||--o{ JobSkill
+
+Job ||--o{ JobSkill
+
+Job ||--o{ Match
+Resume ||--o{ Match
+
+@enduml

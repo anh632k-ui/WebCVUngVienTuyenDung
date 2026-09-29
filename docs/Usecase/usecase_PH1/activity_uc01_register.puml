@@ -1,0 +1,43 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title Sơ đồ hoạt động - UC01: Đăng ký tài khoản
+
+start
+:Người dùng nhập thông tin:
+- Họ tên, Email, Mật khẩu, Xác nhận MK
+- Vai trò mong muốn (Candidate / HR);
+
+:Bấm nút "Đăng ký";
+
+partition "Frontend Validation" {
+  if (Email đúng regex RFC 5322\nvà MK đủ độ phức tạp?) then (Hợp lệ)
+    :Gửi request POST /api/v1/auth/register;
+  else (Không hợp lệ)
+    :Hiển thị lỗi định dạng trên giao diện;
+    end
+  endif
+}
+
+partition "Backend & Database" {
+  :Kiểm tra Email trong Database;
+  if (Email đã tồn tại?) then (Đã tồn tại)
+    :Trả về lỗi HTTP 409 Conflict;
+    :Hiển thị "Email đã được sử dụng";
+    end
+  else (Chưa tồn tại)
+    :Băm mật khẩu bằng Bcrypt/Argon2id;
+    :Tạo bản ghi mới trong bảng `users`
+    (Status = ACTIVE, Role gán theo đăng ký);
+    :Trả về HTTP 201 Created;
+  endif
+}
+
+partition "Frontend" {
+  :Thông báo đăng ký thành công;
+  :Chuyển hướng đến màn hình Đăng nhập;
+}
+
+stop
+@endumlx
