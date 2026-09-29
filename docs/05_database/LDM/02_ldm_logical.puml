@@ -1,0 +1,157 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+
+title LDM - MÔ HÌNH DỮ LIỆU LOGIC
+
+entity "USER" as User {
+  + user_id [PK]
+  --
+  email [UQ]
+  password_hash
+  full_name
+  phone_number
+  role
+  is_active
+}
+
+entity "SKILL" as Skill {
+  + skill_id [PK]
+  --
+  name [UQ]
+  normalized_name [UQ]
+  skill_kind
+  category
+  description
+}
+
+entity "RESUME" as Resume {
+  + resume_id [PK]
+  --
+  # owner_user_id [FK]
+  file_name
+  storage_key [UQ]
+  file_size
+  mime_type
+  parsing_status
+  raw_text
+  resume_embedding
+  embedding_model
+  error_message
+  is_manually_edited
+  is_deleted
+}
+
+entity "CANDIDATE_PROFILE" as CandidateProfile {
+  + candidate_profile_id [PK]
+  --
+  # resume_id [FK,UQ]
+  full_name
+  email
+  phone_number
+  current_title
+  location
+  linkedin_url
+  github_url
+  professional_summary
+}
+
+entity "RESUME_SKILL" as ResumeSkill {
+  + resume_skill_id [PK]
+  --
+  # resume_id [FK]
+  # skill_id [FK]
+  years_of_experience
+  proficiency_level
+  [UQ: resume_id + skill_id]
+}
+
+entity "RESUME_EXPERIENCE" as ResumeExperience {
+  + experience_id [PK]
+  --
+  # resume_id [FK]
+  company_name
+  job_title
+  start_date
+  end_date
+  is_current
+  description
+}
+
+entity "RESUME_EDUCATION" as ResumeEducation {
+  + education_id [PK]
+  --
+  # resume_id [FK]
+  institution_name
+  degree
+  field_of_study
+  start_year
+  graduation_year
+  gpa
+  description
+}
+
+entity "JOB_DESCRIPTION" as Job {
+  + job_id [PK]
+  --
+  # recruiter_id [FK]
+  title
+  job_level
+  location
+  raw_content
+  min_experience_years
+  education_requirement
+  job_embedding
+  embedding_model
+  parsing_status
+  parsing_error_message
+  is_criteria_verified
+  w_skill
+  w_semantic
+  w_experience
+  status
+  is_deleted
+}
+
+entity "JOB_SKILL" as JobSkill {
+  + job_skill_id [PK]
+  --
+  # job_id [FK]
+  # skill_id [FK]
+  importance
+  min_years_required
+  [UQ: job_id + skill_id]
+}
+
+entity "MATCH_RESULT" as Match {
+  + match_id [PK]
+  --
+  # job_id [FK]
+  # resume_id [FK]
+  overall_score
+  skill_score
+  semantic_score
+  experience_score
+  matched_skills
+  missing_skills
+  gap_analysis_summary
+  algorithm_version
+  status
+  error_message
+  [UQ: job_id + resume_id]
+}
+
+User ||--o{ Resume
+User ||--o{ Job
+Resume ||--|| CandidateProfile
+Resume ||--o{ ResumeSkill
+Skill ||--o{ ResumeSkill
+Resume ||--o{ ResumeExperience
+Resume ||--o{ ResumeEducation
+Job ||--o{ JobSkill
+Skill ||--o{ JobSkill
+Job ||--o{ Match
+Resume ||--o{ Match
+
+@enduml
