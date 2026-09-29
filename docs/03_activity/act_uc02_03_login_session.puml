@@ -1,0 +1,52 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC02 ĐĂNG NHẬP & UC03 QUẢN LÝ PHIÊN
+
+start
+:Guest nhập email + mật khẩu;
+:POST /api/v1/auth/login;
+:Backend tìm user theo email chuẩn hóa;
+if (User tồn tại và mật khẩu đúng?) then (Có)
+  if (is_active = true?) then (Có)
+    :Sinh Access Token (15 phút);
+    if (Refresh Session được bật?) then (Có)
+      :Sinh Refresh Token/Session ID;
+      :Lưu hash/token-id trong Redis;
+      :Backend trả Set-Cookie HttpOnly;
+    endif
+    :200 + access_token + user summary;
+  else (Không)
+    :403 Account disabled;
+    stop
+  endif
+else (Không)
+  :401 Invalid credentials;
+  stop
+endif
+
+:Client dùng Access Token gọi API;
+if (Access Token hết hạn?) then (Có)
+  :POST /api/v1/auth/refresh;
+  :Backend đọc HttpOnly Cookie;
+  if (Refresh token hợp lệ, chưa revoke?) then (Có)
+    :Revoke token/session cũ;
+    :Tạo Access Token + Refresh Token mới;
+    :Set-Cookie HttpOnly mới;
+    :200;
+  else (Không)
+    :401;
+    :Yêu cầu đăng nhập lại;
+  endif
+endif
+
+if (User chọn Logout?) then (Có)
+  :POST /api/v1/auth/logout;
+  :Revoke refresh session hiện tại;
+  :Clear HttpOnly Cookie;
+  :204 No Content;
+endif
+
+stop
+@enduml
