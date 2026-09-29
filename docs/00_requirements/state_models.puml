@@ -25,10 +25,11 @@ state "Job Parsing" as JobParsing {
 
 state "Job Business Status" as JobBusiness {
   [*] --> DRAFT
-  DRAFT --> ACTIVE : HR publish
+  DRAFT --> ACTIVE : publish [PARSED && criteria verified]
   ACTIVE --> CLOSED : HR đóng tuyển
-  CLOSED --> ACTIVE : HR mở lại
-  ACTIVE --> DRAFT : HR unpublish nếu chưa cần công khai
+  CLOSED --> ACTIVE : mở lại [PARSED && criteria verified]
+  ACTIVE --> DRAFT : raw_content thay đổi / unpublish
+  CLOSED --> DRAFT : raw_content thay đổi
 }
 
 state "Match Lifecycle" as Matching {
@@ -37,7 +38,12 @@ state "Match Lifecycle" as Matching {
   M_PROCESSING --> M_COMPLETED : tính điểm thành công
   M_PROCESSING --> M_FAILED : lỗi
   M_FAILED --> M_PENDING : retry/recalculate
-  M_COMPLETED --> M_PENDING : thay criteria/weights hoặc yêu cầu recalculate
+  M_COMPLETED --> M_PENDING : criteria/weights/CV thay đổi hoặc recalculate
 }
+
+note bottom of JobBusiness
+Mọi thay đổi raw_content làm criteria/embedding cũ stale,
+vì vậy business status bị đưa về DRAFT trước khi Job Parsing về PENDING.
+end note
 
 @enduml
