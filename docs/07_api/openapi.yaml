@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: WebCV Ung Vien Tuyen Dung API
-  description: REST API cho hệ thống phân tích CV/JD và hỗ trợ đánh giá mức độ tương thích bằng NLP/AI.
+  description: API cho hệ thống phân tích CV/JD và hỗ trợ đánh giá mức độ tương thích bằng NLP/AI.
   version: 1.0.0
 servers:
   - url: http://localhost:8000/api/v1
@@ -14,6 +14,7 @@ tags:
   - name: Authentication
   - name: Users
   - name: Admin
+  - name: Skills
   - name: Resumes
   - name: Jobs
   - name: Matching
@@ -28,8 +29,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterRequest'
+            schema: {$ref: '#/components/schemas/RegisterRequest'}
       responses:
         '201': {description: Created}
         '409': {$ref: '#/components/responses/Conflict'}
@@ -44,15 +44,9 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
+            schema: {$ref: '#/components/schemas/LoginRequest'}
       responses:
-        '200':
-          description: Logged in
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LoginResponse'
+        '200': {description: Logged in}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -64,12 +58,7 @@ paths:
       security:
         - RefreshCookie: []
       responses:
-        '200':
-          description: Refreshed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TokenRefreshResponse'
+        '200': {description: Refreshed}
         '401': {$ref: '#/components/responses/Unauthorized'}
 
   /auth/logout:
@@ -88,8 +77,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/ChangePasswordRequest'
+            schema: {$ref: '#/components/schemas/ChangePasswordRequest'}
       responses:
         '200': {description: Password changed}
         '400': {description: Current password is incorrect}
@@ -101,12 +89,7 @@ paths:
       tags: [Users]
       summary: Lấy profile tài khoản hiện tại
       responses:
-        '200':
-          description: Current user
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserResponseEnvelope'
+        '200': {description: Current user}
         '401': {$ref: '#/components/responses/Unauthorized'}
     put:
       tags: [Users]
@@ -115,15 +98,9 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/UserUpdateRequest'
+            schema: {$ref: '#/components/schemas/UserUpdateRequest'}
       responses:
-        '200':
-          description: Updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserResponseEnvelope'
+        '200': {description: Updated}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -134,18 +111,11 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit20'}
-        - name: role
-          in: query
-          schema: {type: string, enum: [CANDIDATE, HR, ADMIN]}
-        - name: is_active
-          in: query
-          schema: {type: boolean}
-        - name: keyword
-          in: query
-          schema: {type: string}
+        - {name: role, in: query, schema: {type: string, enum: [CANDIDATE, HR, ADMIN]}}
+        - {name: is_active, in: query, schema: {type: boolean}}
+        - {name: keyword, in: query, schema: {type: string}}
       responses:
         '200': {description: Paginated users}
-        '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
   /admin/users/{id}:
@@ -158,19 +128,32 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/AdminUserPatchRequest'
+            schema: {$ref: '#/components/schemas/AdminUserPatchRequest'}
       responses:
         '200': {description: Updated}
-        '400': {description: Self-lock/self-demote is forbidden}
+        '400': {description: Self-lock/self-demote forbidden}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /skills:
+    get:
+      tags: [Skills]
+      summary: Tra cứu Skill Taxonomy
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit20'}
+        - {name: keyword, in: query, schema: {type: string}}
+        - {name: skill_kind, in: query, schema: {type: string, enum: [HARD, SOFT]}}
+        - {name: category, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Paginated skills}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
   /resumes/upload:
     post:
       tags: [Resumes]
-      summary: Upload CV PDF/DOCX và đưa vào pipeline NLP
+      summary: Upload CV PDF/DOCX
       requestBody:
         required: true
         content:
@@ -179,20 +162,11 @@ paths:
               type: object
               required: [file]
               properties:
-                file:
-                  type: string
-                  format: binary
+                file: {type: string, format: binary}
       responses:
-        '202':
-          description: Accepted for parsing
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResumeUploadResponse'
-        '401': {$ref: '#/components/responses/Unauthorized'}
-        '403': {$ref: '#/components/responses/Forbidden'}
+        '202': {description: Accepted for parsing}
         '413': {description: File exceeds 5 MB}
-        '415': {description: Unsupported or forged media type}
+        '415': {description: Unsupported media type}
         '422': {$ref: '#/components/responses/ValidationError'}
 
   /resumes:
@@ -202,13 +176,8 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit20'}
-        - name: keyword
-          in: query
-          schema: {type: string}
-        - name: parsing_status
-          in: query
-          schema:
-            $ref: '#/components/schemas/ParsingStatus'
+        - {name: keyword, in: query, schema: {type: string}}
+        - {name: parsing_status, in: query, schema: {$ref: '#/components/schemas/ParsingStatus'}}
         - name: skill_ids
           in: query
           style: form
@@ -218,21 +187,15 @@ paths:
             items: {type: integer}
       responses:
         '200': {description: Paginated resumes}
-        '401': {$ref: '#/components/responses/Unauthorized'}
 
   /resumes/{id}:
     get:
       tags: [Resumes]
-      summary: Chi tiết CV đã bóc tách
+      summary: Chi tiết CV
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       responses:
-        '200':
-          description: Resume detail
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResumeDetailResponse'
+        '200': {description: Resume detail}
         '404': {$ref: '#/components/responses/NotFound'}
     delete:
       tags: [Resumes]
@@ -246,30 +209,24 @@ paths:
   /resumes/{id}/status:
     get:
       tags: [Resumes]
-      summary: Lấy trạng thái phân tích CV
+      summary: Trạng thái phân tích CV
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       responses:
-        '200':
-          description: Parsing status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResumeStatusResponse'
+        '200': {description: Parsing status}
         '404': {$ref: '#/components/responses/NotFound'}
 
   /resumes/{id}/parsed-data:
     put:
       tags: [Resumes]
-      summary: Human-in-the-loop cập nhật dữ liệu CV đã bóc tách
+      summary: Human-in-the-loop cập nhật dữ liệu CV
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/ResumeParsedDataUpdate'
+            schema: {$ref: '#/components/schemas/ResumeParsedDataUpdate'}
       responses:
         '200': {description: Parsed data updated}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -278,7 +235,7 @@ paths:
   /resumes/{id}/download:
     get:
       tags: [Resumes]
-      summary: Tải file CV gốc
+      summary: Tải CV gốc
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       responses:
@@ -296,17 +253,9 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit20'}
-        - name: keyword
-          in: query
-          schema: {type: string}
-        - name: status
-          in: query
-          schema:
-            $ref: '#/components/schemas/JobStatus'
-        - name: parsing_status
-          in: query
-          schema:
-            $ref: '#/components/schemas/ParsingStatus'
+        - {name: keyword, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/JobStatus'}}
+        - {name: parsing_status, in: query, schema: {$ref: '#/components/schemas/ParsingStatus'}}
       responses:
         '200': {description: Paginated jobs}
     post:
@@ -316,15 +265,9 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/JobCreateRequest'
+            schema: {$ref: '#/components/schemas/JobCreateRequest'}
       responses:
-        '201':
-          description: Created and queued for parsing
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JobCreateResponse'
+        '201': {description: Created and queued for parsing}
         '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -339,15 +282,14 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
     put:
       tags: [Jobs]
-      summary: HR owner/Admin cập nhật JD
+      summary: Cập nhật JD
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/JobUpdateRequest'
+            schema: {$ref: '#/components/schemas/JobUpdateRequest'}
       responses:
         '200': {description: Updated}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -371,8 +313,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/JobStatusRequest'
+            schema: {$ref: '#/components/schemas/JobStatusRequest'}
       responses:
         '200': {description: Status updated}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -381,7 +322,7 @@ paths:
   /jobs/{id}/criteria:
     get:
       tags: [Jobs]
-      summary: Lấy tiêu chí JD đã bóc tách
+      summary: Lấy criteria JD
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       responses:
@@ -389,17 +330,16 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
     put:
       tags: [Jobs]
-      summary: HR review/cập nhật tiêu chí JD
+      summary: Rà soát/cập nhật criteria JD
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/JobCriteriaRequest'
+            schema: {$ref: '#/components/schemas/JobCriteriaRequest'}
       responses:
-        '200': {description: Criteria updated and verified}
+        '200': {description: Criteria updated}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -413,46 +353,47 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/WeightsRequest'
+            schema: {$ref: '#/components/schemas/WeightsRequest'}
       responses:
         '200': {description: Weights updated}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /matching:
+    get:
+      tags: [Matching]
+      summary: Lịch sử matching theo scope người dùng
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit20'}
+        - {name: job_id, in: query, schema: {type: string, format: uuid}}
+        - {name: resume_id, in: query, schema: {type: string, format: uuid}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/MatchStatus'}}
+      responses:
+        '200': {description: Paginated matches}
+
   /matching/calculate:
     post:
       tags: [Matching]
-      summary: Trigger single/batch CV-JD matching
+      summary: Trigger single/batch matching
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/MatchCalculateRequest'
+            schema: {$ref: '#/components/schemas/MatchCalculateRequest'}
       responses:
-        '202':
-          description: Match tasks accepted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MatchCalculateResponse'
+        '202': {description: Matching accepted}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
   /matching/{match_id}:
     get:
       tags: [Matching]
-      summary: Lấy trạng thái/kết quả matching
+      summary: Trạng thái/kết quả matching
       parameters:
         - {$ref: '#/components/parameters/MatchUuid'}
       responses:
-        '200':
-          description: Match result
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MatchResponse'
+        '200': {description: Match result}
         '404': {$ref: '#/components/responses/NotFound'}
 
   /matching/{match_id}/gap-analysis:
@@ -462,23 +403,19 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/MatchUuid'}
       responses:
-        '200': {description: Skill gap analysis}
+        '200': {description: Skill Gap}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {description: Match is not completed}
 
   /jobs/{id}/leaderboard:
     get:
       tags: [Matching]
-      summary: Leaderboard ứng viên cho JD
+      summary: Leaderboard ứng viên theo JD
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
         - {$ref: '#/components/parameters/Page'}
-        - name: limit
-          in: query
-          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
-        - name: min_score
-          in: query
-          schema: {type: number, minimum: 0, maximum: 100}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: min_score, in: query, schema: {type: number, minimum: 0, maximum: 100}}
       responses:
         '200': {description: Ranked completed matches}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -487,13 +424,11 @@ paths:
   /jobs/{id}/export:
     get:
       tags: [Matching]
-      summary: Xuất báo cáo PDF/Excel (advanced)
+      summary: Xuất báo cáo PDF/Excel
+      description: Advanced feature.
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
-        - name: format
-          in: query
-          required: true
-          schema: {type: string, enum: [pdf, excel]}
+        - {name: format, in: query, required: true, schema: {type: string, enum: [pdf, excel]}}
       responses:
         '200': {description: Binary report}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -542,7 +477,7 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorResponse'}
     NotFound:
-      description: Resource not found or intentionally hidden by authorization policy
+      description: Resource not found or hidden by authorization policy
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -582,20 +517,10 @@ components:
           properties:
             code: {type: string}
             message: {type: string}
-            details: {nullable: true}
-
-    User:
-      type: object
-      required: [id, email, full_name, role, is_active]
-      properties:
-        id: {type: string, format: uuid}
-        email: {type: string, format: email}
-        full_name: {type: string}
-        phone_number: {type: string, nullable: true}
-        role: {$ref: '#/components/schemas/Role'}
-        is_active: {type: boolean}
-        created_at: {type: string, format: date-time}
-        updated_at: {type: string, format: date-time}
+            details:
+              type: object
+              nullable: true
+              additionalProperties: true
 
     RegisterRequest:
       type: object
@@ -605,9 +530,7 @@ components:
         password: {type: string, minLength: 8}
         full_name: {type: string, minLength: 1, maxLength: 100}
         phone_number: {type: string, nullable: true, maxLength: 20}
-        role:
-          type: string
-          enum: [CANDIDATE, HR]
+        role: {type: string, enum: [CANDIDATE, HR]}
 
     LoginRequest:
       type: object
@@ -615,32 +538,6 @@ components:
       properties:
         email: {type: string, format: email}
         password: {type: string}
-
-    LoginResponse:
-      type: object
-      required: [success, data]
-      properties:
-        success: {type: boolean, example: true}
-        data:
-          type: object
-          required: [access_token, token_type, expires_in, user]
-          properties:
-            access_token: {type: string}
-            token_type: {type: string, example: Bearer}
-            expires_in: {type: integer, example: 900}
-            user: {$ref: '#/components/schemas/User'}
-
-    TokenRefreshResponse:
-      type: object
-      required: [success, data]
-      properties:
-        success: {type: boolean, example: true}
-        data:
-          type: object
-          properties:
-            access_token: {type: string}
-            token_type: {type: string, example: Bearer}
-            expires_in: {type: integer, example: 900}
 
     ChangePasswordRequest:
       type: object
@@ -662,12 +559,6 @@ components:
       properties:
         is_active: {type: boolean}
         role: {$ref: '#/components/schemas/Role'}
-
-    UserResponseEnvelope:
-      type: object
-      properties:
-        success: {type: boolean, example: true}
-        data: {$ref: '#/components/schemas/User'}
 
     CandidateProfileInput:
       type: object
@@ -727,37 +618,6 @@ components:
           type: array
           items: {$ref: '#/components/schemas/EducationInput'}
 
-    ResumeUploadResponse:
-      type: object
-      properties:
-        success: {type: boolean, example: true}
-        data:
-          type: object
-          properties:
-            resume_id: {type: string, format: uuid}
-            file_name: {type: string}
-            file_size: {type: integer}
-            parsing_status: {$ref: '#/components/schemas/ParsingStatus'}
-
-    ResumeStatusResponse:
-      type: object
-      properties:
-        success: {type: boolean, example: true}
-        data:
-          type: object
-          properties:
-            resume_id: {type: string, format: uuid}
-            parsing_status: {$ref: '#/components/schemas/ParsingStatus'}
-            parsed_at: {type: string, format: date-time, nullable: true}
-            error_message: {type: string, nullable: true}
-
-    ResumeDetailResponse:
-      type: object
-      description: Envelope chứa resume metadata, candidate_profile, skills, experiences, educations theo API Contract.
-      properties:
-        success: {type: boolean, example: true}
-        data: {type: object}
-
     JobCreateRequest:
       type: object
       required: [title, job_level, raw_content]
@@ -783,17 +643,6 @@ components:
         min_experience_years: {type: number, minimum: 0}
         education_requirement: {type: string, nullable: true, maxLength: 255}
 
-    JobCreateResponse:
-      type: object
-      properties:
-        success: {type: boolean, example: true}
-        data:
-          type: object
-          properties:
-            job_id: {type: string, format: uuid}
-            status: {$ref: '#/components/schemas/JobStatus'}
-            parsing_status: {$ref: '#/components/schemas/ParsingStatus'}
-
     JobStatusRequest:
       type: object
       required: [status]
@@ -816,6 +665,7 @@ components:
         education_requirement: {type: string, nullable: true, maxLength: 255}
         skills:
           type: array
+          uniqueItems: true
           items: {$ref: '#/components/schemas/JobSkillCriterion'}
 
     WeightsRequest:
@@ -837,35 +687,3 @@ components:
           minItems: 1
           uniqueItems: true
           items: {type: string, format: uuid}
-
-    MatchCalculateResponse:
-      type: object
-      properties:
-        success: {type: boolean, example: true}
-        data:
-          type: object
-          properties:
-            job_id: {type: string, format: uuid}
-            match_ids:
-              type: array
-              items: {type: string, format: uuid}
-            total_jobs: {type: integer}
-            status: {type: string, example: QUEUED}
-
-    MatchResponse:
-      type: object
-      properties:
-        success: {type: boolean, example: true}
-        data:
-          type: object
-          properties:
-            id: {type: string, format: uuid}
-            job_id: {type: string, format: uuid}
-            resume_id: {type: string, format: uuid}
-            status: {$ref: '#/components/schemas/MatchStatus'}
-            overall_score: {type: number, minimum: 0, maximum: 100, nullable: true}
-            skill_score: {type: number, minimum: 0, maximum: 100, nullable: true}
-            semantic_score: {type: number, minimum: 0, maximum: 100, nullable: true}
-            experience_score: {type: number, minimum: 0, maximum: 100, nullable: true}
-            algorithm_version: {type: string}
-            calculated_at: {type: string, format: date-time, nullable: true}
