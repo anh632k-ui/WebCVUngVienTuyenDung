@@ -1,0 +1,871 @@
+openapi: 3.0.3
+info:
+  title: WebCV Ung Vien Tuyen Dung API
+  description: REST API cho hệ thống phân tích CV/JD và hỗ trợ đánh giá mức độ tương thích bằng NLP/AI.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Authentication
+  - name: Users
+  - name: Admin
+  - name: Resumes
+  - name: Jobs
+  - name: Matching
+
+paths:
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Đăng ký Candidate hoặc HR
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201': {description: Created}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Đăng nhập và nhận Access Token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate Refresh Token và cấp Access Token mới
+      security:
+        - RefreshCookie: []
+      responses:
+        '200':
+          description: Refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenRefreshResponse'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Thu hồi phiên hiện tại
+      responses:
+        '204': {description: Logged out}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/change-password:
+    put:
+      tags: [Authentication]
+      summary: Đổi mật khẩu
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '200': {description: Password changed}
+        '400': {description: Current password is incorrect}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Lấy profile tài khoản hiện tại
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponseEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    put:
+      tags: [Users]
+      summary: Cập nhật profile tài khoản hiện tại
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponseEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: Danh sách tài khoản
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit20'}
+        - name: role
+          in: query
+          schema: {type: string, enum: [CANDIDATE, HR, ADMIN]}
+        - name: is_active
+          in: query
+          schema: {type: boolean}
+        - name: keyword
+          in: query
+          schema: {type: string}
+      responses:
+        '200': {description: Paginated users}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /admin/users/{id}:
+    patch:
+      tags: [Admin]
+      summary: Khóa/mở khóa hoặc đổi role user
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserPatchRequest'
+      responses:
+        '200': {description: Updated}
+        '400': {description: Self-lock/self-demote is forbidden}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /resumes/upload:
+    post:
+      tags: [Resumes]
+      summary: Upload CV PDF/DOCX và đưa vào pipeline NLP
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: Accepted for parsing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeUploadResponse'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '413': {description: File exceeds 5 MB}
+        '415': {description: Unsupported or forged media type}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /resumes:
+    get:
+      tags: [Resumes]
+      summary: Danh sách CV theo ownership
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit20'}
+        - name: keyword
+          in: query
+          schema: {type: string}
+        - name: parsing_status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ParsingStatus'
+        - name: skill_ids
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: {type: integer}
+      responses:
+        '200': {description: Paginated resumes}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /resumes/{id}:
+    get:
+      tags: [Resumes]
+      summary: Chi tiết CV đã bóc tách
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      responses:
+        '200':
+          description: Resume detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeDetailResponse'
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Resumes]
+      summary: Xóa mềm CV
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      responses:
+        '204': {description: Soft deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /resumes/{id}/status:
+    get:
+      tags: [Resumes]
+      summary: Lấy trạng thái phân tích CV
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      responses:
+        '200':
+          description: Parsing status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeStatusResponse'
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /resumes/{id}/parsed-data:
+    put:
+      tags: [Resumes]
+      summary: Human-in-the-loop cập nhật dữ liệu CV đã bóc tách
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumeParsedDataUpdate'
+      responses:
+        '200': {description: Parsed data updated}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /resumes/{id}/download:
+    get:
+      tags: [Resumes]
+      summary: Tải file CV gốc
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      responses:
+        '200':
+          description: Original PDF/DOCX binary
+          content:
+            application/pdf: {}
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document: {}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /jobs:
+    get:
+      tags: [Jobs]
+      summary: Danh sách JD theo role
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit20'}
+        - name: keyword
+          in: query
+          schema: {type: string}
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/JobStatus'
+        - name: parsing_status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ParsingStatus'
+      responses:
+        '200': {description: Paginated jobs}
+    post:
+      tags: [Jobs]
+      summary: HR/Admin tạo JD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobCreateRequest'
+      responses:
+        '201':
+          description: Created and queued for parsing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCreateResponse'
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /jobs/{id}:
+    get:
+      tags: [Jobs]
+      summary: Chi tiết JD
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      responses:
+        '200': {description: Job detail}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [Jobs]
+      summary: HR owner/Admin cập nhật JD
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobUpdateRequest'
+      responses:
+        '200': {description: Updated}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    delete:
+      tags: [Jobs]
+      summary: Xóa mềm JD
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      responses:
+        '204': {description: Soft deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /jobs/{id}/status:
+    patch:
+      tags: [Jobs]
+      summary: Đổi trạng thái DRAFT/ACTIVE/CLOSED
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobStatusRequest'
+      responses:
+        '200': {description: Status updated}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /jobs/{id}/criteria:
+    get:
+      tags: [Jobs]
+      summary: Lấy tiêu chí JD đã bóc tách
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      responses:
+        '200': {description: Parsed criteria}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [Jobs]
+      summary: HR review/cập nhật tiêu chí JD
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobCriteriaRequest'
+      responses:
+        '200': {description: Criteria updated and verified}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /jobs/{id}/weights:
+    put:
+      tags: [Jobs]
+      summary: Cập nhật trọng số matching
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WeightsRequest'
+      responses:
+        '200': {description: Weights updated}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /matching/calculate:
+    post:
+      tags: [Matching]
+      summary: Trigger single/batch CV-JD matching
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MatchCalculateRequest'
+      responses:
+        '202':
+          description: Match tasks accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchCalculateResponse'
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /matching/{match_id}:
+    get:
+      tags: [Matching]
+      summary: Lấy trạng thái/kết quả matching
+      parameters:
+        - {$ref: '#/components/parameters/MatchUuid'}
+      responses:
+        '200':
+          description: Match result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchResponse'
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /matching/{match_id}/gap-analysis:
+    get:
+      tags: [Matching]
+      summary: Phân tích Skill Gap
+      parameters:
+        - {$ref: '#/components/parameters/MatchUuid'}
+      responses:
+        '200': {description: Skill gap analysis}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {description: Match is not completed}
+
+  /jobs/{id}/leaderboard:
+    get:
+      tags: [Matching]
+      summary: Leaderboard ứng viên cho JD
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+        - {$ref: '#/components/parameters/Page'}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+        - name: min_score
+          in: query
+          schema: {type: number, minimum: 0, maximum: 100}
+      responses:
+        '200': {description: Ranked completed matches}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /jobs/{id}/export:
+    get:
+      tags: [Matching]
+      summary: Xuất báo cáo PDF/Excel (advanced)
+      parameters:
+        - {$ref: '#/components/parameters/UuidId'}
+        - name: format
+          in: query
+          required: true
+          schema: {type: string, enum: [pdf, excel]}
+      responses:
+        '200': {description: Binary report}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    RefreshCookie:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+
+  parameters:
+    UuidId:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    MatchUuid:
+      name: match_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    Page:
+      name: page
+      in: query
+      schema: {type: integer, minimum: 1, default: 1}
+    Limit20:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+
+  responses:
+    Unauthorized:
+      description: Authentication required or invalid
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    Forbidden:
+      description: Authenticated but not allowed
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    NotFound:
+      description: Resource not found or intentionally hidden by authorization policy
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    Conflict:
+      description: Unique/conflict error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    ValidationError:
+      description: Validation or business precondition error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  schemas:
+    Role:
+      type: string
+      enum: [CANDIDATE, HR, ADMIN]
+    ParsingStatus:
+      type: string
+      enum: [PENDING, PROCESSING, PARSED, FAILED]
+    JobStatus:
+      type: string
+      enum: [DRAFT, ACTIVE, CLOSED]
+    MatchStatus:
+      type: string
+      enum: [PENDING, PROCESSING, COMPLETED, FAILED]
+
+    ErrorResponse:
+      type: object
+      required: [success, error]
+      properties:
+        success: {type: boolean, example: false}
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {nullable: true}
+
+    User:
+      type: object
+      required: [id, email, full_name, role, is_active]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string, format: email}
+        full_name: {type: string}
+        phone_number: {type: string, nullable: true}
+        role: {$ref: '#/components/schemas/Role'}
+        is_active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    RegisterRequest:
+      type: object
+      required: [email, password, full_name, role]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, minLength: 8}
+        full_name: {type: string, minLength: 1, maxLength: 100}
+        phone_number: {type: string, nullable: true, maxLength: 20}
+        role:
+          type: string
+          enum: [CANDIDATE, HR]
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string}
+
+    LoginResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, example: true}
+        data:
+          type: object
+          required: [access_token, token_type, expires_in, user]
+          properties:
+            access_token: {type: string}
+            token_type: {type: string, example: Bearer}
+            expires_in: {type: integer, example: 900}
+            user: {$ref: '#/components/schemas/User'}
+
+    TokenRefreshResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, example: true}
+        data:
+          type: object
+          properties:
+            access_token: {type: string}
+            token_type: {type: string, example: Bearer}
+            expires_in: {type: integer, example: 900}
+
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: {type: string}
+        new_password: {type: string, minLength: 8}
+
+    UserUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        full_name: {type: string, minLength: 1, maxLength: 100}
+        phone_number: {type: string, nullable: true, maxLength: 20}
+
+    AdminUserPatchRequest:
+      type: object
+      minProperties: 1
+      properties:
+        is_active: {type: boolean}
+        role: {$ref: '#/components/schemas/Role'}
+
+    UserResponseEnvelope:
+      type: object
+      properties:
+        success: {type: boolean, example: true}
+        data: {$ref: '#/components/schemas/User'}
+
+    CandidateProfileInput:
+      type: object
+      properties:
+        full_name: {type: string, nullable: true, maxLength: 150}
+        email: {type: string, format: email, nullable: true}
+        phone_number: {type: string, nullable: true, maxLength: 30}
+        current_title: {type: string, nullable: true, maxLength: 150}
+        location: {type: string, nullable: true, maxLength: 150}
+        linkedin_url: {type: string, nullable: true, maxLength: 500}
+        github_url: {type: string, nullable: true, maxLength: 500}
+        professional_summary: {type: string, nullable: true}
+
+    ResumeSkillInput:
+      type: object
+      required: [skill_id]
+      properties:
+        skill_id: {type: integer}
+        years_of_experience: {type: number, minimum: 0, nullable: true}
+        proficiency_level: {type: string, nullable: true, maxLength: 30}
+
+    ExperienceInput:
+      type: object
+      required: [company_name, job_title]
+      properties:
+        company_name: {type: string, maxLength: 150}
+        job_title: {type: string, maxLength: 150}
+        start_date: {type: string, format: date, nullable: true}
+        end_date: {type: string, format: date, nullable: true}
+        is_current: {type: boolean, default: false}
+        description: {type: string, nullable: true}
+
+    EducationInput:
+      type: object
+      required: [institution_name]
+      properties:
+        institution_name: {type: string, maxLength: 150}
+        degree: {type: string, nullable: true, maxLength: 100}
+        field_of_study: {type: string, nullable: true, maxLength: 150}
+        start_year: {type: integer, nullable: true}
+        graduation_year: {type: integer, nullable: true}
+        gpa: {type: number, nullable: true}
+        description: {type: string, nullable: true}
+
+    ResumeParsedDataUpdate:
+      type: object
+      required: [candidate_profile, skills, experiences, educations]
+      properties:
+        candidate_profile: {$ref: '#/components/schemas/CandidateProfileInput'}
+        skills:
+          type: array
+          items: {$ref: '#/components/schemas/ResumeSkillInput'}
+        experiences:
+          type: array
+          items: {$ref: '#/components/schemas/ExperienceInput'}
+        educations:
+          type: array
+          items: {$ref: '#/components/schemas/EducationInput'}
+
+    ResumeUploadResponse:
+      type: object
+      properties:
+        success: {type: boolean, example: true}
+        data:
+          type: object
+          properties:
+            resume_id: {type: string, format: uuid}
+            file_name: {type: string}
+            file_size: {type: integer}
+            parsing_status: {$ref: '#/components/schemas/ParsingStatus'}
+
+    ResumeStatusResponse:
+      type: object
+      properties:
+        success: {type: boolean, example: true}
+        data:
+          type: object
+          properties:
+            resume_id: {type: string, format: uuid}
+            parsing_status: {$ref: '#/components/schemas/ParsingStatus'}
+            parsed_at: {type: string, format: date-time, nullable: true}
+            error_message: {type: string, nullable: true}
+
+    ResumeDetailResponse:
+      type: object
+      description: Envelope chứa resume metadata, candidate_profile, skills, experiences, educations theo API Contract.
+      properties:
+        success: {type: boolean, example: true}
+        data: {type: object}
+
+    JobCreateRequest:
+      type: object
+      required: [title, job_level, raw_content]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        job_level: {type: string, minLength: 1, maxLength: 50}
+        location: {type: string, nullable: true, maxLength: 150}
+        raw_content: {type: string, minLength: 1}
+        min_experience_years: {type: number, minimum: 0, default: 0}
+        education_requirement: {type: string, nullable: true, maxLength: 255}
+        w_skill: {type: number, minimum: 0, maximum: 1, default: 0.5}
+        w_semantic: {type: number, minimum: 0, maximum: 1, default: 0.3}
+        w_experience: {type: number, minimum: 0, maximum: 1, default: 0.2}
+
+    JobUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        title: {type: string, maxLength: 200}
+        job_level: {type: string, maxLength: 50}
+        location: {type: string, nullable: true, maxLength: 150}
+        raw_content: {type: string, minLength: 1}
+        min_experience_years: {type: number, minimum: 0}
+        education_requirement: {type: string, nullable: true, maxLength: 255}
+
+    JobCreateResponse:
+      type: object
+      properties:
+        success: {type: boolean, example: true}
+        data:
+          type: object
+          properties:
+            job_id: {type: string, format: uuid}
+            status: {$ref: '#/components/schemas/JobStatus'}
+            parsing_status: {$ref: '#/components/schemas/ParsingStatus'}
+
+    JobStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status: {$ref: '#/components/schemas/JobStatus'}
+
+    JobSkillCriterion:
+      type: object
+      required: [skill_id, importance]
+      properties:
+        skill_id: {type: integer}
+        importance: {type: string, enum: [MANDATORY, OPTIONAL]}
+        min_years_required: {type: number, minimum: 0, default: 0}
+
+    JobCriteriaRequest:
+      type: object
+      required: [skills]
+      properties:
+        min_experience_years: {type: number, minimum: 0}
+        education_requirement: {type: string, nullable: true, maxLength: 255}
+        skills:
+          type: array
+          items: {$ref: '#/components/schemas/JobSkillCriterion'}
+
+    WeightsRequest:
+      type: object
+      required: [w_skill, w_semantic, w_experience]
+      properties:
+        w_skill: {type: number, minimum: 0, maximum: 1}
+        w_semantic: {type: number, minimum: 0, maximum: 1}
+        w_experience: {type: number, minimum: 0, maximum: 1}
+        recalculate: {type: boolean, default: false}
+
+    MatchCalculateRequest:
+      type: object
+      required: [job_id, resume_ids]
+      properties:
+        job_id: {type: string, format: uuid}
+        resume_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, format: uuid}
+
+    MatchCalculateResponse:
+      type: object
+      properties:
+        success: {type: boolean, example: true}
+        data:
+          type: object
+          properties:
+            job_id: {type: string, format: uuid}
+            match_ids:
+              type: array
+              items: {type: string, format: uuid}
+            total_jobs: {type: integer}
+            status: {type: string, example: QUEUED}
+
+    MatchResponse:
+      type: object
+      properties:
+        success: {type: boolean, example: true}
+        data:
+          type: object
+          properties:
+            id: {type: string, format: uuid}
+            job_id: {type: string, format: uuid}
+            resume_id: {type: string, format: uuid}
+            status: {$ref: '#/components/schemas/MatchStatus'}
+            overall_score: {type: number, minimum: 0, maximum: 100, nullable: true}
+            skill_score: {type: number, minimum: 0, maximum: 100, nullable: true}
+            semantic_score: {type: number, minimum: 0, maximum: 100, nullable: true}
+            experience_score: {type: number, minimum: 0, maximum: 100, nullable: true}
+            algorithm_version: {type: string}
+            calculated_at: {type: string, format: date-time, nullable: true}
