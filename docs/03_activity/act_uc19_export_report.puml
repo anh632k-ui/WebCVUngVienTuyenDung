@@ -1,0 +1,24 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC19 XUẤT BÁO CÁO [ADVANCED]
+
+start
+:HR chọn JD và định dạng PDF/Excel;
+:GET /api/v1/jobs/{id}/export?format=...;
+:Backend kiểm HR sở hữu JD hoặc Admin;
+if (Có quyền?) then (Có)
+  :Load leaderboard COMPLETED
+  + component scores + skill gaps;
+  if (format=excel?) then (Có)
+    :Sinh workbook bằng openpyxl;
+  else (PDF)
+    :Sinh PDF bằng thư viện báo cáo;
+  endif
+  :Stream file với Content-Type/Content-Disposition;
+else (Không)
+  :404/403;
+endif
+stop
+@enduml
