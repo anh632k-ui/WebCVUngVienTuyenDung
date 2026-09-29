@@ -1,55 +1,70 @@
 # IMPLEMENTATION GATE — ĐIỀU KIỆN CHO PHÉP BẮT ĐẦU CODE
 
-Không chuyển sang ORM/Auth/CRUD cho đến khi tất cả mục dưới đây đạt.
+Trạng thái sau audit thiết kế trên branch `pttk-sync-v2`.
 
 ## A. Requirements
 
-- [ ] Scope/MVP/Advanced rõ ràng.
-- [ ] Actor Candidate/HR/Admin không chồng quyền mâu thuẫn.
-- [ ] Ownership CV/JD/Match được định nghĩa.
-- [ ] Business rules có mã BR và không mâu thuẫn API/schema.
-- [ ] State model khớp CHECK constraint.
+- [x] Scope/MVP/Advanced rõ ràng.
+- [x] Actor Candidate/HR/Admin không chồng quyền mâu thuẫn.
+- [x] Ownership CV/JD/Match được định nghĩa.
+- [x] Business rules có mã BR và đồng bộ với API/schema.
+- [x] State model khớp CHECK constraint.
 
 ## B. UML
 
-- [ ] BFD phản ánh đủ các phân hệ chính.
-- [ ] Use Case overview và phân hệ dùng cùng UC ID.
-- [ ] Đặc tả Use Case có precondition/postcondition/exception cho luồng quan trọng.
-- [ ] Activity không tham chiếu endpoint/table/field không tồn tại.
-- [ ] Sequence không mô tả component trái kiến trúc tổng thể.
-- [ ] PlantUML không còn lỗi cú pháp kiểu `@endumlx`.
+- [x] BFD phản ánh đủ các phân hệ chính.
+- [x] Use Case overview và phân hệ dùng cùng UC ID.
+- [x] Đặc tả Use Case có precondition/postcondition/exception cho luồng quan trọng.
+- [x] Activity không còn tham chiếu endpoint/table/field legacy không tồn tại.
+- [x] Sequence dùng cùng component/lifecycle với kiến trúc tổng thể.
+- [x] Static source audit không còn lỗi `@endumlx`; các file mới có cặp `@startuml`/`@enduml`.
+- [ ] Render toàn bộ PlantUML trên máy phát triển/CI để xác nhận trình render thực tế.
 
 ## C. Database
 
-- [ ] CDM -> LDM -> PDM -> ERD cùng cardinality logic.
-- [ ] `schema.sql` có đúng 10 bảng canonical.
-- [ ] Data Dictionary khớp tên field/enum với schema.
-- [ ] `match_results` cho phép score NULL khi PENDING/PROCESSING.
-- [ ] `candidate_profiles` tồn tại và là 1:1 với resume.
-- [ ] `job_descriptions` có parsing state tách business status.
-- [ ] HNSW index dùng `vector_cosine_ops` trên 2 embedding.
+- [x] CDM -> LDM -> PDM -> ERD dùng cùng mô hình 10 bảng/cardinality.
+- [x] `schema.sql` có đúng 10 bảng canonical.
+- [x] Data Dictionary khớp naming/enum/invariant của schema.
+- [x] `match_results` cho phép score NULL khi PENDING/PROCESSING.
+- [x] `candidate_profiles` tồn tại và là 1:1 với resume.
+- [x] `job_descriptions` có parsing state tách business status.
+- [x] JD ACTIVE yêu cầu PARSED + criteria verified.
+- [x] HNSW index dùng `vector_cosine_ops` trên 2 embedding.
+- [ ] Chạy `schema.sql` thật trên PostgreSQL 18 + pgvector sau khi PR được duyệt.
 
 ## D. API
 
-- [ ] API Contract và OpenAPI có cùng route set.
-- [ ] Matching chỉ có `/matching/calculate` cho single/batch.
-- [ ] API dùng `owner_user_id`, `importance`, `skill_kind` đúng naming canonical.
-- [ ] Refresh token HttpOnly do backend Set-Cookie.
-- [ ] Candidate không được gọi leaderboard.
-- [ ] HR owner check áp dụng cho JD/leaderboard/weights/criteria.
+- [x] API Contract và OpenAPI có cùng route set canonical.
+- [x] Matching chỉ có `/matching/calculate` cho trigger single/batch.
+- [x] Có `GET /matching` để truy hồi lịch sử kết quả theo ownership.
+- [x] Có `GET /skills` làm nguồn taxonomy cho Human-in-the-loop.
+- [x] API dùng `owner_user_id`, `importance`, `skill_kind` đúng naming canonical.
+- [x] Refresh token HttpOnly do backend `Set-Cookie`.
+- [x] Candidate không được gọi leaderboard.
+- [x] HR owner check áp dụng cho JD/leaderboard/weights/criteria.
+- [x] OpenAPI YAML đã qua parse/static local `$ref` check trong quá trình audit.
 
 ## E. Traceability
 
-- [ ] Mọi UC có FR liên quan.
-- [ ] Mọi route nghiệp vụ chính truy được về UC.
-- [ ] Mọi bảng chính có ít nhất một chức năng sử dụng hợp lệ.
-- [ ] Không có field PDM chỉ xuất hiện vì code cũ.
+- [x] Mọi UC có FR liên quan.
+- [x] Mọi route nghiệp vụ chính truy được về UC/support requirement.
+- [x] Mọi bảng chính có chức năng sử dụng hợp lệ.
+- [x] Không giữ field legacy chỉ vì code/database cũ.
+- [x] Advanced features được đánh dấu, không coi là đã code.
 
-## F. Database deployment
+## F. Review & Database deployment
 
-- [ ] User duyệt PR PTTK.
-- [ ] Xác nhận DB cũ không cần giữ dữ liệu.
+- [ ] User duyệt/merge Pull Request PTTK.
+- [ ] Xác nhận lần cuối DB cũ không có dữ liệu cần giữ.
 - [ ] Reset DB và chạy `schema.sql` mới.
-- [ ] Verify extension/table/FK/check/index.
+- [ ] Verify extensions, 10 tables, FK, CHECK constraints, indexes, HNSW.
 
-Khi toàn bộ checklist được audit đạt, trạng thái PTTK chuyển từ `DESIGN_REBUILD` sang `DESIGN_LOCKED`, sau đó mới code.
+## Kết luận gate
+
+Phần **thiết kế nội bộ** đạt trạng thái `DESIGN_LOCKED_FOR_REVIEW`. Chưa chuyển sang `IMPLEMENTATION_READY` cho đến khi:
+
+1. Pull Request được user review/merge;
+2. PlantUML được render thử;
+3. `schema.sql` chạy thành công trên PostgreSQL 18 + pgvector và verification pass.
+
+Sau ba điều kiện trên mới bắt đầu venv -> database connection -> SQLAlchemy ORM -> Auth.
