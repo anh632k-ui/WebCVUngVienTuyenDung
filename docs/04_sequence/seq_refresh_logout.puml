@@ -1,0 +1,49 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title SEQUENCE - REFRESH TOKEN ROTATION & LOGOUT
+
+actor User
+participant "Next.js" as FE
+participant "FastAPI Auth API" as API
+participant "Auth Service" as Service
+participant "Security/JWT" as Sec
+database "Redis" as Redis
+
+== Refresh ==
+FE -> API : POST /api/v1/auth/refresh\n(HttpOnly Cookie tự gửi bởi browser)
+API -> Service : refresh(cookie_token)
+Service -> Sec : verify signature/claims
+Sec --> Service : session_id + user_id / invalid
+alt invalid token
+  Service --> API : Unauthorized
+  API --> FE : 401
+else signature valid
+  Service -> Redis : lookup session + revoked state
+  alt session missing/revoked/replay
+    Redis --> Service : invalid
+    Service -> Redis : revoke user sessions if replay policy triggers
+    Service --> API : Unauthorized
+    API --> FE : 401 + clear cookie if needed
+  else valid session
+    Redis --> Service : valid
+    Service -> Redis : revoke old session/token-id
+    Service -> Sec : create new access + refresh
+    Sec --> Service : token pair
+    Service -> Redis : store new hashed refresh/session
+    Service --> API : new tokens
+    API --> FE : 200 + access_token\nSet-Cookie HttpOnly new refresh
+  end
+end
+
+== Logout ==
+User -> FE : Logout
+FE -> API : POST /api/v1/auth/logout
+API -> Service : revoke current refresh session
+Service -> Redis : revoke/delete session
+Redis --> Service : OK
+Service --> API : done
+API --> FE : 204 + clear refresh cookie
+
+@enduml
