@@ -23,15 +23,21 @@ if (User chọn một CV?) then (Có)
   endif
 endif
 
+if (User cần thêm/thay skill?) then (Có)
+  :GET /api/v1/skills?keyword&skill_kind&category;
+  :Chọn skill_id từ taxonomy chuẩn;
+endif
+
 if (User chỉnh dữ liệu đã bóc tách?) then (Có)
   :PUT /api/v1/resumes/{id}/parsed-data;
-  :Validate payload;
+  :Validate payload + skill IDs + dates;
   :BEGIN TRANSACTION;
   :Update candidate_profile;
-  :Replace/Upsert skills;
-  :Replace experiences/educations;
+  :Replace/Upsert resume_skills;
+  :Replace resume_experiences/educations;
   :UPDATE resumes is_manually_edited=true,
   updated_at=NOW();
+  :Rebuild resume_embedding nếu dữ liệu dùng cho embedding thay đổi;
   :COMMIT;
   :200 OK;
 endif
