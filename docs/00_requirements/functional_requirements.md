@@ -48,3 +48,8 @@
 
 - **FR-33**: Nếu tích hợp LLM/XAI, hệ thống tạo tóm tắt/gợi ý dựa trên score + matched/missing skills; output này không sửa score cốt lõi.
 - **FR-34**: Hệ thống hỗ trợ thu thập kết quả thực nghiệm trên tập CV/JD mẫu để đánh giá MAE, Pearson, NDCG@K, Precision@K khi có ground truth phù hợp.
+
+## Nhóm F — Chức năng hỗ trợ dùng chung
+
+- **FR-35**: Candidate/HR/Admin có thể tra cứu Skill Taxonomy theo từ khóa, loại HARD/SOFT và category để phục vụ Human-in-the-loop cho CV/JD; taxonomy không được hard-code thành hai bản khác nhau giữa frontend và backend.
+- **FR-36**: Candidate/HR/Admin có thể xem lịch sử kết quả matching trong phạm vi ownership của mình; Candidate chỉ thấy match của CV mình, HR chỉ thấy match của JD mình, Admin có quyền quản trị toàn bộ.
