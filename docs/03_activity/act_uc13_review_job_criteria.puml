@@ -1,0 +1,36 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC13 RÀ SOÁT TIÊU CHÍ JD
+
+start
+:HR mở trang Criteria của JD;
+:GET /api/v1/jobs/{id}/criteria;
+:Backend kiểm HR sở hữu JD hoặc Admin;
+if (Có quyền?) then (Có)
+  :Trả min experience, education,
+  danh sách job_skills;
+else (Không)
+  :404/403;
+  stop
+endif
+
+:HR chỉnh min experience/education;
+:HR thêm/xóa skill;
+:HR chuyển MANDATORY <-> OPTIONAL;
+:HR chỉnh min_years_required;
+:PUT /api/v1/jobs/{id}/criteria;
+:Backend validate skill IDs + duplicate + values;
+:BEGIN TRANSACTION;
+:Update JD criteria fields;
+:Replace/upsert job_skills;
+:SET is_criteria_verified=true;
+:COMMIT;
+:200 OK;
+
+if (Criteria thay đổi ảnh hưởng match cũ?) then (Có)
+  :Đánh dấu/queue recalculate theo policy;
+endif
+stop
+@enduml
