@@ -1,0 +1,82 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+
+title SYSTEM ARCHITECTURE - WEBCVUNGVIENTUYENDUNG
+
+node "Client" {
+  [Candidate Browser] as Candidate
+  [HR Browser] as HR
+  [Admin Browser] as Admin
+}
+
+package "Presentation Layer" {
+  [Next.js App Router\nTypeScript + Tailwind CSS] as Frontend
+  [HTTP API Client] as HttpClient
+  Frontend --> HttpClient
+}
+
+package "Application Layer - FastAPI" {
+  [API v1 Router] as Router
+  [Auth / RBAC / Ownership Dependencies] as Security
+  [User Service] as UserService
+  [Resume Service] as ResumeService
+  [Job Service] as JobService
+  [Matching Service] as MatchService
+  [Task Dispatcher] as Dispatcher
+
+  Router --> Security
+  Router --> UserService
+  Router --> ResumeService
+  Router --> JobService
+  Router --> MatchService
+  ResumeService --> Dispatcher
+  JobService --> Dispatcher
+  MatchService --> Dispatcher
+}
+
+package "AI / NLP & Background Processing" {
+  [Celery Worker\n(or development fallback)] as Worker
+  [Text Extractor\npdfplumber/python-docx] as Extractor
+  [OCR Adapter\noptional] as OCR
+  [Entity / Section Extractor] as Entity
+  [Skill Normalizer] as Normalizer
+  [Embedding Service\nbge-m3 / 1024 dims] as Embedding
+  [BM25 Adapter\noptional lexical signal] as BM25
+  [Hybrid Matching Engine] as Matching
+  [LLM/XAI Adapter\noptional] as LLM
+
+  Worker --> Extractor
+  Extractor --> OCR : fallback
+  Worker --> Entity
+  Worker --> Normalizer
+  Worker --> Embedding
+  Worker --> Matching
+  Matching --> BM25
+  Matching --> LLM : explanation only
+}
+
+package "Persistence / Infrastructure" {
+  database "PostgreSQL 18 + pgvector" as DB
+  database "Redis\nTask broker + refresh session [optional by feature]" as Redis
+  folder "CV File Storage" as Storage
+}
+
+Candidate --> Frontend : HTTPS
+HR --> Frontend : HTTPS
+Admin --> Frontend : HTTPS
+HttpClient --> Router : REST/JSON
+
+UserService --> DB
+ResumeService --> DB
+JobService --> DB
+MatchService --> DB
+ResumeService --> Storage
+Worker --> Storage
+Worker --> DB
+Dispatcher --> Redis : Celery broker when enabled
+Redis --> Worker
+Security --> Redis : refresh session/revoke when enabled
+
+@enduml
