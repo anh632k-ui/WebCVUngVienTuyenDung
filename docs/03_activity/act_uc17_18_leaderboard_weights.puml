@@ -1,0 +1,38 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC17 LEADERBOARD & UC18 CẤU HÌNH TRỌNG SỐ
+
+start
+:HR mở leaderboard của JD;
+:GET /api/v1/jobs/{id}/leaderboard;
+:Backend kiểm recruiter_id=current_user
+hoặc Admin;
+if (Có quyền?) then (Có)
+  :Query match_results status=COMPLETED;
+  :Filter min_score nếu có;
+  :ORDER BY overall_score DESC;
+  :Trả rank + scores + candidate summary;
+else (Không)
+  :404/403;
+  stop
+endif
+
+if (HR chỉnh trọng số?) then (Có)
+  :Nhập w_skill, w_semantic, w_experience;
+  :PUT /api/v1/jobs/{id}/weights;
+  if (Mỗi weight trong [0,1]
+và tổng=1.00?) then (Có)
+    :UPDATE job_descriptions weights;
+    if (Chọn tính lại?) then (Có)
+      :Đưa match hiện có về PENDING;
+      :Queue recalculate;
+    endif
+    :200 OK;
+  else (Không)
+    :422 Validation Error;
+  endif
+endif
+stop
+@enduml
