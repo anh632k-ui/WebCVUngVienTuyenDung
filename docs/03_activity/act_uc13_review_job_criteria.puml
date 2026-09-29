@@ -17,6 +17,10 @@ else (Không)
 endif
 
 :HR chỉnh min experience/education;
+if (HR cần thêm skill?) then (Có)
+  :GET /api/v1/skills?keyword&skill_kind&category;
+  :Chọn skill_id từ taxonomy chuẩn;
+endif
 :HR thêm/xóa skill;
 :HR chuyển MANDATORY <-> OPTIONAL;
 :HR chỉnh min_years_required;
