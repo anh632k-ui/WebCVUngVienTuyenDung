@@ -58,7 +58,7 @@ HR --> UC10
 UC07 ..> UC08 : <<include>>
 
 HR --> UC11
-UC11 ..> UC12 : <<include>>
+UC12 ..> UC11 : <<extend>>\n[tạo mới hoặc raw_content thay đổi]
 HR --> UC13
 Candidate --> UC14
 
