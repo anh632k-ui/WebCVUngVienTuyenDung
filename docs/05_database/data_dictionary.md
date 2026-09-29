@@ -45,6 +45,8 @@ Nguồn vật lý cuối cùng là `schema.sql`. Tài liệu này giải thích 
 | `is_deleted`,`deleted_at` | Soft delete |
 | `parsed_at` | Thời điểm parse thành công |
 
+Khi `parsing_status=PARSED`, schema yêu cầu có `raw_text`, `resume_embedding`, `embedding_model` và `parsed_at`. Khi `is_deleted=true`, phải có `deleted_at`.
+
 ## 4. `candidate_profiles`
 
 Thông tin nghề nghiệp được bóc từ **một CV**, không phải account profile.
@@ -88,7 +90,7 @@ Unique `(resume_id, skill_id)`.
 | `degree` | Bằng cấp |
 | `field_of_study` | Ngành |
 | `start_year`,`graduation_year` | Mốc học tập |
-| `gpa` | Điểm nếu có; không ép thang điểm |
+| `gpa` | Điểm nếu có; không ép một thang điểm duy nhất |
 | `description` | Thông tin bổ sung |
 
 ## 8. `job_descriptions`
@@ -112,7 +114,7 @@ Unique `(resume_id, skill_id)`.
 | `is_deleted`,`deleted_at` | Soft delete |
 | `parsed_at` | Thời điểm parse thành công |
 
-Business status và parsing status là hai state độc lập. JD `ACTIVE` bắt buộc đã `PARSED`.
+Business status và parsing status là hai state độc lập. Khi `parsing_status=PARSED`, schema yêu cầu `job_embedding`, `embedding_model`, `parsed_at`. JD chỉ được `ACTIVE` khi đã `PARSED` **và** `is_criteria_verified=true`. Khi soft-delete phải có `deleted_at`.
 
 ## 9. `job_skills`
 
@@ -142,7 +144,7 @@ Unique `(job_id, skill_id)`.
 | `error_message` | Lỗi tính toán nếu FAILED |
 | `calculated_at` | Chỉ có khi COMPLETED |
 
-Scores được phép NULL trước khi hoàn thành để hỗ trợ asynchronous task lifecycle.
+Scores được phép NULL trước khi hoàn thành để hỗ trợ asynchronous task lifecycle. Khi `status=COMPLETED`, bốn score và `calculated_at` bắt buộc có giá trị.
 
 ## Quy tắc timestamp
 
