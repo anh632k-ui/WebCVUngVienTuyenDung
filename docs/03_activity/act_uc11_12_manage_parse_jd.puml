@@ -22,7 +22,8 @@ else if (Cập nhật JD?) then (Cập nhật)
   :Backend kiểm recruiter_id=current_user hoặc Admin;
   if (raw_content thay đổi?) then (Có)
     :UPDATE metadata;
-    :SET parsing_status=PENDING,
+    :SET status=DRAFT,
+    parsing_status=PENDING,
     is_criteria_verified=false,
     job_embedding=NULL,
     embedding_model=NULL,
