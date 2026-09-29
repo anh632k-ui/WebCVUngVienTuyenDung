@@ -6,7 +6,8 @@ title ACTIVITY - UC11 QUẢN LÝ JD & UC12 PHÂN TÍCH JD
 
 start
 :HR mở màn hình quản lý JD;
-if (Tạo JD mới?) then (Có)
+
+if (HR chọn thao tác?) then (Tạo JD)
   :Nhập title, level, location, raw_content,
   min experience và weights;
   :POST /api/v1/jobs;
@@ -15,19 +16,47 @@ if (Tạo JD mới?) then (Có)
   status=DRAFT, parsing_status=PENDING;
   :Kích hoạt JD parse task;
   :201 Created;
-else (Cập nhật JD)
+
+else if (Cập nhật JD?) then (Cập nhật)
   :PUT /api/v1/jobs/{id};
   :Backend kiểm recruiter_id=current_user hoặc Admin;
   if (raw_content thay đổi?) then (Có)
     :UPDATE metadata;
     :SET parsing_status=PENDING,
     is_criteria_verified=false,
-    job_embedding=NULL;
+    job_embedding=NULL,
+    embedding_model=NULL,
+    parsed_at=NULL;
     :Kích hoạt parse lại;
+    :200 OK;
   else (Không)
     :UPDATE metadata;
+    :200 OK;
+    stop
   endif
-  :200 OK;
+
+else if (Đổi trạng thái?) then (Status)
+  :PATCH /api/v1/jobs/{id}/status;
+  :Backend kiểm ownership/Admin;
+  if (status mới = ACTIVE?) then (Có)
+    if (JD PARSED và is_criteria_verified=true?) then (Có)
+      :UPDATE status=ACTIVE;
+      :200 OK;
+    else (Không)
+      :422 JD chưa sẵn sàng công bố;
+    endif
+  else (DRAFT/CLOSED)
+    :UPDATE status;
+    :200 OK;
+  endif
+  stop
+
+else (Xóa JD)
+  :DELETE /api/v1/jobs/{id};
+  :Backend kiểm ownership/Admin;
+  :SET is_deleted=true, deleted_at=NOW();
+  :204 No Content;
+  stop
 endif
 
 :Worker nhận job_id cần parse;
@@ -37,7 +66,7 @@ endif
 :Trích skills;
 :Map Skill Taxonomy;
 :Phân loại MANDATORY/OPTIONAL;
-:Sinh job_embedding;
+:Sinh job_embedding + embedding_model;
 if (Phân tích thành công?) then (Có)
   :BEGIN TRANSACTION;
   :Replace job_skills;
