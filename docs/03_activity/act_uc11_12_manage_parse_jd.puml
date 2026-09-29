@@ -1,0 +1,52 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC11 QUẢN LÝ JD & UC12 PHÂN TÍCH JD
+
+start
+:HR mở màn hình quản lý JD;
+if (Tạo JD mới?) then (Có)
+  :Nhập title, level, location, raw_content,
+  min experience và weights;
+  :POST /api/v1/jobs;
+  :Backend kiểm HR/Admin + validate tổng weights=1;
+  :INSERT job_descriptions
+  status=DRAFT, parsing_status=PENDING;
+  :Kích hoạt JD parse task;
+  :201 Created;
+else (Cập nhật JD)
+  :PUT /api/v1/jobs/{id};
+  :Backend kiểm recruiter_id=current_user hoặc Admin;
+  if (raw_content thay đổi?) then (Có)
+    :UPDATE metadata;
+    :SET parsing_status=PENDING,
+    is_criteria_verified=false,
+    job_embedding=NULL;
+    :Kích hoạt parse lại;
+  else (Không)
+    :UPDATE metadata;
+  endif
+  :200 OK;
+endif
+
+:Worker nhận job_id cần parse;
+:UPDATE parsing_status=PROCESSING;
+:Normalize + section JD;
+:Trích min experience và education requirement;
+:Trích skills;
+:Map Skill Taxonomy;
+:Phân loại MANDATORY/OPTIONAL;
+:Sinh job_embedding;
+if (Phân tích thành công?) then (Có)
+  :BEGIN TRANSACTION;
+  :Replace job_skills;
+  :UPDATE JD parsed fields,
+  parsing_status=PARSED, parsed_at=NOW();
+  :COMMIT;
+else (Không)
+  :UPDATE parsing_status=FAILED,
+  parsing_error_message;
+endif
+stop
+@enduml
