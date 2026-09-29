@@ -1,0 +1,43 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+
+title STATE MODELS - CV / JD / MATCHING
+
+state "Resume Parsing" as Resume {
+  [*] --> PENDING
+  PENDING --> PROCESSING : worker nhận task
+  PROCESSING --> PARSED : parse thành công
+  PROCESSING --> FAILED : parse lỗi
+  FAILED --> PENDING : retry
+  PARSED --> PENDING : re-parse thủ công/nâng cấp pipeline
+}
+
+state "Job Parsing" as JobParsing {
+  [*] --> J_PENDING
+  J_PENDING --> J_PROCESSING : worker nhận task
+  J_PROCESSING --> J_PARSED : parse thành công
+  J_PROCESSING --> J_FAILED : parse lỗi
+  J_FAILED --> J_PENDING : retry
+  J_PARSED --> J_PENDING : raw_content thay đổi
+}
+
+state "Job Business Status" as JobBusiness {
+  [*] --> DRAFT
+  DRAFT --> ACTIVE : HR publish
+  ACTIVE --> CLOSED : HR đóng tuyển
+  CLOSED --> ACTIVE : HR mở lại
+  ACTIVE --> DRAFT : HR unpublish nếu chưa cần công khai
+}
+
+state "Match Lifecycle" as Matching {
+  [*] --> M_PENDING
+  M_PENDING --> M_PROCESSING : worker nhận task
+  M_PROCESSING --> M_COMPLETED : tính điểm thành công
+  M_PROCESSING --> M_FAILED : lỗi
+  M_FAILED --> M_PENDING : retry/recalculate
+  M_COMPLETED --> M_PENDING : thay criteria/weights hoặc yêu cầu recalculate
+}
+
+@enduml
