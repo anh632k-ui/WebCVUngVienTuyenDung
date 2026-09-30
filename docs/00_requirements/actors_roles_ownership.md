@@ -39,12 +39,13 @@ Quyền:
 - Điều chỉnh trọng số matching cho JD của mình.
 - Upload CV vào kho tuyển dụng của chính mình nếu HR thu thập CV bên ngoài.
 - Quản lý các CV do chính HR upload.
-- Chạy matching hàng loạt giữa JD của mình và các CV mà HR có quyền truy cập.
-- Xem leaderboard cho JD của mình.
-- Xem Skill Gap/chi tiết kết quả thuộc JD của mình.
+- Chạy matching hàng loạt giữa JD của mình và CV thuộc kho của chính mình trong MVP.
+- Xem kết quả/Skill Gap/leaderboard chỉ đối với các Match mà JD thuộc HR **và** CV cũng thuộc kho HR trong MVP.
 - Xuất báo cáo nếu module nâng cao được bật.
 
 Không có quyền:
+- Đọc CV cá nhân của Candidate khác chỉ vì Candidate đã self-match với JD của HR.
+- Xem Match private của Candidate nếu chưa có quy trình nộp đơn/chia sẻ CV hợp lệ.
 - Sửa JD của HR khác.
 - Quản trị role/trạng thái tài khoản toàn hệ thống.
 
@@ -80,13 +81,19 @@ Celery Worker, Redis, PostgreSQL, pgvector, NLP model, OCR và LLM **không ph�
 - Candidate chỉ xem JD công khai khi `status = ACTIVE` và `is_deleted = false`.
 
 ### Matching
-Một Match hợp lệ khi người gọi có quyền với cả phía CV và JD theo từng vai trò:
+Một Match có thể được tạo khi người gọi có quyền với cả CV và JD theo vai trò:
 
 - Candidate: CV phải thuộc Candidate; JD phải `ACTIVE`.
-- HR: JD phải thuộc HR; CV phải thuộc kho HR hoặc thuộc nguồn truy cập hợp lệ được thiết kế sau này.
+- HR: JD phải thuộc HR; CV phải thuộc kho HR trong MVP.
 - Admin: toàn quyền vận hành.
 
-Trong phiên bản đồ án hiện tại chưa thiết kế quy trình nộp đơn (`applications`). Vì vậy HR không mặc nhiên được đọc CV cá nhân của Candidate khác chỉ vì CV tồn tại trong hệ thống.
+Quyền **đọc kết quả** được siết chặt để tránh rò rỉ CV:
+
+- Candidate: xem Match nếu `match.resume_id` thuộc Candidate.
+- HR: xem Match/Skill Gap/Leaderboard chỉ khi `match.job_id` thuộc HR **và** `match.resume_id` cũng thuộc kho CV của HR.
+- Admin: toàn quyền.
+
+Trong phiên bản đồ án hiện tại chưa thiết kế quy trình nộp đơn (`applications`) hoặc cơ chế Candidate chia sẻ CV cho HR. Vì vậy một Candidate self-match với JD của HR **không tạo quyền đọc CV/kết quả cho HR**. Nếu sau này thêm `applications`, quyền này phải được thiết kế lại rõ ràng trong PTTK trước khi code.
 
 ## 4. Nguyên tắc chống BOLA/IDOR
 
