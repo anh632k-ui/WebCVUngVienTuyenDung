@@ -13,11 +13,15 @@ if (file invalid?) then (Có)
   stop
 endif
 :Derive resume_id deterministic UUIDv5(actor,route,key);
-:Lưu safe storage_key;
-:INSERT Resume PENDING revision=1 nếu chưa tồn tại;
-if (same idempotency key đã tồn tại?) then (Có)
-  :Dùng lại cùng Resume, không tạo duplicate;
+:Lookup deterministic Resume id;
+if (đã tồn tại?) then (Có)
+  :Không ghi đè file/storage;
+  :Best-effort re-dispatch nếu vẫn PENDING;
+  :202 cùng Resume hiện hữu;
+  stop
 endif
+:Put file vào safe storage_key theo no-overwrite/put-if-absent;
+:INSERT Resume PENDING revision=1;
 :COMMIT persistence;
 :Best-effort enqueue parse(resume_id,current_revision);
 if (dispatcher lỗi?) then (Có)
