@@ -1,4 +1,4 @@
-# PTTK REVIEW SUMMARY — POST ROUND 3 RELIABILITY LOCK
+# PTTK REVIEW SUMMARY — RELIABILITY + FINGERPRINT LOCK
 
 Branch `pttk-sync-v2` thay toàn bộ PTTK legacy bằng baseline thống nhất trước khi code.
 
@@ -21,8 +21,14 @@ Branch `pttk-sync-v2` thay toàn bộ PTTK legacy bằng baseline thống nhất
 - CV/JD parse claim exclusive CAS: chỉ `PENDING -> PROCESSING` khi expected revision còn đúng **và resource chưa soft-delete**; terminal chỉ từ PROCESSING cùng revision + not-deleted.
 - Match claim exclusive CAS: PENDING + expected generation/snapshots/linked revisions + linked not-deleted; terminal COMPLETED/FAILED chỉ từ PROCESSING với cùng expected values + linked not-deleted.
 - Duplicate queue delivery cùng revision/generation chỉ một worker claim được; concurrent soft-delete làm terminal CAS fail/rollback.
-- `POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID; server derive deterministic UUIDv5 để retry cùng logical create không tạo duplicate resource.
-- CV retry existing key không overwrite storage; storage create dùng no-overwrite/put-if-absent.
+- `POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID.
+- Stable UUIDv5 namespace canonical: `bd7b1f30-b2de-549c-a8dd-8d742ee5bc12`.
+- Resume/JD persist `create_request_fingerprint` SHA-256; không thêm bảng thứ 11.
+- Resume fingerprint = SHA-256 raw file bytes; Job fingerprint = SHA-256 canonical validated create payload after defaults.
+- Same key + same fingerprint => same resource; same key + different fingerprint => `409 IDEMPOTENCY_KEY_REUSED`.
+- Concurrent deterministic-PK loser re-read persisted row và compare fingerprint.
+- CV storage key canonical `resumes/{resume_id}/source`; create dùng put-if-absent/no-overwrite.
+- Resume storage orphan chỉ được reuse khi SHA-256 object == request fingerprint; mismatch => 409, không overwrite.
 - Resume/JD persistence commit trước parse dispatch. Dispatcher lỗi sau commit giữ resource PENDING.
 - Parse Recovery Sweeper startup/periodic re-dispatch PENDING + not-deleted quá grace window bằng current revision; không tăng revision.
 - Không blind-reset PROCESSING trong MVP nếu chưa có lease/attempt token.
@@ -40,8 +46,14 @@ Branch `pttk-sync-v2` thay toàn bộ PTTK legacy bằng baseline thống nhất
 - Candidate self-match private; HR chỉ xem Match khi JD + CV đều thuộc HR.
 - `hybrid-v1` = Skill + cosine Semantic + Experience; BM25 diagnostic, LLM/XAI explanation only.
 
+## Branch topology
+- `pttk-sync-v2`: canonical branch, head của PR #1.
+- `pttk-sync-v2-r3-work`: ancestor/checkpoint sau review vòng 3.
+- `pttk-sync-v2-safety-copy`: ancestor/checkpoint cũ hơn.
+Hai branch phụ không có commit độc lập cần merge ngược vào canonical branch.
+
 ## CI
-`Validate PTTK` kiểm OpenAPI, Idempotency-Key create contract, response schema, revision/generation/provenance, PlantUML, 10-table schema/seed, exclusive CAS state guards, delete-aware guards, Recovery Sweeper, UUIDv5 idempotency và FR-43/44/45/46 traceability.
+`Validate PTTK` kiểm OpenAPI, Idempotency-Key + 409 fingerprint conflict, stable namespace/fingerprint docs, response schema, revision/generation/provenance, PlantUML, 10-table schema/seed, đúng 2 fingerprint fields/checks, exclusive CAS state guards, delete-aware guards, Recovery Sweeper, Resume orphan reconciliation và FR-43..48 traceability.
 
 Chỉ merge khi CI ở HEAD cuối cùng PASS.
 
@@ -51,7 +63,8 @@ Chỉ merge khi CI ở HEAD cuối cùng PASS.
 3. chạy `docs/05_database/schema.sql`;
 4. chạy `docs/05_database/skill_taxonomy_seed.sql`;
 5. verify extensions/tables/FK/CHECK/index/HNSW/seed;
-6. smoke-test duplicate worker claim, stale revision/generation, soft-delete race, dispatcher recovery và Idempotency-Key retry;
-7. sau đó mới venv -> async DB -> ORM -> Auth MVP -> Skills -> Resume/Job -> AI/NLP -> Matching -> Frontend.
+6. smoke-test duplicate worker claim, stale revision/generation, soft-delete race, dispatcher recovery;
+7. smoke-test same-key same-fingerprint, same-key different-fingerprint 409, concurrent deterministic create và Resume orphan storage reconciliation;
+8. sau đó mới venv -> async DB -> ORM -> Auth MVP -> Skills -> Resume/Job -> AI/NLP -> Matching -> Frontend.
 
 PR này vẫn chưa triển khai business code backend/frontend.
