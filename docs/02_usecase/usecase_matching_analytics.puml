@@ -17,7 +17,7 @@ rectangle "Matching & Analytics" {
   usecase "Semantic/Text Matching" as M2
   usecase "Experience Matching" as M3
   usecase "Tổng hợp Overall Score" as M4
-  usecase "UC16 Xem kết quả & Skill Gap" as UC16
+  usecase "UC16 Xem lịch sử, kết quả\n& Skill Gap" as UC16
   usecase "UC17 Xem leaderboard" as UC17
   usecase "UC18 Cấu hình trọng số" as UC18
   usecase "UC19 Xuất báo cáo [Advanced]" as UC19
@@ -31,7 +31,11 @@ HR --> UC16
 HR --> UC17
 HR --> UC18
 HR --> UC19
+Admin --> UC15
+Admin --> UC16
 Admin --> UC17
+Admin --> UC18
+Admin --> UC19
 
 UC15 ..> M1 : <<include>>
 UC15 ..> M2 : <<include>>
