@@ -10,6 +10,8 @@ Tạo điểm hỗ trợ đánh giá mức độ phù hợp CV–JD theo cách c
 - JD `PARSED`, chưa soft-delete, `is_criteria_verified=true` và có ít nhất một `job_skill` hợp lệ; Candidate chỉ match JD `ACTIVE`.
 - CV/JD embedding phải tồn tại, cùng `embedding_model` và cùng dimension.
 - Trọng số JD hợp lệ: `w_skill + w_semantic + w_experience = 1`.
+- Candidate chỉ dùng CV của chính mình.
+- HR chỉ dùng JD của mình và CV thuộc kho HR trong MVP.
 
 Nếu một tiền điều kiện không đạt, service trả lỗi nghiệp vụ/`422` thay vì tạo một điểm giả định.
 
@@ -98,19 +100,51 @@ Nếu CV có skill nhưng `years_of_experience < min_years_required` và cả ha
 
 `matched_skills` và `missing_skills` lưu snapshot JSON tại thời điểm tính để kết quả có thể giải thích ngay cả khi taxonomy/JD thay đổi sau này.
 
-## 8. Recalculate
+## 8. Invalidation & Recalculate
 
-Khi một trong các yếu tố sau thay đổi, kết quả cũ có thể bị stale:
+MVP chỉ giữ **một kết quả hiện hành** cho mỗi cặp `(job_id, resume_id)` nhờ unique constraint. Đây không phải bảng lịch sử nhiều lần chạy.
+
+Một Match cũ trở thành stale khi một trong các yếu tố sau thay đổi:
 
 - criteria JD;
-- weights;
+- weights JD;
+- `raw_content` JD dẫn tới parse/embedding/criteria mới;
 - dữ liệu parsed CV được chỉnh;
 - embedding model/preprocessing;
 - algorithm version.
 
-Service có thể đặt match về `PENDING`, reset scores/error và tính lại trên cùng unique pair `(job_id, resume_id)`.
+Khi stale, service **bắt buộc invalidate ngay**, không được để row `COMPLETED` tiếp tục xuất hiện trên leaderboard. Invalidate canonical:
 
-## 9. LLM/XAI
+```text
+status = PENDING
+overall_score = NULL
+skill_score = NULL
+semantic_score = NULL
+experience_score = NULL
+matched_skills = []
+missing_skills = []
+gap_analysis_summary = NULL
+error_message = NULL
+calculated_at = NULL
+updated_at = NOW()
+```
+
+Sau invalidate:
+
+- nếu thao tác yêu cầu `recalculate=true`, service enqueue task ngay;
+- nếu không, row vẫn `PENDING` và sẽ không xuất hiện trong leaderboard cho tới khi được tính lại;
+- lần gọi `/matching/calculate` tiếp theo có thể upsert cùng pair rồi enqueue.
+
+## 9. Quyền riêng tư kết quả
+
+- Candidate đọc Match nếu resume thuộc Candidate.
+- HR đọc Match/Skill Gap/Leaderboard chỉ khi JD thuộc HR **và** resume cũng thuộc kho HR trong MVP.
+- Candidate self-match với JD của HR **không tự động cấp quyền đọc kết quả cho HR**.
+- Admin toàn quyền.
+
+Quy tắc này tồn tại vì MVP chưa có bảng/quy trình `applications` để ghi nhận Candidate đã nộp/chia sẻ CV cho HR.
+
+## 10. LLM/XAI
 
 LLM chỉ đọc:
 - điểm thành phần;
@@ -120,7 +154,7 @@ LLM chỉ đọc:
 
 LLM tạo text giải thích/recommendation. Không sửa bốn score trong `match_results`.
 
-## 10. Đánh giá thực nghiệm
+## 11. Đánh giá thực nghiệm
 
 Nếu có ground truth đúng như kế hoạch đề cương:
 
