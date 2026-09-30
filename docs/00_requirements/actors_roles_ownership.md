@@ -1,100 +1,57 @@
-# 01. ACTOR, VAI TRÒ VÀ QUYỀN SỞ HỮU DỮ LIỆU
+# ACTOR, VAI TRÒ VÀ QUYỀN SỞ HỮU
 
-## 1. Actor nghiệp vụ
+## Guest
+Đăng ký Candidate/HR và đăng nhập.
 
-### 1.1 Guest
-Người chưa đăng nhập.
+## Candidate
+- Quản lý account.
+- Upload/quản lý CV của mình.
+- Xem JD ACTIVE.
+- Self-match CV của mình với JD ACTIVE.
+- Xem Match/Skill Gap của CV mình.
+- Không xem leaderboard của người khác.
 
-Quyền:
-- Đăng ký tài khoản Candidate hoặc HR.
-- Đăng nhập.
-- Xem các nội dung công khai nếu giao diện sau này cho phép.
+## HR
+- Quản lý account.
+- Quản lý JD của mình.
+- Upload/quản lý CV trong talent pool của chính HR.
+- Match JD của mình với CV thuộc kho HR.
+- Xem Match/Gap/Leaderboard chỉ khi **JD và CV đều thuộc HR**.
 
-Không có quyền truy cập CV, matching, tiêu chí nội bộ của HR hoặc quản trị hệ thống.
+Candidate self-match với JD của HR không tạo quyền đọc cho HR.
 
-### 1.2 Candidate
-Ứng viên/người tìm việc đã đăng nhập.
+## Admin
+- Xem/khóa/mở khóa account.
+- Có quyền giám sát resource.
+- Không tự khóa hoặc tự hạ quyền chính mình.
 
-Quyền:
-- Quản lý thông tin tài khoản cá nhân.
-- Upload CV của chính mình.
-- Xem, tải xuống, chỉnh dữ liệu bóc tách và xóa mềm CV của chính mình.
-- Xem JD đang `ACTIVE`.
-- Yêu cầu so khớp một CV của chính mình với một JD đang `ACTIVE`.
-- Xem kết quả Matching/Skill Gap có CV thuộc chính mình.
+### Quy tắc đổi role
+Do `resumes.owner_user_id` không lưu provenance Candidate-vs-HR riêng, đổi role có thể làm đổi nghĩa kho dữ liệu. Vì vậy MVP chỉ cho đổi `CANDIDATE <-> HR` khi user:
+1. không sở hữu Resume chưa soft-delete; và
+2. không sở hữu JD chưa soft-delete.
 
-Không có quyền:
-- Xem kho CV của người khác.
-- Xem leaderboard toàn bộ ứng viên của một JD.
-- Chỉnh tiêu chí/trọng số JD.
-- Quản trị tài khoản khác.
+Nếu còn resource, trả `409 ROLE_CHANGE_CONFLICT`; Admin phải yêu cầu user cleanup/soft-delete trước. Không tự động reinterpret/reassign resource.
 
-### 1.3 HR
-Nhà tuyển dụng đã đăng nhập.
-
-Quyền:
-- Quản lý tài khoản cá nhân.
-- Tạo/quản lý JD do chính mình sở hữu.
-- Rà soát tiêu chí đã bóc tách từ JD.
-- Điều chỉnh trọng số matching cho JD của mình.
-- Upload CV vào kho tuyển dụng của chính mình nếu HR thu thập CV bên ngoài.
-- Quản lý các CV do chính HR upload.
-- Chạy matching hàng loạt giữa JD của mình và CV thuộc kho của chính mình trong MVP.
-- Xem kết quả/Skill Gap/leaderboard chỉ đối với các Match mà JD thuộc HR **và** CV cũng thuộc kho HR trong MVP.
-- Xuất báo cáo nếu module nâng cao được bật.
-
-Không có quyền:
-- Đọc CV cá nhân của Candidate khác chỉ vì Candidate đã self-match với JD của HR.
-- Xem Match private của Candidate nếu chưa có quy trình nộp đơn/chia sẻ CV hợp lệ.
-- Sửa JD của HR khác.
-- Quản trị role/trạng thái tài khoản toàn hệ thống.
-
-### 1.4 Admin
-Quản trị viên hệ thống.
-
-Quyền:
-- Xem danh sách tài khoản.
-- Khóa/mở khóa tài khoản.
-- Thay đổi role theo chính sách quản trị.
-- Giám sát dữ liệu hệ thống khi cần hỗ trợ/vận hành.
-
-Ràng buộc:
-- Không được tự khóa chính mình.
-- Không được tự hạ quyền Admin của chính mình qua API quản trị thông thường.
-
-## 2. Tác nhân kỹ thuật
-
-Celery Worker, Redis, PostgreSQL, pgvector, NLP model, OCR và LLM **không phải actor nghiệp vụ** trong Use Case Diagram vì chúng là thành phần bên trong/được hệ thống sử dụng. Chúng xuất hiện trong Component/Sequence/Activity Diagram.
-
-## 3. Ownership model
-
-### CV
-- `resumes.owner_user_id` xác định tài khoản sở hữu kho CV.
-- Candidate upload CV: `owner_user_id = candidate.id`.
-- HR upload CV vào talent pool: `owner_user_id = hr.id`.
-- Admin có thể truy cập theo quyền quản trị.
-- Candidate/HR không được lấy một `resume_id` bất kỳ để vượt quyền truy cập.
+## Ownership
+### Resume
+`resumes.owner_user_id`.
+Candidate/HR chỉ truy cập CV có owner bằng current user; Admin override.
 
 ### JD
-- `job_descriptions.recruiter_id` xác định HR sở hữu JD.
-- HR chỉ được sửa/xóa/cấu hình JD có `recruiter_id = current_user.id`.
-- Candidate chỉ xem JD công khai khi `status = ACTIVE` và `is_deleted = false`.
+`job_descriptions.recruiter_id`.
+Chỉ **HR** tạo JD mới trong MVP, vì recruiter_id phải luôn mang nghĩa nhà tuyển dụng. Admin không dùng `POST /jobs` để tạo JD dưới tên mình; Admin chỉ giám sát/quản trị JD đã tồn tại.
 
-### Matching
-Một Match có thể được tạo khi người gọi có quyền với cả CV và JD theo vai trò:
+### Match
+- Candidate: resume thuộc Candidate; JD ACTIVE.
+- HR: JD thuộc HR và resume thuộc kho HR.
+- Admin: vận hành/giám sát.
+- Đọc Match của HR cũng phải thỏa đồng thời JD-owner + CV-owner.
 
-- Candidate: CV phải thuộc Candidate; JD phải `ACTIVE`.
-- HR: JD phải thuộc HR; CV phải thuộc kho HR trong MVP.
-- Admin: toàn quyền vận hành.
+## Candidate profile cardinality
+Một Resume có **0..1 `candidate_profiles`**:
+- PENDING/PROCESSING/FAILED có thể chưa có profile.
+- PARSED thường có snapshot.
+DB enforce `UNIQUE(resume_id)` nhưng không bắt mọi Resume phải có row profile.
 
-Quyền **đọc kết quả** được siết chặt để tránh rò rỉ CV:
-
-- Candidate: xem Match nếu `match.resume_id` thuộc Candidate.
-- HR: xem Match/Skill Gap/Leaderboard chỉ khi `match.job_id` thuộc HR **và** `match.resume_id` cũng thuộc kho CV của HR.
-- Admin: toàn quyền.
-
-Trong phiên bản đồ án hiện tại chưa thiết kế quy trình nộp đơn (`applications`) hoặc cơ chế Candidate chia sẻ CV cho HR. Vì vậy một Candidate self-match với JD của HR **không tạo quyền đọc CV/kết quả cho HR**. Nếu sau này thêm `applications`, quyền này phải được thiết kế lại rõ ràng trong PTTK trước khi code.
-
-## 4. Nguyên tắc chống BOLA/IDOR
-
-Mọi endpoint nhận `{id}` phải kiểm tra authorization ở tầng service/dependency, không chỉ ẩn nút trên frontend. Với tài nguyên không được phép lộ sự tồn tại, API có thể trả `404` thay vì xác nhận bằng `403` tùy trường hợp.
+## BOLA/IDOR
+Authorization ở backend service/dependency. Có thể trả 404 thay vì 403 khi policy không cho lộ resource.
