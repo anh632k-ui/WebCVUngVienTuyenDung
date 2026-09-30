@@ -78,16 +78,21 @@ Mỗi thay đổi làm input scoring thay đổi phải tăng revision:
 Parse task nhận `expected_revision`. Worker chỉ commit kết quả nếu resource vẫn ở revision đó; task cũ bị discard.
 
 ### Match generation
-Mỗi trigger/invalidate Match tăng `match_results.generation`.
+Mỗi trigger/invalidate Match tăng `match_results.generation` và **refresh hai snapshot** `resume_revision`, `job_revision` về revision hiện tại của hai resource.
 Task matching nhận:
 `match_id, expected_generation, expected_resume_revision, expected_job_revision, algorithm_version`.
 
-Worker chỉ ghi PROCESSING/COMPLETED/FAILED nếu generation và revision vẫn khớp. Trước commit COMPLETED phải re-check linked Resume/JD revision. Nếu mismatch hoặc conditional UPDATE ảnh hưởng 0 row, task được coi là stale và **không được overwrite** row mới.
+Worker chỉ ghi PROCESSING/COMPLETED/FAILED nếu:
+- Match generation khớp;
+- Match snapshot revisions khớp expected;
+- linked Resume/JD revisions vẫn khớp expected.
+Trước terminal write phải re-check toàn bộ. Nếu mismatch hoặc conditional UPDATE ảnh hưởng 0 row, task stale và **không được overwrite** row mới.
 
 ## 9. Canonical invalidation
-Khi score stale:
-- tăng resource revision tương ứng;
+Khi score stale, trong cùng transaction:
+- tăng resource revision tương ứng nếu mutation đó thay input resource;
 - tăng Match generation;
+- refresh `match_results.resume_revision = resumes.revision` và `match_results.job_revision = job_descriptions.revision`;
 - `status=PENDING`;
 - 4 scores=NULL;
 - `matched_skills=[]`, `missing_skills=[]`;
@@ -97,12 +102,12 @@ Khi score stale:
 - `calculated_at=NULL`;
 - `updated_at=NOW()`.
 
-`recalculate=true` chỉ quyết định dispatch ngay.
+Nhờ refresh snapshot, `recalculate=true` có thể dispatch ngay bằng chính generation/revisions vừa ghi. Nếu không dispatch, row PENDING vẫn mô tả đúng phiên bản input hiện tại.
 
 ## 10. Batch matching
 - Validate **toàn bộ** `resume_ids` trước khi mutate.
 - Nếu một item fail ownership/readiness -> cả request fail, không sửa Match nào.
-- Chuẩn bị/upsert toàn batch trong **một transaction**.
+- Chuẩn bị/upsert toàn batch trong **một transaction**; mỗi row generation++ và snapshot revision hiện tại.
 - Sau commit mới dispatch task.
 - Nếu dispatcher lỗi, endpoint trả `503 TASK_DISPATCH_FAILED`; rows đã chuẩn bị có thể còn PENDING và request có thể retry an toàn. Lần retry tăng generation nên task cũ không overwrite task mới.
 
