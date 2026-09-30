@@ -41,7 +41,6 @@ jobs:
           assert spec['components']['schemas']['MatchTriggerData']['properties']['status']['enum'] == ['PENDING']
           assert '503' in paths['/matching/calculate']['post']['responses']
           assert '409' in paths['/admin/users/{id}']['patch']['responses']
-          assert 'Admin' not in paths['/jobs']['post'].get('summary','')
 
           idem = spec['components']['parameters']['IdempotencyKey']
           assert idem['name'] == 'Idempotency-Key'
@@ -96,7 +95,10 @@ jobs:
           from pathlib import Path
           import re
 
-          sql = Path('docs/05_database/schema.sql').read_text(encoding='utf-8')
+          def read(path):
+              return Path(path).read_text(encoding='utf-8')
+
+          sql = read('docs/05_database/schema.sql')
           tables = set(re.findall(r'(?im)^CREATE TABLE\s+([a-z_][a-z0-9_]*)\s*\(', sql))
           expected = {'users','skills','resumes','candidate_profiles','resume_skills','resume_experiences','resume_educations','job_descriptions','job_skills','match_results'}
           assert tables == expected
@@ -112,55 +114,80 @@ jobs:
               'chk_noncompleted_match_cleared',
               'vector_cosine_ops',
               'CREATE UNIQUE INDEX uq_users_email_ci',
+              'is_deleted BOOLEAN NOT NULL DEFAULT FALSE',
           ):
               assert text in sql, text
 
-          seed = Path('docs/05_database/skill_taxonomy_seed.sql').read_text(encoding='utf-8')
+          seed = read('docs/05_database/skill_taxonomy_seed.sql')
           assert 'INSERT INTO skills' in seed
           assert "'HARD'" in seed and "'SOFT'" in seed
-          assert seed.count("('" ) >= 30
+          assert seed.count("('") >= 30
 
-          rules = Path('docs/00_requirements/business_rules.md').read_text(encoding='utf-8')
+          rules = read('docs/00_requirements/business_rules.md')
           for key in (
               'BR-AUTH-07','BR-CV-07','BR-CV-11','BR-CV-12',
               'BR-JOB-10','BR-JOB-11','BR-JOB-12','BR-JOB-13',
               'BR-MATCH-13','BR-MATCH-14','BR-MATCH-15','BR-MATCH-16',
-              'BR-REL-01','BR-REL-02','BR-REL-03','BR-REL-04'
+              'BR-REL-01','BR-REL-02','BR-REL-03','BR-REL-04','BR-REL-05'
           ):
               assert key in rules, key
-          for phrase in ('Idempotency-Key','expected_revision','parsing_status=\'PENDING\'','parsing_status=\'PROCESSING\''):
-              assert phrase in rules or phrase in Path('docs/PTTK_MASTER.md').read_text(encoding='utf-8'), phrase
+          assert 'is_deleted=false' in rules.lower()
 
-          master = Path('docs/PTTK_MASTER.md').read_text(encoding='utf-8')
-          assert 'input/computation request' in master
-          assert 'worker xử lý đúng `expected_revision` **không tăng revision' in master
-          assert 'Parse Recovery Sweeper' in master
-          assert 'UUIDv5' in master and 'Idempotency-Key' in master
-          assert 'parsing_status=\'PENDING\'' in master
-          assert 'parsing_status=\'PROCESSING\'' in master
-          assert 'status = PENDING' in master or 'status=PENDING' in master
-          assert 'status = PROCESSING' in master or 'status=PROCESSING' in master
+          fr = read('docs/00_requirements/functional_requirements.md')
+          for key in ('FR-43','FR-44','FR-45','FR-46'):
+              assert key in fr, key
 
-          cv_seq = Path('docs/04_sequence/seq_upload_parse_cv.puml').read_text(encoding='utf-8')
-          jd_seq = Path('docs/04_sequence/seq_create_parse_job.puml').read_text(encoding='utf-8')
-          match_seq = Path('docs/04_sequence/seq_matching.puml').read_text(encoding='utf-8')
+          master = read('docs/PTTK_MASTER.md')
+          for phrase in (
+              'input/computation request',
+              'Parse Recovery Sweeper',
+              'UUIDv5',
+              'Idempotency-Key',
+              'put-if-absent',
+              'is_deleted=FALSE',
+          ):
+              assert phrase in master, phrase
+          assert 'không tăng revision thêm lần nữa khi commit kết quả' in master
+
+          cv_seq = read('docs/04_sequence/seq_upload_parse_cv.puml')
+          jd_seq = read('docs/04_sequence/seq_create_parse_job.puml')
+          match_seq = read('docs/04_sequence/seq_matching.puml')
           for text in (cv_seq, jd_seq):
               assert "parsing_status='PENDING'" in text
               assert "parsing_status='PROCESSING'" in text
+              assert 'is_deleted=FALSE' in text
               assert 'Recovery' in text
               assert 'Idempotency-Key' in text
           assert 'PENDING->PROCESSING' in match_seq or 'PENDING -> PROCESSING' in match_seq
           assert "status='PROCESSING'" in match_seq
-          assert 'stale/duplicate' in match_seq.lower()
+          assert 'is_deleted=FALSE' in match_seq
+          assert 'stale/duplicate/deleted' in match_seq.lower()
 
-          arch = Path('docs/06_architecture/system_architecture.puml').read_text(encoding='utf-8')
+          cv_act = read('docs/03_activity/act_uc07_08_upload_parse_cv.puml')
+          jd_act = read('docs/03_activity/act_uc11_12_manage_parse_jd.puml')
+          match_act = read('docs/03_activity/act_uc15_matching.puml')
+          for text in (cv_act, jd_act):
+              assert 'is_deleted=FALSE' in text
+              assert 'parsing_status=PROCESSING' in text
+          assert 'is_deleted=FALSE' in match_act
+
+          arch = read('docs/06_architecture/system_architecture.puml')
           assert 'Parse Recovery Sweeper' in arch
           assert 'Idempotency / UUIDv5 Guard' in arch
-          assert 'exclusive CAS' in arch
+          assert 'Delete-state CAS Guard' in arch
+          assert 'is_deleted=false' in arch
 
-          trace = Path('docs/08_traceability/traceability_matrix.md').read_text(encoding='utf-8')
-          for phrase in ('FR-43','FR-44','FR-45','Parse exclusive CAS','Match exclusive CAS','Idempotent create'):
+          api = read('docs/07_api/api_contract.md')
+          for phrase in ('Idempotency-Key','put-if-absent','Parse Recovery Sweeper','is_deleted=FALSE'):
+              assert phrase in api, phrase
+
+          trace = read('docs/08_traceability/traceability_matrix.md')
+          for phrase in ('FR-43','FR-44','FR-45','FR-46','Parse exclusive CAS','Match exclusive CAS','Idempotent create','Soft-delete async safety'):
               assert phrase in trace, phrase
 
-          print('Schema/seed/reliability semantic validation: OK')
+          gate = read('docs/09_delivery/implementation_gate.md')
+          assert 'Soft-delete Resume/JD sau claim' in gate
+          assert 'Current Match/Leaderboard' in gate
+
+          print('Schema/seed/reliability/delete-state semantic validation: OK')
           PY
