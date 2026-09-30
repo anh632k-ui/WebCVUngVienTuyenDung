@@ -1,4 +1,4 @@
-# API CONTRACT SPECIFICATION — MVP v1 (Post-Round-3 Reliability Lock)
+# API CONTRACT SPECIFICATION — MVP v1 (Reliability + Fingerprint Lock)
 
 Base URL `/api/v1`. JSON UTF-8. JWT Bearer Access Token. Refresh session là Advanced và không nằm trong OpenAPI MVP.
 
@@ -16,7 +16,36 @@ Status chuẩn: 200/201/202/204, 400, 401, 403, 404, 409, 413, 415, 422, 503.
 Idempotency-Key: <UUID>
 ```
 
-Một key đại diện cho **một logical create request**. Server derive resource UUID deterministic bằng UUIDv5 từ application namespace + actor id + route + key. Retry cùng actor/route/key trả cùng resource, không tạo duplicate. Muốn tạo resource mới phải dùng key mới.
+Application UUIDv5 namespace là literal cố định:
+
+```text
+bd7b1f30-b2de-549c-a8dd-8d742ee5bc12
+```
+
+Không generate namespace mới theo startup/deployment. Deterministic resource id:
+
+```text
+UUIDv5(APP_IDEMPOTENCY_NAMESPACE,
+      actor_id + "\n" + canonical_route + "\n" + lower(Idempotency-Key))
+```
+
+Mỗi resource create persist `create_request_fingerprint` SHA-256 lowercase hex 64 ký tự.
+- Resume fingerprint = SHA-256(raw file bytes).
+- Job fingerprint = SHA-256(canonical validated create payload sau defaults).
+
+Retry cùng actor/route/key:
+- fingerprint giống persisted fingerprint => trả đúng resource hiện hữu, không create side-effect mới;
+- fingerprint khác => `409 IDEMPOTENCY_KEY_REUSED`;
+- concurrent deterministic PK conflict => re-read row, compare fingerprint rồi return existing/409.
+
+### Job canonical payload v1
+- fields: `title`, `job_level`, `location`, `raw_content`, `w_skill`, `w_semantic`, `w_experience`;
+- server apply defaults + validation trước hashing;
+- Unicode NFC;
+- trim outer whitespace `title/job_level/location`; empty `location` -> null;
+- normalize `raw_content` CRLF/CR -> LF, giữ nội dung còn lại;
+- weights serialize fixed 3 decimals;
+- UTF-8 JSON, fixed key order, no extra whitespace.
 
 # A. Auth & Account
 
@@ -53,16 +82,31 @@ Môi trường mới phải seed `skill_taxonomy_seed.sql`; pipeline không tự
 # C. Resume
 
 ## POST `/resumes/upload`
-Candidate/HR. **Required `Idempotency-Key` UUID**. PDF/DOCX <=5MB. Backend kiểm MIME/magic bytes, safe storage key.
+Candidate/HR. **Required `Idempotency-Key` UUID**. PDF/DOCX <=5MB. Backend đọc bytes, kiểm MIME/magic bytes, rồi tính SHA-256 raw bytes làm request fingerprint.
 
 Persistence flow:
-1. derive deterministic `resume_id` từ actor+route+Idempotency-Key;
+1. derive deterministic `resume_id` từ fixed namespace + actor + canonical route `/api/v1/resumes/upload` + Idempotency-Key;
 2. lookup resource trước create side-effect;
-3. nếu đã tồn tại: trả cùng Resume, không overwrite storage; nếu vẫn PENDING có thể best-effort re-dispatch current revision;
-4. nếu chưa tồn tại: storage `put-if-absent`/no-overwrite, tạo Resume `PENDING`, `revision=1`, commit persistence;
-5. best-effort dispatch parse `(resume_id,current_revision)`.
+3. nếu Resume đã tồn tại:
+   - fingerprint giống => trả cùng Resume, không overwrite storage; nếu vẫn PENDING có thể best-effort re-dispatch current revision;
+   - fingerprint khác => `409 IDEMPOTENCY_KEY_REUSED`;
+4. nếu DB row chưa tồn tại, canonical storage key = `resumes/{resume_id}/source`;
+5. storage `put-if-absent`/no-overwrite:
+   - object mới => giữ object;
+   - object đã tồn tại => compute SHA-256 bytes object; giống request fingerprint thì reuse, khác => `409 IDEMPOTENCY_KEY_REUSED` và không overwrite;
+6. INSERT Resume `PENDING`, `revision=1`, persist `create_request_fingerprint`;
+7. nếu INSERT thua concurrent deterministic-PK race: re-read row, compare fingerprint; giống => same existing resource, khác => 409;
+8. commit persistence;
+9. best-effort dispatch parse `(resume_id,current_revision)`.
+
+Nếu storage write thành công nhưng DB insert thất bại, object được phép còn lại như orphan tạm thời. Retry cùng key/file phải hash-verify object hiện hữu trước reuse. Không cleanup/overwrite mù vì có thể có concurrent request hợp lệ.
 
 Nếu dispatcher lỗi sau commit, **không rollback Resume và không tạo Resume khác**. Server log lỗi, Resume giữ `PENDING`; internal Parse Recovery Sweeper sẽ re-dispatch current revision. Endpoint vẫn trả `202 ResumeUploadResponse` của resource đã persist.
+
+Responses:
+- `202 ResumeUploadResponse` — created/existing cùng fingerprint;
+- `409 IDEMPOTENCY_KEY_REUSED` — cùng key/deterministic id nhưng request/storage/persisted fingerprint khác;
+- 413/415/422 theo validation.
 
 ## GET `/resumes`
 Candidate/HR chỉ owner; Admin all. Mặc định chỉ `is_deleted=false`. Filter pagination/status/skills.
@@ -116,7 +160,20 @@ Success nhiều bảng phải transaction + lock/check state/revision/delete-sta
 ## POST `/jobs`
 **HR only**. Admin không tạo JD mới dưới identity Admin. **Required `Idempotency-Key` UUID**.
 
-Server derive deterministic `job_id` từ HR+route+key, create `DRAFT/PENDING/revision=1` nếu chưa tồn tại; retry cùng key trả cùng JD. Commit DB trước dispatch. Dispatcher lỗi => JD vẫn PENDING, log lỗi và Parse Recovery Sweeper re-dispatch; response vẫn `201 JobResponse` của resource đã persist.
+Flow:
+1. validate request + apply defaults;
+2. canonicalize create payload v1 và SHA-256 -> request fingerprint;
+3. derive deterministic `job_id` từ fixed namespace + HR id + canonical route `/api/v1/jobs` + key;
+4. existing JD + same fingerprint => trả same JD; existing JD + different fingerprint => `409 IDEMPOTENCY_KEY_REUSED`;
+5. nếu chưa có row: create `DRAFT/PENDING/revision=1`, persist `create_request_fingerprint`;
+6. deterministic-PK concurrent loser re-read row và compare fingerprint trước return existing/409;
+7. commit DB trước dispatch;
+8. dispatcher lỗi => JD vẫn PENDING, log lỗi và Parse Recovery Sweeper re-dispatch.
+
+Responses:
+- `201 JobResponse` — created/existing cùng fingerprint;
+- `409 IDEMPOTENCY_KEY_REUSED` — cùng key nhưng canonical create fingerprint khác;
+- 403/422 theo authorization/validation.
 
 ## GET `/jobs`
 Candidate chỉ ACTIVE và chưa xóa; HR chỉ own chưa xóa; Admin all theo scope quản trị.
@@ -246,4 +303,4 @@ HR owner/Admin. Only COMPLETED. HR only CV in own pool. JD và Resume phải `is
 - Overall: JD weights.
 
 # Đồng bộ code
-ORM maps schema; no `create_all()`; no new endpoint/table/enum/concurrency semantic unless PTTK updated first.
+ORM maps schema; no `create_all()`; no new endpoint/table/enum/concurrency/idempotency semantic unless PTTK updated first.
