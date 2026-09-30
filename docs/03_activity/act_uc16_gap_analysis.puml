@@ -7,7 +7,9 @@ title ACTIVITY - UC16 KẾT QUẢ HIỆN HÀNH & SKILL GAP
 start
 :User mở danh sách kết quả matching;
 :GET /api/v1/matching?page&limit&filters;
-:Backend áp dụng ownership scope;
+:Backend JOIN Resume/JD và yêu cầu
+resume.is_deleted=FALSE AND job.is_deleted=FALSE;
+:Áp dụng ownership scope;
 if (Candidate?) then (Có)
   :Chỉ Match có resume.owner_user_id=current_user.id;
 else (Không)
@@ -15,15 +17,15 @@ else (Không)
     :Chỉ Match có job.recruiter_id=current_user.id
     VÀ resume.owner_user_id=current_user.id;
   else (Admin)
-    :Có thể xem toàn bộ;
+    :Có thể xem toàn bộ resource chưa xóa;
   endif
 endif
 :200 danh sách kết quả hiện hành;
 
 if (User chọn một match?) then (Có)
   :GET /api/v1/matching/{match_id};
-  :Backend kiểm cùng ownership rule;
-  if (Có quyền?) then (Có)
+  :Backend kiểm ownership + linked Resume/JD chưa xóa;
+  if (Có quyền và resource active?) then (Có)
     if (status=COMPLETED?) then (Có)
       :Trả overall + component scores
       + matched/missing skills;
@@ -40,7 +42,8 @@ else (Không)
 endif
 
 :GET /api/v1/matching/{match_id}/gap-analysis;
-:Backend kiểm ownership + status=COMPLETED;
+:Backend kiểm ownership + status=COMPLETED
++ linked Resume/JD is_deleted=FALSE;
 :Phân loại missing skills:
 MANDATORY => CRITICAL,
 OPTIONAL => MINOR;
