@@ -5,7 +5,7 @@ skinparam shadowing false
 title ACTIVITY - UC13 RÀ SOÁT TIÊU CHÍ JD
 
 start
-:HR mở trang Criteria của JD;
+:HR/Admin mở trang Criteria của JD;
 :GET /api/v1/jobs/{id}/criteria;
 :Backend kiểm HR sở hữu JD hoặc Admin;
 if (Có quyền?) then (Có)
@@ -16,22 +16,26 @@ else (Không)
   stop
 endif
 
-:HR chỉnh min experience/education;
-if (HR cần thêm skill?) then (Có)
-  :GET /api/v1/skills?keyword&skill_kind&category;
-  :Chọn skill_id từ taxonomy chuẩn;
-endif
-:HR thêm/xóa skill;
-:HR chuyển MANDATORY <-> OPTIONAL;
-:HR chỉnh min_years_required;
+:HR/Admin có thể GET /api/v1/skills
+để tra cứu Skill Taxonomy;
+:Chỉnh min experience/education;
+:Thêm/xóa skill;
+:Chuyển MANDATORY <-> OPTIONAL;
+:Chỉnh min_years_required;
 :PUT /api/v1/jobs/{id}/criteria;
-:Backend validate skill IDs + duplicate + values;
-:BEGIN TRANSACTION;
-:Update JD criteria fields;
-:Replace/upsert job_skills;
-:SET is_criteria_verified=true;
-:COMMIT;
-:200 OK;
+:Backend validate skill IDs,
+không duplicate và có >=1 skill;
+if (Criteria hợp lệ?) then (Có)
+  :BEGIN TRANSACTION;
+  :Update JD criteria fields;
+  :Replace/upsert job_skills;
+  :SET is_criteria_verified=true;
+  :COMMIT;
+  :200 OK;
+else (Không)
+  :422 Validation error;
+  stop
+endif
 
 if (Criteria thay đổi ảnh hưởng match cũ?) then (Có)
   :Đánh dấu/queue recalculate theo policy;
