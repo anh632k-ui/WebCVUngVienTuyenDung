@@ -13,13 +13,13 @@ actor Admin
 
 rectangle "CV & NLP" {
   usecase "UC07 Upload CV" as UC07
-  usecase "UC08 Phân tích CV tự động" as UC08
+  usecase "UC08 Phân tích CV tự động\n(expected_revision)" as UC08
   usecase "Bóc text PDF/DOCX" as P1
   usecase "OCR fallback [Advanced]" as P2
   usecase "Trích xuất thực thể" as P3
-  usecase "Chuẩn hóa Skill Taxonomy" as P4
-  usecase "Sinh embedding CV" as P5
-  usecase "UC09 Rà soát/chỉnh dữ liệu CV" as UC09
+  usecase "Chuẩn hóa Skill Taxonomy\n(seed baseline)" as P4
+  usecase "Sinh embedding CV\nmodel + preprocessing version" as P5
+  usecase "UC09 Rà soát/chỉnh dữ liệu CV\nrevision++ + invalidate" as UC09
   usecase "UC10 Quản lý kho CV" as UC10
 }
 
@@ -38,4 +38,7 @@ UC08 ..> P3 : <<include>>
 UC08 ..> P4 : <<include>>
 UC08 ..> P5 : <<include>>
 
+note bottom of UC08
+Task parse cũ không được commit nếu Resume revision đã đổi.
+end note
 @enduml
