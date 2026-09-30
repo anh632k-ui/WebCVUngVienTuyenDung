@@ -16,7 +16,7 @@
 - **FR-09**: Hệ thống bóc text, phân đoạn, trích xuất thông tin cá nhân nghề nghiệp, kỹ năng, kinh nghiệm và học vấn.
 - **FR-10**: Hệ thống chuẩn hóa skill theo taxonomy và sinh embedding CV.
 - **FR-11**: Người có quyền xem chi tiết dữ liệu đã bóc tách.
-- **FR-12**: Người có quyền chỉnh sửa dữ liệu AI bóc sai/thiếu.
+- **FR-12**: Người có quyền chỉnh sửa dữ liệu AI bóc sai/thiếu; nếu thay đổi ảnh hưởng matching thì các Match hiện hành liên quan phải được invalidate trước khi dùng lại.
 - **FR-13**: Candidate/HR quản lý danh sách CV thuộc kho của chính mình: tìm kiếm, lọc, tải file gốc, xóa mềm.
 - **FR-14**: Người dùng xem trạng thái phân tích CV.
 
@@ -27,22 +27,22 @@
 - **FR-17**: Candidate xem danh sách/chi tiết JD đang ACTIVE.
 - **FR-18**: Hệ thống phân tích JD, trích kinh nghiệm/học vấn/kỹ năng và phân loại MANDATORY/OPTIONAL.
 - **FR-19**: Hệ thống sinh embedding JD.
-- **FR-20**: HR rà soát, thêm/xóa/chuyển loại skill criteria đã bóc tách và xác nhận criteria trước khi công bố/matching.
-- **FR-21**: HR cấu hình `w_skill`, `w_semantic`, `w_experience` sao cho tổng bằng 1.
+- **FR-20**: HR rà soát, thêm/xóa/chuyển loại skill criteria đã bóc tách và xác nhận criteria trước khi công bố/matching; thay đổi criteria phải invalidate Match hiện hành của JD.
+- **FR-21**: HR cấu hình `w_skill`, `w_semantic`, `w_experience` sao cho tổng bằng 1; thay đổi trọng số phải invalidate Match hiện hành trước khi leaderboard tiếp tục sử dụng.
 
 ## Nhóm D — Matching & Analytics
 
-- **FR-22**: Candidate yêu cầu matching CV của mình với một JD ACTIVE.
+- **FR-22**: Candidate yêu cầu matching CV của mình với một JD ACTIVE; kết quả self-match là private đối với Candidate trong MVP.
 - **FR-23**: HR yêu cầu matching một hoặc nhiều CV trong kho của mình với JD của mình.
 - **FR-24**: Hệ thống tính Skill Score.
-- **FR-25**: Hệ thống tính độ liên quan ngữ nghĩa/văn bản từ embedding và, nếu bật, BM25.
+- **FR-25**: Hệ thống tính Semantic Score bằng embedding/cosine; BM25 trong `hybrid-v1` chỉ dùng cho diagnostic/retrieval/experiment, không blend vào Final Score.
 - **FR-26**: Hệ thống tính Experience Score.
 - **FR-27**: Hệ thống tính Overall Score 0–100 theo trọng số JD.
 - **FR-28**: Hệ thống lưu matched skills, missing skills và dữ liệu giải thích cơ bản.
-- **FR-29**: Candidate/HR có quyền xem chi tiết kết quả và Skill Gap theo ownership.
-- **FR-30**: HR xem leaderboard ứng viên cho JD của mình.
-- **FR-31**: Khi HR thay trọng số, hệ thống có thể recalculate các kết quả liên quan.
-- **FR-32**: Hệ thống có thể xuất leaderboard/chi tiết ra PDF/Excel nếu module nâng cao được triển khai.
+- **FR-29**: Candidate xem Match/Skill Gap có CV thuộc mình; HR chỉ xem Match/Skill Gap khi JD thuộc HR và CV cũng thuộc kho HR; Admin toàn quyền.
+- **FR-30**: HR xem leaderboard ứng viên cho JD của mình nhưng chỉ gồm CV thuộc kho HR trong MVP.
+- **FR-31**: Khi dữ liệu ảnh hưởng scoring thay đổi, hệ thống invalidate kết quả liên quan; tùy thao tác có thể enqueue recalculate ngay hoặc để `PENDING` chờ tính lại.
+- **FR-32**: Hệ thống có thể xuất leaderboard/chi tiết ra PDF/Excel nếu module nâng cao được triển khai; chức năng này không thuộc OpenAPI MVP cho tới khi thực sự bật.
 
 ## Nhóm E — AI Explainability & thực nghiệm
 
@@ -52,4 +52,4 @@
 ## Nhóm F — Chức năng hỗ trợ xuyên suốt
 
 - **FR-35**: Người dùng đã xác thực tra cứu Skill Taxonomy để autocomplete/tìm kỹ năng chuẩn khi rà soát CV hoặc criteria JD.
-- **FR-36**: Candidate/HR/Admin xem danh sách lịch sử kết quả matching theo đúng ownership/scope, có phân trang và lọc theo JD/CV/trạng thái.
+- **FR-36**: Candidate/HR/Admin xem **danh sách kết quả matching hiện hành** theo đúng ownership/scope, có phân trang và lọc theo JD/CV/trạng thái. MVP không lưu lịch sử nhiều lần chạy cho cùng một cặp `(job_id, resume_id)`.
