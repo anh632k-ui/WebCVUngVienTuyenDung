@@ -2,7 +2,7 @@
 skinparam monochrome true
 skinparam shadowing false
 
-title SEQUENCE - CREATE & PARSE JOB DESCRIPTION
+title SEQUENCE - CREATE/UPDATE & PARSE JOB DESCRIPTION
 
 actor HR
 participant "Next.js" as FE
@@ -16,6 +16,7 @@ participant "JD NLP Pipeline" as NLP
 participant "Skill Normalizer" as Normalizer
 participant "Embedding Service" as Embedding
 
+== Create ==
 HR -> FE : nhập metadata + raw JD + weights
 FE -> API : POST /api/v1/jobs
 API -> Service : create_job(current_user,payload)
@@ -25,8 +26,26 @@ DB --> Service : job_id
 Service -> Dispatcher : enqueue parse_job(job_id)
 Dispatcher -> Queue : task
 Service --> API : created
-API --> FE : 201 + job_id
+API --> FE : 201 JobResponse
 
+== Update raw content ==
+opt HR thay raw_content của JD hiện có
+  HR -> FE : sửa raw JD
+  FE -> API : PUT /api/v1/jobs/{id}
+  API -> Service : update_job(current_user,id,payload)
+  Service -> DB : verify recruiter_id=current_user.id
+  DB --> Service : owned JD
+  Service -> DB : BEGIN
+  Service -> DB : UPDATE JD status=DRAFT, parsing_status=PENDING,\nis_criteria_verified=false, embedding/model/parsed_at=NULL
+  Service -> DB : invalidate related match_results\nstatus=PENDING; clear scores/evidence/error/calculated_at
+  Service -> DB : COMMIT
+  Service -> Dispatcher : enqueue parse_job(job_id)
+  Dispatcher -> Queue : task
+  Service --> API : updated JobResponse
+  API --> FE : 200
+end
+
+== Parse ==
 Queue -> Worker : parse_job(job_id)
 Worker -> DB : UPDATE parsing_status=PROCESSING
 Worker -> DB : SELECT raw_content
@@ -49,7 +68,7 @@ FE -> API : GET /jobs/{id}/criteria
 API -> Service : require owner HR/Admin
 Service -> DB : SELECT JD + job_skills
 DB --> Service : criteria
-Service --> API : criteria
+Service --> API : JobCriteriaResponse
 API --> FE : 200
 
 @enduml
