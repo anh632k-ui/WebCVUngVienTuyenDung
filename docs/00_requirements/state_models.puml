@@ -8,7 +8,7 @@ title STATE MODELS - CV / JD / MATCHING
 state "Resume Parsing" as Resume {
   [*] --> PENDING
   PENDING --> PROCESSING : worker nhận task
-  PROCESSING --> PARSED : parse thành công
+  PROCESSING --> PARSED : parse + embedding thành công
   PROCESSING --> FAILED : parse lỗi
   FAILED --> PENDING : retry
   PARSED --> PENDING : re-parse thủ công/nâng cấp pipeline
@@ -17,7 +17,7 @@ state "Resume Parsing" as Resume {
 state "Job Parsing" as JobParsing {
   [*] --> J_PENDING
   J_PENDING --> J_PROCESSING : worker nhận task
-  J_PROCESSING --> J_PARSED : parse thành công
+  J_PROCESSING --> J_PARSED : parse + embedding thành công
   J_PROCESSING --> J_FAILED : parse lỗi
   J_FAILED --> J_PENDING : retry
   J_PARSED --> J_PENDING : raw_content thay đổi
@@ -25,9 +25,9 @@ state "Job Parsing" as JobParsing {
 
 state "Job Business Status" as JobBusiness {
   [*] --> DRAFT
-  DRAFT --> ACTIVE : publish [PARSED && criteria verified]
-  ACTIVE --> CLOSED : HR đóng tuyển
-  CLOSED --> ACTIVE : mở lại [PARSED && criteria verified]
+  DRAFT --> ACTIVE : publish [PARSED + verified + có job_skill]
+  ACTIVE --> CLOSED : HR/Admin đóng tuyển
+  CLOSED --> ACTIVE : mở lại [vẫn đủ điều kiện publish]
   ACTIVE --> DRAFT : raw_content thay đổi / unpublish
   CLOSED --> DRAFT : raw_content thay đổi
 }
@@ -38,12 +38,13 @@ state "Match Lifecycle" as Matching {
   M_PROCESSING --> M_COMPLETED : tính điểm thành công
   M_PROCESSING --> M_FAILED : lỗi
   M_FAILED --> M_PENDING : retry/recalculate
-  M_COMPLETED --> M_PENDING : criteria/weights/CV thay đổi hoặc recalculate
+  M_COMPLETED --> M_PENDING : criteria/weights/CV/model/algorithm thay đổi
 }
 
 note bottom of JobBusiness
 Mọi thay đổi raw_content làm criteria/embedding cũ stale,
 vì vậy business status bị đưa về DRAFT trước khi Job Parsing về PENDING.
+ACTIVE/matching còn được service kiểm tra có ít nhất một job_skill hợp lệ.
 end note
 
 @enduml
