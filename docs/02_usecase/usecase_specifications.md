@@ -24,10 +24,18 @@ Admin list/lock/unlock/change role.
 ## UC07 — Upload CV
 Candidate/HR upload PDF/DOCX <=5MB.
 - Request bắt buộc `Idempotency-Key` UUID.
-- Backend derive deterministic `resume_id` từ actor+route+key, validate file thật và lưu safe key.
-- Nếu deterministic Resume đã tồn tại: trả cùng Resume trước create side-effect mới; không overwrite storage; có thể best-effort re-dispatch nếu vẫn PENDING.
-- Nếu chưa tồn tại: storage put-if-absent, tạo Resume `PENDING`, `revision=1`, commit rồi best-effort enqueue `(resume_id,current_revision)`.
+- Backend validate file thật rồi tính `request_fingerprint = SHA-256(raw file bytes)` lowercase hex.
+- Dùng application UUIDv5 namespace cố định `bd7b1f30-b2de-549c-a8dd-8d742ee5bc12` để derive deterministic `resume_id` từ actor + canonical route + key.
+- Nếu deterministic Resume đã tồn tại:
+  - fingerprint giống `create_request_fingerprint` => trả cùng Resume, không overwrite storage; có thể best-effort re-dispatch nếu vẫn PENDING;
+  - fingerprint khác => `409 IDEMPOTENCY_KEY_REUSED`.
+- Nếu DB chưa có Resume, storage key canonical là `resumes/{resume_id}/source`, dùng put-if-absent/no-overwrite.
+  - object chưa tồn tại => ghi bytes;
+  - object đã tồn tại => compute SHA-256 object; giống request fingerprint thì reuse, khác thì 409 và không overwrite.
+- INSERT Resume `PENDING`, `revision=1`, persist `create_request_fingerprint`; nếu concurrent INSERT thua PK race thì re-read row và compare fingerprint trước khi return existing/409.
+- Commit rồi best-effort enqueue `(resume_id,current_revision)`.
 - Dispatcher lỗi sau commit: Resume vẫn PENDING, response vẫn 202; internal recovery sweeper re-dispatch sau grace window.
+- Nếu storage write đã thành công nhưng DB insert thất bại, object được giữ làm orphan tạm; retry cùng key/file sẽ hash-verify rồi reuse, không nhận nhầm file khác.
 
 ## UC08 — Phân tích CV
 Task nhận `(resume_id, expected_revision)`.
@@ -61,11 +69,14 @@ List/detail/status/download/soft-delete theo owner; Admin override. Sau soft-del
 ## UC11 — Quản lý JD
 **Create chỉ HR**.
 - POST bắt buộc `Idempotency-Key` UUID.
-- derive deterministic `job_id` từ actor+route+key;
-- tạo `recruiter_id=current_user.id`, DRAFT/PENDING, revision=1 nếu chưa tồn tại;
-- commit rồi best-effort enqueue parse(expected_revision=1);
-- retry cùng key trả cùng JD, không tạo duplicate;
-- dispatcher lỗi sau commit giữ JD PENDING và recovery sweeper sẽ re-dispatch.
+- Apply defaults/validation rồi canonicalize payload v1: Unicode NFC; trim title/job_level/location; empty location -> null; normalize raw_content line endings CRLF/CR -> LF; serialize weights fixed 3 decimals; UTF-8 JSON với key order cố định/no extra whitespace.
+- `request_fingerprint = SHA-256(canonical JSON)` lowercase hex.
+- Dùng stable namespace `bd7b1f30-b2de-549c-a8dd-8d742ee5bc12` để derive deterministic `job_id` từ actor + canonical route + key.
+- Nếu JD deterministic đã tồn tại: fingerprint giống => trả same JD; fingerprint khác => `409 IDEMPOTENCY_KEY_REUSED`.
+- Nếu chưa tồn tại: tạo `recruiter_id=current_user.id`, DRAFT/PENDING, revision=1, persist `create_request_fingerprint`.
+- Nếu concurrent INSERT thua deterministic PK race: re-read row, compare fingerprint; same => return existing, different => 409.
+- Commit rồi best-effort enqueue parse(expected_revision=1).
+- Dispatcher lỗi sau commit giữ JD PENDING và recovery sweeper sẽ re-dispatch.
 
 Admin có thể quản trị JD đã tồn tại nhưng không tạo JD dưới identity Admin.
 
@@ -138,6 +149,14 @@ Trong transaction: update weights, `job.revision += 1`, invalidate Match + gener
 
 ## UC19 — Export [Advanced]
 PDF/Excel dự kiến; không nằm OpenAPI MVP.
+
+# Idempotency — cross-cutting UC07/11
+- Stable UUIDv5 namespace là literal `bd7b1f30-b2de-549c-a8dd-8d742ee5bc12`, không rotate giữa deployment.
+- Persist SHA-256 fingerprint trên resource hiện có, không thêm bảng thứ 11.
+- Same key + same fingerprint => same resource.
+- Same key + different fingerprint => `409 IDEMPOTENCY_KEY_REUSED`.
+- Deterministic PK conflict phải re-read persisted resource và compare fingerprint.
+- Resume orphan storage phải hash-verify trước reuse; mismatch không overwrite.
 
 # Parse Recovery — cross-cutting UC07/08/11/12
 Internal component, không expose API route:
