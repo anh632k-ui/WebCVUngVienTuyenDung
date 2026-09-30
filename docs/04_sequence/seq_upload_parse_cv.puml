@@ -1,13 +1,13 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-title SEQUENCE - UPLOAD & PARSE CV - IDEMPOTENT CREATE + EXCLUSIVE CAS
+title SEQUENCE - UPLOAD & PARSE CV - FINGERPRINTED IDEMPOTENCY + EXCLUSIVE CAS
 
 actor "Candidate/HR" as User
 participant "Next.js" as FE
 participant "Resume API" as API
 participant "Resume Service" as Service
-participant "Idempotency/UUIDv5" as Idem
+participant "Idempotency/UUIDv5 + SHA-256" as Idem
 participant "File Storage" as Storage
 database "PostgreSQL" as DB
 participant "Task Dispatcher" as Dispatcher
@@ -20,23 +20,54 @@ User -> FE : chọn file
 FE -> FE : generate Idempotency-Key UUID
 FE -> API : POST /resumes/upload + Idempotency-Key
 API -> Service : upload(current_user,key,file)
-Service -> Service : validate size/MIME/magic
-Service -> Idem : derive UUIDv5(actor,route,key)
+Service -> Service : read bytes + validate size/MIME/magic
+Service -> Idem : SHA-256(raw bytes)
+Idem --> Service : request_fingerprint
+Service -> Idem : UUIDv5(FIXED_NAMESPACE, actor+route+key)
 Idem --> Service : deterministic resume_id
 Service -> DB : lookup resume_id for current owner
 alt existing resource
-  DB --> Service : existing Resume
-  Service -> Service : do NOT overwrite storage
-  opt existing status=PENDING and is_deleted=FALSE
-    Service -> Dispatcher : best-effort re-dispatch(resume_id,current_revision)
+  DB --> Service : Resume + create_request_fingerprint
+  alt fingerprint mismatch
+    Service --> API : 409 IDEMPOTENCY_KEY_REUSED
+    API --> FE : conflict
+  else same fingerprint
+    Service -> Service : do NOT overwrite storage
+    opt existing status=PENDING and is_deleted=FALSE
+      Service -> Dispatcher : best-effort re-dispatch(resume_id,current_revision)
+    end
+    Service --> API : 202 same ResumeUploadResponse
+    API --> FE : same resource
   end
-  Service --> API : 202 same ResumeUploadResponse
-  API --> FE : same resource on retry
-else not exists
-  Service -> Storage : put-if-absent safe storage_key
-  Service -> DB : INSERT Resume(PENDING, revision=1,id=resume_id)
-  DB --> Service : resume_id,current revision
-  Service -> DB : COMMIT persistence
+else no DB row
+  Service -> Service : storage_key=resumes/{resume_id}/source
+  Service -> Storage : put-if-absent(raw bytes)
+  alt object already exists
+    Storage --> Service : existing object
+    Service -> Storage : read/hash existing object
+    Storage --> Service : object_fingerprint
+    alt object fingerprint mismatch
+      Service --> API : 409 IDEMPOTENCY_KEY_REUSED
+      API --> FE : conflict, no overwrite
+    else same fingerprint
+      Service -> Service : reuse verified orphan object
+    end
+  else object created
+    Storage --> Service : created
+  end
+  Service -> DB : INSERT Resume(PENDING,revision=1,id=resume_id,create_request_fingerprint)
+  alt deterministic PK race
+    DB --> Service : unique conflict
+    Service -> DB : re-read resume_id
+    DB --> Service : persisted fingerprint
+    alt persisted fingerprint mismatch
+      Service --> API : 409 IDEMPOTENCY_KEY_REUSED
+    else same fingerprint
+      Service -> Service : use existing resource
+    end
+  else inserted
+    Service -> DB : COMMIT persistence
+  end
   Service -> Dispatcher : best-effort enqueue(resume_id,current_revision)
   alt dispatcher accepted
     Dispatcher -> Queue : task
@@ -44,8 +75,15 @@ else not exists
     Service -> Service : log failure, keep PENDING
   end
   Service --> API : 202 ResumeUploadResponse
-  API --> FE : accepted
+  API --> FE : accepted/existing
 end
+
+note over Service,Storage
+Nếu storage write thành công nhưng DB insert fail,
+object có thể còn orphan. Retry chỉ reuse sau khi
+SHA-256 object == request fingerprint.
+Không overwrite object khi mismatch.
+end note
 
 == Recovery for post-commit dispatch failure ==
 Recovery -> DB : SELECT PENDING Resume\nWHERE is_deleted=FALSE and older than grace
