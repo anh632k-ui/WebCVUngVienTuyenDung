@@ -21,6 +21,7 @@ else (Không)
     :PUT /api/v1/jobs/{id};
     :Backend kiểm recruiter_id=current_user hoặc Admin;
     if (raw_content thay đổi?) then (Có)
+      :BEGIN TRANSACTION;
       :UPDATE metadata;
       :SET status=DRAFT,
       parsing_status=PENDING,
@@ -28,6 +29,15 @@ else (Không)
       job_embedding=NULL,
       embedding_model=NULL,
       parsed_at=NULL;
+      :Invalidate mọi match_results của JD:
+      status=PENDING,
+      scores=NULL,
+      matched_skills=[], missing_skills=[],
+      gap_analysis_summary=NULL,
+      error_message=NULL,
+      calculated_at=NULL,
+      updated_at=NOW();
+      :COMMIT;
       :Kích hoạt parse lại;
       :200 OK;
     else (Không)
@@ -41,7 +51,7 @@ else (Không)
       :Backend kiểm ownership/Admin;
       if (status mới = ACTIVE?) then (Có)
         if (JD PARSED + criteria verified
-        + có >=1 job_skill?) then (Có)
+        + embedding hợp lệ + có >=1 job_skill?) then (Có)
           :UPDATE status=ACTIVE;
           :200 OK;
         else (Không)
