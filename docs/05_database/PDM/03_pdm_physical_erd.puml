@@ -7,7 +7,7 @@ title PDM - POSTGRESQL 18 + PGVECTOR
 
 entity "users" as users {
   * id : UUID <<PK>>
-  * email : VARCHAR(255) <<UQ>>
+  * email : VARCHAR(255) <<CI-UQ INDEX>>
   * password_hash : VARCHAR(255)
   * full_name : VARCHAR(100)
   phone_number : VARCHAR(20)
@@ -166,6 +166,11 @@ skills ||--o{ job_skills : skill_id
 jobs ||--o{ matches : job_id
 resumes ||--o{ matches : resume_id
 
+note right of users
+Case-insensitive unique index:
+uq_users_email_ci ON LOWER(email)
+end note
+
 note right of resumes
 PARSED requires raw_text,
 embedding_model, embedding,
@@ -176,13 +181,15 @@ end note
 note right of jobs
 ACTIVE requires PARSED
 and is_criteria_verified=true.
+Service additionally requires >=1 job_skill.
 PARSED requires embedding + model + parsed_at.
 HNSW: job_embedding vector_cosine_ops
 end note
 
 note right of matches
-Scores may be NULL before COMPLETED.
+One current result per (job_id,resume_id).
 COMPLETED requires 4 scores + calculated_at.
+Non-COMPLETED must clear stale scores/evidence/timestamp.
 end note
 
 @enduml
