@@ -53,6 +53,7 @@ Job transition qua API:
 - DRAFT -> CLOSED bị từ chối `422`.
 
 JD ACTIVE/matching cần PARSED + verified + embedding hợp lệ + >=1 `job_skill`.
+Soft-deleted Resume/JD không được parse, match, xuất hiện trong current Match list/leaderboard hoặc nhận terminal worker write mới.
 
 ## 6. Auth MVP
 MVP chỉ bắt buộc Access Token JWT.
@@ -88,19 +89,25 @@ Duplicate queue delivery phải an toàn. Chỉ một worker được claim mộ
 ```text
 CLAIM:
 UPDATE Resume/JD ... SET parsing_status='PROCESSING', updated_at=NOW()
-WHERE id=? AND revision=expected_revision AND parsing_status='PENDING'
+WHERE id=?
+  AND revision=expected_revision
+  AND parsing_status='PENDING'
+  AND is_deleted=FALSE
 ```
 
 Chỉ worker có `rowcount=1` được tiếp tục. Worker khác `rowcount=0` phải discard.
 
-Terminal write phải bắt buộc từ đúng PROCESSING của cùng revision:
+Terminal write phải bắt buộc từ đúng PROCESSING của cùng revision và resource vẫn chưa bị soft-delete:
 
 ```text
 TERMINAL SUCCESS/FAILED:
-WHERE id=? AND revision=expected_revision AND parsing_status='PROCESSING'
+WHERE id=?
+  AND revision=expected_revision
+  AND parsing_status='PROCESSING'
+  AND is_deleted=FALSE
 ```
 
-Với success nhiều bảng, worker mở transaction, lock/check resource vẫn `PROCESSING + expected_revision`, ghi aggregate rồi terminal update. Nếu check/CAS fail thì rollback toàn bộ và discard. Nhờ vậy duplicate delivery không thể race FAILED/COMPLETED.
+Với success nhiều bảng, worker mở transaction, lock/check resource vẫn `PROCESSING + expected_revision + is_deleted=false`, ghi aggregate rồi terminal update. Nếu check/CAS fail thì rollback toàn bộ và discard. Nhờ vậy duplicate delivery và concurrent soft-delete không thể ghi terminal output sai.
 
 ### 8.3 Match worker exclusive CAS
 Mỗi trigger/invalidate Match tăng `match_results.generation` và refresh snapshot `resume_revision`, `job_revision` về revision hiện tại.
@@ -108,9 +115,9 @@ Mỗi trigger/invalidate Match tăng `match_results.generation` và refresh snap
 Task nhận:
 `match_id, expected_generation, expected_resume_revision, expected_job_revision, algorithm_version`.
 
-Claim chỉ hợp lệ khi row còn `PENDING`, generation/snapshots khớp và linked Resume/JD revisions vẫn khớp expected. Chỉ một worker được chuyển `PENDING -> PROCESSING`.
+Claim chỉ hợp lệ khi row còn `PENDING`, generation/snapshots khớp, linked Resume/JD revisions khớp expected **và cả hai linked resource `is_deleted=false`**. Chỉ một worker được chuyển `PENDING -> PROCESSING`.
 
-Terminal COMPLETED/FAILED chỉ hợp lệ từ `PROCESSING` với cùng generation/snapshots và linked revisions vẫn khớp. `rowcount=0` => stale/duplicate task discard, không overwrite generation mới.
+Terminal COMPLETED/FAILED chỉ hợp lệ từ `PROCESSING` với cùng generation/snapshots, linked revisions vẫn khớp và linked resources vẫn chưa xóa. `rowcount=0` => stale/duplicate/deleted-resource task discard.
 
 ## 9. Idempotent creation và parse dispatch recovery
 ### 9.1 Idempotent POST create
@@ -134,7 +141,7 @@ Nếu response mạng bị mất và client retry POST, cùng `Idempotency-Key` 
 
 ### 9.3 Parse Recovery Sweeper
 MVP có recovery/re-dispatch nội bộ cho Resume/JD `PENDING` chưa được claim:
-- periodic/startup sweep chọn resource `PENDING`, chưa xóa, `updated_at` cũ hơn grace window cấu hình;
+- periodic/startup sweep chọn resource `PENDING`, `is_deleted=false`, `updated_at` cũ hơn grace window cấu hình;
 - enqueue lại `(resource_id, current_revision)` mà **không tăng revision** và không đổi payload;
 - duplicate re-dispatch an toàn vì exclusive CAS chỉ cho một worker claim `PENDING -> PROCESSING`.
 
@@ -156,7 +163,7 @@ Khi score stale, trong cùng transaction:
 
 ## 11. Batch matching
 - Validate **toàn bộ** `resume_ids` trước khi mutate.
-- Nếu một item fail ownership/readiness -> cả request fail, không sửa Match nào.
+- Nếu một item fail ownership/readiness/deleted-state -> cả request fail, không sửa Match nào.
 - Chuẩn bị/upsert toàn batch trong **một transaction**; mỗi row generation++ và snapshot revision hiện tại.
 - Sau commit mới dispatch task.
 - Nếu dispatcher lỗi, endpoint trả `503 TASK_DISPATCH_FAILED`; rows đã chuẩn bị có thể còn PENDING và request có thể retry an toàn. Lần retry tăng generation nên task cũ không overwrite task mới.
@@ -177,5 +184,5 @@ Muốn đổi API/database/enum/concurrency rule phải sửa PTTK trước.
 - chạy `schema.sql`.
 - chạy `skill_taxonomy_seed.sql`.
 - verify 10 tables, constraints, HNSW, taxonomy seed.
-- smoke-test duplicate delivery CAS, stale revision/generation, parse recovery re-dispatch và idempotent create.
+- smoke-test duplicate delivery CAS, stale revision/generation, soft-delete race guard, parse recovery re-dispatch và idempotent create.
 - sau đó mới ORM/Auth/API/AI.
