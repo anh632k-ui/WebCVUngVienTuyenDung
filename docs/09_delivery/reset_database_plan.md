@@ -2,13 +2,13 @@
 
 ## Mục tiêu
 
-Database `webcv_ungvien` hiện tại là bản thực nghiệm được tạo trước khi PTTK đồng bộ. Do chưa có dữ liệu nghiệp vụ cần bảo toàn, sau khi PR PTTK được review/merge sẽ **reset schema/database và tạo lại từ `docs/05_database/schema.sql`** thay vì viết migration vá chồng lên thiết kế cũ.
+Database `webcv_ungvien` hiện tại là bản thực nghiệm được tạo trước khi PTTK đồng bộ. Do chưa có dữ liệu nghiệp vụ cần bảo toàn, sau khi PR PTTK được review/merge sẽ **reset database và tạo lại từ `docs/05_database/schema.sql`** thay vì viết migration vá chồng lên thiết kế cũ.
 
 ## Điều kiện trước khi reset
 
 Không thực hiện reset cho tới khi:
 
-- Pull Request PTTK đã được user review.
+- Pull Request PTTK đã được user review/merge.
 - `schema.sql` đã được audit lần cuối.
 - Đã xác nhận database cũ không chứa dữ liệu cần giữ.
 - Có backup nếu muốn giữ snapshot phục vụ đối chiếu.
@@ -33,11 +33,11 @@ Sau đó kết nối `webcv_ungvien` và chạy toàn bộ:
 docs/05_database/schema.sql
 ```
 
-Script tự tạo `uuid-ossp` và `vector` nếu PostgreSQL server đã có extension package pgvector.
+Script tự tạo `uuid-ossp` và `vector` nếu PostgreSQL server đã có package pgvector tương thích.
 
 ## Verification bắt buộc
 
-### Extensions
+### 1. Extensions
 
 ```sql
 SELECT extname, extversion
@@ -46,9 +46,11 @@ WHERE extname IN ('uuid-ossp', 'vector')
 ORDER BY extname;
 ```
 
-### Số bảng nghiệp vụ
+Phải có cả `uuid-ossp` và `vector`.
 
-Expected = 10.
+### 2. Số bảng nghiệp vụ
+
+Expected = **10**.
 
 ```sql
 SELECT table_name
@@ -58,7 +60,7 @@ WHERE table_schema = 'public'
 ORDER BY table_name;
 ```
 
-Expected tables:
+Expected:
 
 ```text
 candidate_profiles
@@ -73,30 +75,51 @@ skills
 users
 ```
 
-### Foreign keys
+### 3. Foreign keys / unique constraints
 
-Kiểm tra FK bằng pgAdmin hoặc query `information_schema.table_constraints` / `key_column_usage`.
+Kiểm tra FK/UNIQUE bằng pgAdmin hoặc `information_schema`. Các quan hệ chính phải tồn tại đúng PDM: ownership user->resume/JD, resume aggregate, taxonomy links, và cặp match `(job_id,resume_id)` unique.
 
-### Check constraints
+### 4. Check constraints
 
 Đặc biệt phải có:
 
-- role enum-like check.
-- parsing status checks.
-- job status check.
-- job weights sum = 1.000.
-- active JD phải parsed.
-- score range [0,100].
-- completed match phải có đủ scores + calculated_at.
+- role `CANDIDATE|HR|ADMIN`;
+- Resume/Job parsing status;
+- Job business status;
+- job weights tổng `1.000`;
+- Resume PARSED phải có raw text + embedding/model + parsed timestamp;
+- Job PARSED phải có embedding/model + parsed timestamp;
+- Job ACTIVE phải `PARSED` và `is_criteria_verified=true`;
+- soft-delete phải có `deleted_at`;
+- Match scores nằm trong `[0,100]` khi có giá trị;
+- Match COMPLETED phải có đủ bốn scores + `calculated_at`.
 
-### HNSW indexes
+**Lưu ý:** invariant “JD phải có ít nhất một `job_skill` trước ACTIVE/matching” được service/API enforce. CHECK constraint của bảng cha không nên truy vấn số dòng bảng con.
+
+### 5. HNSW indexes
 
 ```sql
 SELECT indexname, indexdef
 FROM pg_indexes
 WHERE schemaname='public'
-  AND indexname IN ('idx_resumes_embedding_hnsw','idx_jobs_embedding_hnsw');
+  AND indexname IN (
+    'idx_resumes_embedding_hnsw',
+    'idx_jobs_embedding_hnsw'
+  )
+ORDER BY indexname;
 ```
+
+Phải thấy `vector_cosine_ops` cho cả hai embedding indexes.
+
+### 6. Smoke-test constraints sau reset
+
+Sau khi schema chạy thành công, nên thử trong transaction rồi rollback:
+
+- insert user role sai -> phải bị từ chối;
+- insert Resume file > 5 MB -> phải bị từ chối;
+- đặt Job ACTIVE khi chưa PARSED/verified -> phải bị từ chối;
+- đặt tổng weights khác 1 -> phải bị từ chối;
+- đặt Match COMPLETED khi score còn NULL -> phải bị từ chối.
 
 ## Sau reset
 
@@ -107,11 +130,12 @@ Thứ tự triển khai backend:
 3. Async SQLAlchemy connection test.
 4. ORM Models **map vào schema đã tồn tại**; không dùng `create_all()` để tự phát minh schema.
 5. Pydantic schemas từ API Contract/OpenAPI.
-6. Auth.
-7. Resume/Job CRUD.
-8. AI/NLP.
-9. Matching.
-10. Frontend integration.
+6. Auth + Users + Skill Taxonomy lookup.
+7. Resume CRUD/Human-in-the-loop.
+8. Job CRUD/criteria/weights.
+9. AI/NLP pipeline.
+10. Matching + Skill Gap + leaderboard.
+11. Frontend integration.
 
 ## Không được làm
 
@@ -119,3 +143,4 @@ Thứ tự triển khai backend:
 - Không dùng ORM `create_all()` để tạo thêm cột/bảng ngoài PTTK.
 - Không giữ cả `user_id` cũ và `owner_user_id` mới song song.
 - Không tạo `skill_type` trong `job_skills`; field chuẩn là `importance`.
+- Không thêm endpoint/table/enum mới trong code nếu chưa cập nhật PTTK + Traceability trước.
