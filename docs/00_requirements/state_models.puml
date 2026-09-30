@@ -6,20 +6,20 @@ title STATE MODELS - CV / JD / MATCHING
 
 state "Resume Parsing" as Resume {
   [*] --> PENDING
-  PENDING --> PROCESSING : task(expected_revision)
-  PROCESSING --> PARSED : success + revision still matches
-  PROCESSING --> FAILED : error + revision still matches
-  FAILED --> PENDING : retry/reparse
-  PARSED --> PENDING : explicit reparse / pipeline upgrade
+  PENDING --> PROCESSING : exclusive claim\nexpected_revision + not deleted
+  PROCESSING --> PARSED : terminal CAS\nsame revision + not deleted
+  PROCESSING --> FAILED : terminal CAS\nsame revision + not deleted
+  FAILED --> PENDING : retry same input => same revision\nor reparse => revision++ before enqueue
+  PARSED --> PENDING : explicit reparse/pipeline upgrade\nrevision++ before enqueue
 }
 
 state "Job Parsing" as JobParsing {
   [*] --> J_PENDING
-  J_PENDING --> J_PROCESSING : task(expected_revision)
-  J_PROCESSING --> J_PARSED : success + revision still matches
-  J_PROCESSING --> J_FAILED : error + revision still matches
-  J_FAILED --> J_PENDING : retry
-  J_PARSED --> J_PENDING : raw_content/model/preprocessing change
+  J_PENDING --> J_PROCESSING : exclusive claim\nexpected_revision + not deleted
+  J_PROCESSING --> J_PARSED : terminal CAS\nsame revision + not deleted
+  J_PROCESSING --> J_FAILED : terminal CAS\nsame revision + not deleted
+  J_FAILED --> J_PENDING : retry same input => same revision\nor reparse => revision++ before enqueue
+  J_PARSED --> J_PENDING : raw_content/model/preprocessing change\nrevision++ before enqueue
 }
 
 state "Job Business Status" as JobBusiness {
@@ -33,23 +33,35 @@ state "Job Business Status" as JobBusiness {
 
 state "Match Lifecycle" as Matching {
   [*] --> M_PENDING
-  M_PENDING --> M_PROCESSING : task(generation,revisions)
-  M_PROCESSING --> M_COMPLETED : conditional terminal write
-  M_PROCESSING --> M_FAILED : conditional terminal write
+  M_PENDING --> M_PROCESSING : exclusive claim\ngeneration + revisions + linked not deleted
+  M_PROCESSING --> M_COMPLETED : terminal CAS\nsame expected values + linked not deleted
+  M_PROCESSING --> M_FAILED : terminal CAS\nsame expected values + linked not deleted
   M_FAILED --> M_PENDING : retry => generation++
   M_COMPLETED --> M_PENDING : invalidate => generation++
 }
+
+note bottom of Resume
+`revision` is input/computation version.
+Worker terminal commit does not increment it.
+Soft-delete is orthogonal lifecycle state and blocks claim/terminal writes.
+end note
+
+note bottom of JobParsing
+Recovery re-dispatch of PENDING keeps same revision.
+Soft-delete blocks claim/terminal writes.
+end note
 
 note bottom of JobBusiness
 same-state PATCH idempotent.
 DRAFT -> CLOSED is invalid.
 ACTIVE requires PARSED + verified + embedding/model/preprocessing
-+ >=1 job_skill.
++ >=1 job_skill + is_deleted=false.
 end note
 
 note bottom of Matching
-Worker must re-check generation + Resume revision + JD revision.
-If any expected value differs, task is stale and must not overwrite.
+Worker checks generation + stored snapshots + linked current revisions
++ linked Resume/JD is_deleted=false.
+Duplicate/stale/deleted task must not overwrite.
 FAILED requires error_message; other states require error_message=NULL.
 end note
 @enduml
