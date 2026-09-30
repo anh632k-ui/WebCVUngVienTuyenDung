@@ -22,7 +22,7 @@ FE -> API : POST /api/v1/jobs + Idempotency-Key
 API -> Service : create_job(HR,key,payload)
 Service -> Idem : derive UUIDv5(HR.id,route,key)
 Idem --> Service : deterministic job_id
-Service -> DB : INSERT DRAFT/PENDING revision=1,id=job_id\nON CONFLICT id -> load same owned JD
+Service -> DB : lookup/INSERT DRAFT/PENDING revision=1,id=job_id
 DB --> Service : same job_id/current revision
 Service -> DB : COMMIT persistence
 Service -> Dispatcher : best-effort enqueue(job_id,current_revision)
@@ -38,7 +38,7 @@ API --> FE : same JD on retry with same key
 HR -> FE : sửa raw_content
 FE -> API : PUT /jobs/{id}
 API -> Service : update_job(...)
-Service -> DB : verify HR owner/Admin existing JD
+Service -> DB : verify HR owner/Admin + is_deleted=FALSE
 Service -> DB : BEGIN
 Service -> DB : revision++ BEFORE new computation\nDRAFT/PENDING, verified=false\nclear embedding/model/preprocessing/parsed_at
 Service -> DB : invalidate Matches: generation++, refresh snapshots,\nPENDING, clear stale payload
@@ -50,7 +50,7 @@ end
 Service --> API : 200
 
 == Recovery ==
-Recovery -> DB : SELECT active JD PENDING older than grace window
+Recovery -> DB : SELECT JD PENDING\nWHERE is_deleted=FALSE and older than grace
 DB --> Recovery : job_id,current_revision
 Recovery -> Dispatcher : re-dispatch(job_id,current_revision)
 Dispatcher -> Queue : task
@@ -61,24 +61,25 @@ end note
 
 == Parse ==
 Queue -> Worker : job_id, expected_revision
-Worker -> DB : CAS UPDATE PROCESSING\nWHERE revision=? AND parsing_status='PENDING'
+Worker -> DB : CAS UPDATE PROCESSING\nWHERE revision=? AND parsing_status='PENDING'\nAND is_deleted=FALSE
 alt rowcount=0
-  Worker -> Worker : stale/duplicate -> discard
+  Worker -> Worker : stale/duplicate/deleted -> discard
 else exclusive claim acquired
   Worker -> NLP : parse criteria + embedding
   alt error
-    Worker -> DB : CAS FAILED + parsing_error_message\nWHERE revision=? AND parsing_status='PROCESSING'
+    Worker -> DB : CAS FAILED + parsing_error_message\nWHERE revision=? AND parsing_status='PROCESSING'\nAND is_deleted=FALSE
   else success
-    Worker -> DB : BEGIN + lock/check revision=? AND PROCESSING
+    Worker -> DB : BEGIN + lock/check revision=?\nAND PROCESSING AND is_deleted=FALSE
     alt check failed
       Worker -> DB : ROLLBACK
-      Worker -> Worker : stale/duplicate -> discard
+      Worker -> Worker : stale/duplicate/deleted -> discard
     else current claim
       Worker -> DB : replace job_skills + parsed fields + model/preprocessing
-      Worker -> DB : CAS PARSED\nWHERE revision=? AND parsing_status='PROCESSING'
+      Worker -> DB : CAS PARSED\nWHERE revision=? AND parsing_status='PROCESSING'\nAND is_deleted=FALSE
       Worker -> DB : COMMIT
       note right of Worker
       Worker không tăng revision.
+      Concurrent soft-delete làm CAS/check fail.
       end note
     end
   end
