@@ -1,20 +1,27 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-title ACTIVITY - UC07/08 UPLOAD & PARSE CV - IDEMPOTENT + EXCLUSIVE CAS
+title ACTIVITY - UC07/08 UPLOAD & PARSE CV - FINGERPRINTED IDEMPOTENCY + EXCLUSIVE CAS
 
 start
 :Candidate/HR chọn PDF/DOCX;
 :Client tạo Idempotency-Key UUID cho logical upload;
 :POST /api/v1/resumes/upload + Idempotency-Key;
-:Backend kiểm <=5MB + MIME/magic bytes;
+:Backend đọc bytes, kiểm <=5MB + MIME/magic bytes;
 if (file invalid?) then (Có)
   :413/415;
   stop
 endif
-:Derive resume_id deterministic UUIDv5(actor,route,key);
+:request_fingerprint = SHA-256(raw file bytes);
+:Derive resume_id UUIDv5 bằng namespace cố định
+bd7b1f30-b2de-549c-a8dd-8d742ee5bc12
++ actor + canonical route + key;
 :Lookup deterministic Resume id;
-if (đã tồn tại?) then (Có)
+if (Resume đã tồn tại?) then (Có)
+  if (stored fingerprint = request fingerprint?) then (Không)
+    :409 IDEMPOTENCY_KEY_REUSED;
+    stop
+  endif
   :Không ghi đè file/storage;
   if (existing vẫn PENDING và chưa xóa?) then (Có)
     :Best-effort re-dispatch current_revision;
@@ -22,9 +29,31 @@ if (đã tồn tại?) then (Có)
   :202 cùng Resume hiện hữu;
   stop
 endif
-:Put file vào safe storage_key theo no-overwrite/put-if-absent;
-:INSERT Resume PENDING revision=1;
-:COMMIT persistence;
+
+:storage_key = resumes/{resume_id}/source;
+:put-if-absent/no-overwrite;
+if (storage object đã tồn tại?) then (Có)
+  :Compute SHA-256 bytes object hiện hữu;
+  if (object fingerprint != request fingerprint?) then (Có)
+    :409 IDEMPOTENCY_KEY_REUSED;
+    :Không overwrite object;
+    stop
+  endif
+  :Reuse verified orphan/current object;
+endif
+
+:INSERT Resume PENDING revision=1
++ create_request_fingerprint;
+if (deterministic PK race?) then (Có)
+  :Re-read Resume;
+  if (persisted fingerprint != request fingerprint?) then (Có)
+    :409 IDEMPOTENCY_KEY_REUSED;
+    stop
+  endif
+  :Return existing resource semantics;
+else (Không)
+  :COMMIT persistence;
+endif
 :Best-effort enqueue parse(resume_id,current_revision);
 if (dispatcher lỗi?) then (Có)
   :Log dispatch failure;
@@ -75,6 +104,10 @@ AND is_deleted=FALSE;
 stop
 
 legend bottom
+Fingerprint Resume = SHA-256 raw file bytes.
+Same key + different fingerprint => 409 IDEMPOTENCY_KEY_REUSED.
+Nếu storage write thành công nhưng DB insert fail, orphan object được giữ;
+retry chỉ reuse sau khi hash object khớp fingerprint, không overwrite.
 Recovery sweeper chỉ scan PENDING + is_deleted=FALSE quá grace window và re-dispatch current revision.
 Không reset PROCESSING timeout trong MVP nếu chưa có lease/attempt token.
 Concurrent soft-delete làm terminal CAS fail/rollback.
