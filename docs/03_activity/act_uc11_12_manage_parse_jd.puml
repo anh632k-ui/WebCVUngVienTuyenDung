@@ -1,20 +1,40 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-title ACTIVITY - UC11/12 QUẢN LÝ & PHÂN TÍCH JD - IDEMPOTENT + EXCLUSIVE CAS
+title ACTIVITY - UC11/12 QUẢN LÝ & PHÂN TÍCH JD - FINGERPRINTED IDEMPOTENCY + EXCLUSIVE CAS
 
 start
 if (Tạo JD mới?) then (Có)
   :Chỉ HR;
   :Client tạo Idempotency-Key UUID;
   :POST /api/v1/jobs + Idempotency-Key;
-  :Derive job_id UUIDv5(actor,route,key);
-  :INSERT JD DRAFT/PENDING revision=1 nếu chưa tồn tại;
-  if (same idempotency key đã tồn tại?) then (Có)
-    :Dùng lại cùng JD, không tạo duplicate;
+  :Apply defaults + canonicalize create payload v1;
+  :request_fingerprint = SHA-256(canonical UTF-8 JSON);
+  :Derive job_id UUIDv5 bằng namespace cố định
+bd7b1f30-b2de-549c-a8dd-8d742ee5bc12
++ actor + canonical route + key;
+  :Lookup deterministic JD id;
+  if (JD đã tồn tại?) then (Có)
+    if (stored fingerprint != request fingerprint?) then (Có)
+      :409 IDEMPOTENCY_KEY_REUSED;
+      stop
+    endif
+    :Dùng lại cùng JD, không create side-effect mới;
+  else (Không)
+    :INSERT JD DRAFT/PENDING revision=1
++ create_request_fingerprint;
+    if (deterministic PK race?) then (Có)
+      :Re-read JD;
+      if (persisted fingerprint != request fingerprint?) then (Có)
+        :409 IDEMPOTENCY_KEY_REUSED;
+        stop
+      endif
+      :Return existing semantics;
+    else (Không)
+      :COMMIT;
+    endif
   endif
-  :COMMIT;
-  :Best-effort enqueue parse(job_id,current_revision=1);
+  :Best-effort enqueue parse(job_id,current_revision);
   if (dispatcher lỗi?) then (Có)
     :Log lỗi + giữ JD PENDING;
     :Recovery sweeper sẽ re-dispatch current_revision;
@@ -87,6 +107,9 @@ endif
 stop
 
 legend bottom
+Job fingerprint = SHA-256 canonical validated create payload after defaults.
+Same key + different fingerprint => 409 IDEMPOTENCY_KEY_REUSED.
+Concurrent deterministic-PK loser re-reads JD and compares fingerprint.
 Recovery sweeper chỉ re-dispatch JD PENDING + is_deleted=FALSE quá grace window bằng current revision.
 Không reset PROCESSING timeout trong MVP nếu chưa có lease/attempt token.
 Concurrent soft-delete làm terminal CAS fail/rollback.
