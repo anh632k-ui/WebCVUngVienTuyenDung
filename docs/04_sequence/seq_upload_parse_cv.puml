@@ -27,7 +27,7 @@ Service -> DB : lookup resume_id for current owner
 alt existing resource
   DB --> Service : existing Resume
   Service -> Service : do NOT overwrite storage
-  opt existing status=PENDING
+  opt existing status=PENDING and is_deleted=FALSE
     Service -> Dispatcher : best-effort re-dispatch(resume_id,current_revision)
   end
   Service --> API : 202 same ResumeUploadResponse
@@ -48,7 +48,7 @@ else not exists
 end
 
 == Recovery for post-commit dispatch failure ==
-Recovery -> DB : SELECT PENDING active Resume older than grace window
+Recovery -> DB : SELECT PENDING Resume\nWHERE is_deleted=FALSE and older than grace
 DB --> Recovery : resume_id,current_revision
 Recovery -> Dispatcher : re-dispatch(resume_id,current_revision)
 Dispatcher -> Queue : task
@@ -59,33 +59,34 @@ end note
 
 == Worker ==
 Queue -> Worker : resume_id, expected_revision
-Worker -> DB : CAS UPDATE PROCESSING\nWHERE id=? AND revision=? AND parsing_status='PENDING'
+Worker -> DB : CAS UPDATE PROCESSING\nWHERE id=? AND revision=?\nAND parsing_status='PENDING' AND is_deleted=FALSE
 alt rowcount=0
-  Worker -> Worker : stale/duplicate -> discard
+  Worker -> Worker : stale/duplicate/deleted -> discard
 else exclusive claim acquired
   Worker -> Storage : read file
   Worker -> NLP : extract + normalize + embed
   alt processing error
-    Worker -> DB : CAS FAILED,error\nWHERE revision=? AND parsing_status='PROCESSING'
+    Worker -> DB : CAS FAILED,error\nWHERE revision=? AND parsing_status='PROCESSING'\nAND is_deleted=FALSE
   else success
-    Worker -> DB : BEGIN + lock/check revision=? AND PROCESSING
+    Worker -> DB : BEGIN + lock/check revision=?\nAND PROCESSING AND is_deleted=FALSE
     alt check failed
       Worker -> DB : ROLLBACK
-      Worker -> Worker : stale/duplicate -> discard
+      Worker -> Worker : stale/duplicate/deleted -> discard
     else current claim
       Worker -> DB : save aggregate + embedding/model/preprocessing
-      Worker -> DB : CAS PARSED\nWHERE revision=? AND parsing_status='PROCESSING'
+      Worker -> DB : CAS PARSED\nWHERE revision=? AND parsing_status='PROCESSING'\nAND is_deleted=FALSE
       Worker -> DB : COMMIT
       note right of Worker
       Worker không tăng revision.
+      Concurrent soft-delete làm CAS/check fail.
       end note
     end
   end
 end
 
 FE -> API : GET /resumes/{id}/status
-API -> Service : authorize owner/Admin
-Service -> DB : SELECT status
+API -> Service : authorize owner/Admin + active resource
+Service -> DB : SELECT status WHERE is_deleted=FALSE
 DB --> Service : status
 Service --> API : 200
 API --> FE : status
