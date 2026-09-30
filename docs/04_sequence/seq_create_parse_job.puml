@@ -1,13 +1,13 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-title SEQUENCE - CREATE/UPDATE & PARSE JD - IDEMPOTENT CREATE + EXCLUSIVE CAS
+title SEQUENCE - CREATE/UPDATE & PARSE JD - FINGERPRINTED IDEMPOTENCY + EXCLUSIVE CAS
 
 actor HR
 participant "Next.js" as FE
 participant "Jobs API" as API
 participant "Job Service" as Service
-participant "Idempotency/UUIDv5" as Idem
+participant "Idempotency/UUIDv5 + SHA-256" as Idem
 database "PostgreSQL" as DB
 participant "Task Dispatcher" as Dispatcher
 participant "Parse Recovery Sweeper" as Recovery
@@ -20,19 +20,45 @@ HR -> FE : nhập JD
 FE -> FE : generate Idempotency-Key UUID
 FE -> API : POST /api/v1/jobs + Idempotency-Key
 API -> Service : create_job(HR,key,payload)
-Service -> Idem : derive UUIDv5(HR.id,route,key)
+Service -> Service : validate + apply defaults + canonicalize v1
+Service -> Idem : SHA-256(canonical UTF-8 JSON)
+Idem --> Service : request_fingerprint
+Service -> Idem : UUIDv5(FIXED_NAMESPACE, HR.id+route+key)
 Idem --> Service : deterministic job_id
-Service -> DB : lookup/INSERT DRAFT/PENDING revision=1,id=job_id
-DB --> Service : same job_id/current revision
-Service -> DB : COMMIT persistence
-Service -> Dispatcher : best-effort enqueue(job_id,current_revision)
-alt dispatcher accepted
-  Dispatcher -> Queue : task
-else dispatcher failed
-  Service -> Service : log failure; keep PENDING
+Service -> DB : lookup job_id
+alt existing JD
+  DB --> Service : JD + create_request_fingerprint
+  alt fingerprint mismatch
+    Service --> API : 409 IDEMPOTENCY_KEY_REUSED
+    API --> FE : conflict
+  else same fingerprint
+    Service -> Dispatcher : best-effort re-dispatch if PENDING
+    Service --> API : 201 same JobResponse
+    API --> FE : same JD
+  end
+else no row
+  Service -> DB : INSERT DRAFT/PENDING revision=1\n+ create_request_fingerprint
+  alt deterministic PK race
+    DB --> Service : unique conflict
+    Service -> DB : re-read job_id
+    DB --> Service : persisted fingerprint
+    alt mismatch
+      Service --> API : 409 IDEMPOTENCY_KEY_REUSED
+    else same fingerprint
+      Service -> Service : use existing JD
+    end
+  else inserted
+    Service -> DB : COMMIT persistence
+  end
+  Service -> Dispatcher : best-effort enqueue(job_id,current_revision)
+  alt dispatcher accepted
+    Dispatcher -> Queue : task
+  else dispatcher failed
+    Service -> Service : log failure; keep PENDING
+  end
+  Service --> API : 201 JobResponse
+  API --> FE : created/existing
 end
-Service --> API : 201 JobResponse
-API --> FE : same JD on retry with same key
 
 == Update raw content ==
 HR -> FE : sửa raw_content
