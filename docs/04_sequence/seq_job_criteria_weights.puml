@@ -1,8 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-
-title SEQUENCE - REVIEW JD CRITERIA & UPDATE WEIGHTS
+title SEQUENCE - REVIEW CRITERIA & WEIGHTS WITH REVISION
 
 actor "HR/Admin" as User
 participant "Next.js" as FE
@@ -11,58 +10,36 @@ participant "Job Service" as Service
 database "PostgreSQL" as DB
 participant "Task Dispatcher" as Dispatcher
 
-== Review criteria ==
-User -> FE : mở Criteria
-FE -> API : GET /jobs/{id}/criteria
-API -> Service : get_criteria(current_user,id)
-Service -> DB : verify recruiter_id/Admin + SELECT JD/job_skills
-DB --> Service : criteria
-Service --> API : criteria DTO
-API --> FE : 200
-
-User -> FE : chỉnh experience/education/skills
-FE -> API : GET /skills?keyword=...
-API -> Service : search taxonomy
-Service -> DB : SELECT skills
-DB --> Service : skill options
-Service --> API : taxonomy DTO
-API --> FE : 200
-
-User -> FE : lưu criteria
+== Criteria ==
+User -> FE : chỉnh criteria
 FE -> API : PUT /jobs/{id}/criteria
-API -> Service : update_criteria(current_user,id,payload)
-Service -> Service : validate ownership, >=1 skill,\nskill IDs, duplicates, values
+API -> Service : update_criteria(...)
+Service -> Service : validate owner/Admin, >=1 skill, taxonomy, duplicates
 alt invalid
-  Service --> API : validation error
-  API --> FE : 422
+  Service --> API : 422
 else valid
   Service -> DB : BEGIN
-  Service -> DB : update JD + replace/upsert job_skills\nset is_criteria_verified=true
-  Service -> DB : invalidate related matches\nstatus=PENDING; clear scores/evidence/error/calculated_at
+  Service -> DB : save criteria + verified=true + revision++
+  Service -> DB : invalidate Match generation++ + clear stale payload
   Service -> DB : COMMIT
-  DB --> Service : committed
-  Service --> API : updated criteria
-  API --> FE : 200
+  Service --> API : 200 JobCriteriaResponse
 end
 
 == Weights ==
-User -> FE : chỉnh w_skill/w_semantic/w_experience
+User -> FE : chỉnh weights
 FE -> API : PUT /jobs/{id}/weights
 API -> Service : update_weights(...)
-Service -> Service : validate each [0,1] and sum=1.000
+Service -> Service : validate [0,1] and sum=1
 alt invalid
-  Service --> API : validation error
-  API --> FE : 422
+  Service --> API : 422
 else valid
   Service -> DB : BEGIN
-  Service -> DB : UPDATE job_descriptions weights
-  Service -> DB : invalidate related matches\nstatus=PENDING; clear scores/evidence/error/calculated_at
+  Service -> DB : update weights + revision++
+  Service -> DB : invalidate Match generation++ + clear stale payload
   Service -> DB : COMMIT
   opt recalculate=true
-    Service -> Dispatcher : enqueue recalculation jobs
+    Service -> Dispatcher : dispatch tasks with new generation/revisions
   end
-  Service --> API : success
-  API --> FE : 200
+  Service --> API : 200 JobResponse
 end
-
 @enduml
