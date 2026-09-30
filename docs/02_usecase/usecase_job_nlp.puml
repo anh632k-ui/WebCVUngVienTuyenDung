@@ -18,22 +18,26 @@ rectangle "JD & NLP" {
   usecase "Trích xuất kinh nghiệm/học vấn" as J2
   usecase "Chuẩn hóa kỹ năng" as J3
   usecase "Phân loại MANDATORY/OPTIONAL" as J4
-  usecase "Sinh embedding JD" as J5
+  usecase "Sinh embedding JD + version" as J5
   usecase "UC13 Rà soát criteria JD" as UC13
   usecase "UC14 Xem JD đang tuyển" as UC14
 }
 
-HR --> UC11
+HR --> UC11 : tạo + quản lý JD của mình
 HR --> UC13
-Admin --> UC11
+Admin --> UC11 : quản trị JD đã tồn tại
 Admin --> UC13
 Candidate --> UC14
 
-UC12 ..> UC11 : <<extend>>\n[khi tạo hoặc đổi raw_content]
+UC12 ..> UC11 : <<extend>>\n[khi HR tạo hoặc raw_content đổi]
 UC12 ..> J1 : <<include>>
 UC12 ..> J2 : <<include>>
 UC12 ..> J3 : <<include>>
 UC12 ..> J4 : <<include>>
 UC12 ..> J5 : <<include>>
 
+note bottom of UC11
+POST /jobs chỉ HR.
+Admin không tạo JD mới dưới identity Admin.
+end note
 @enduml
