@@ -21,7 +21,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyyaml openapi-spec-validator
 
-      - name: Validate OpenAPI and round-3 invariants
+      - name: Validate OpenAPI and reliability invariants
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -34,7 +34,7 @@ jobs:
 
           for forbidden in ('/auth/refresh','/auth/logout','/jobs/{id}/export'):
               assert forbidden not in paths, f'Advanced route exposed in MVP: {forbidden}'
-          for required in ('/matching/calculate','/matching','/skills','/jobs'):
+          for required in ('/matching/calculate','/matching','/skills','/jobs','/resumes/upload'):
               assert required in paths
 
           assert spec['components']['schemas']['MatchStatus']['enum'] == ['PENDING','PROCESSING','COMPLETED','FAILED']
@@ -42,6 +42,14 @@ jobs:
           assert '503' in paths['/matching/calculate']['post']['responses']
           assert '409' in paths['/admin/users/{id}']['patch']['responses']
           assert 'Admin' not in paths['/jobs']['post'].get('summary','')
+
+          idem = spec['components']['parameters']['IdempotencyKey']
+          assert idem['name'] == 'Idempotency-Key'
+          assert idem['in'] == 'header' and idem['required'] is True
+          assert idem['schema']['format'] == 'uuid'
+          for route in ('/resumes/upload','/jobs'):
+              params = paths[route]['post'].get('parameters', [])
+              assert any(p.get('$ref') == '#/components/parameters/IdempotencyKey' for p in params), route
 
           match = spec['components']['schemas']['MatchSummary']['properties']
           for f in ('generation','resume_revision','job_revision','embedding_model','embedding_preprocessing_version'):
@@ -66,7 +74,7 @@ jobs:
                       if 'application/json' in content:
                           assert 'schema' in content['application/json']
 
-          print('OpenAPI round-3 validation: OK')
+          print('OpenAPI reliability validation: OK')
           PY
 
       - name: Install PlantUML
@@ -113,14 +121,46 @@ jobs:
           assert seed.count("('" ) >= 30
 
           rules = Path('docs/00_requirements/business_rules.md').read_text(encoding='utf-8')
-          for key in ('BR-AUTH-07','BR-JOB-10','BR-MATCH-13','BR-MATCH-14','BR-MATCH-15','BR-MATCH-16'):
-              assert key in rules
-          for phrase in ('expected_revision','embedding_preprocessing_version','TASK_DISPATCH_FAILED'):
-              assert phrase in rules or phrase in Path('docs/PTTK_MASTER.md').read_text(encoding='utf-8')
+          for key in (
+              'BR-AUTH-07','BR-CV-07','BR-CV-11','BR-CV-12',
+              'BR-JOB-10','BR-JOB-11','BR-JOB-12','BR-JOB-13',
+              'BR-MATCH-13','BR-MATCH-14','BR-MATCH-15','BR-MATCH-16',
+              'BR-REL-01','BR-REL-02','BR-REL-03','BR-REL-04'
+          ):
+              assert key in rules, key
+          for phrase in ('Idempotency-Key','expected_revision','parsing_status=\'PENDING\'','parsing_status=\'PROCESSING\''):
+              assert phrase in rules or phrase in Path('docs/PTTK_MASTER.md').read_text(encoding='utf-8'), phrase
 
           master = Path('docs/PTTK_MASTER.md').read_text(encoding='utf-8')
-          assert 'skill_taxonomy_seed.sql' in master
-          assert 'generation' in master and 'stale' in master.lower()
-          assert '0..1' in master
-          print('Schema/seed/semantic round-3 validation: OK')
+          assert 'input/computation request' in master
+          assert 'worker xử lý đúng `expected_revision` **không tăng revision' in master
+          assert 'Parse Recovery Sweeper' in master
+          assert 'UUIDv5' in master and 'Idempotency-Key' in master
+          assert 'parsing_status=\'PENDING\'' in master
+          assert 'parsing_status=\'PROCESSING\'' in master
+          assert 'status = PENDING' in master or 'status=PENDING' in master
+          assert 'status = PROCESSING' in master or 'status=PROCESSING' in master
+
+          cv_seq = Path('docs/04_sequence/seq_upload_parse_cv.puml').read_text(encoding='utf-8')
+          jd_seq = Path('docs/04_sequence/seq_create_parse_job.puml').read_text(encoding='utf-8')
+          match_seq = Path('docs/04_sequence/seq_matching.puml').read_text(encoding='utf-8')
+          for text in (cv_seq, jd_seq):
+              assert "parsing_status='PENDING'" in text
+              assert "parsing_status='PROCESSING'" in text
+              assert 'Recovery' in text
+              assert 'Idempotency-Key' in text
+          assert 'PENDING->PROCESSING' in match_seq or 'PENDING -> PROCESSING' in match_seq
+          assert "status='PROCESSING'" in match_seq
+          assert 'stale/duplicate' in match_seq.lower()
+
+          arch = Path('docs/06_architecture/system_architecture.puml').read_text(encoding='utf-8')
+          assert 'Parse Recovery Sweeper' in arch
+          assert 'Idempotency / UUIDv5 Guard' in arch
+          assert 'exclusive CAS' in arch
+
+          trace = Path('docs/08_traceability/traceability_matrix.md').read_text(encoding='utf-8')
+          for phrase in ('FR-43','FR-44','FR-45','Parse exclusive CAS','Match exclusive CAS','Idempotent create'):
+              assert phrase in trace, phrase
+
+          print('Schema/seed/reliability semantic validation: OK')
           PY
