@@ -25,7 +25,8 @@ package "Core" {
   component "config.py" as Config
   component "database.py" as Database
   component "security.py" as Security
-  component "version_guard.py\nrevision/generation CAS helpers" as Guard
+  component "idempotency.py\nUUIDv5 create guard" as Idem
+  component "version_guard.py\nexclusive revision/generation CAS helpers" as Guard
 }
 
 package "Service Layer" {
@@ -51,7 +52,8 @@ package "ORM and DTO" {
 }
 
 package "Background Tasks" {
-  component "task_dispatcher" as Dispatcher
+  component "task_dispatcher.py" as Dispatcher
+  component "parse_recovery.py\nstartup/periodic PENDING sweep" as Recovery
   component "celery_tasks.py\nexpected versions in task payload" as Tasks
 }
 
@@ -76,19 +78,24 @@ SkillService --> ORM
 ResumeService --> ORM
 JobService --> ORM
 MatchService --> ORM
+ResumeService --> Idem : POST create
+JobService --> Idem : POST create
+Idem --> ORM : deterministic id / load existing
 ResumeService --> Guard
 JobService --> Guard
 MatchService --> Guard
-Guard --> ORM : conditional version-aware updates
+Guard --> ORM : status + expected-version CAS
 ORM --> Database
 Database --> DB
 
 ResumeService --> Dispatcher
 JobService --> Dispatcher
 MatchService --> Dispatcher
+Recovery --> ORM : scan PENDING older than grace
+Recovery --> Dispatcher : re-dispatch current revision
 Dispatcher --> Queue
 Queue --> Tasks
-Tasks --> Guard : claim/terminal CAS
+Tasks --> Guard : exclusive claim/terminal CAS
 Tasks --> Extractor
 Tasks --> Entity
 Tasks --> Normalizer
@@ -96,6 +103,18 @@ Tasks --> Vector
 Tasks --> Engine
 Engine --> XAI
 Tasks --> ORM
+
+note bottom of Guard
+Parse: claim requires PENDING, terminal requires PROCESSING.
+Match: claim requires PENDING, terminal requires PROCESSING.
+Expected revision/generation/snapshots must still match.
+end note
+
+note bottom of Recovery
+Recovery does not increment revision.
+Duplicate dispatch is safe because only one worker can claim PENDING.
+No blind PROCESSING reset in MVP without lease/attempt token.
+end note
 
 Security --> UserService
 Config --> Database
