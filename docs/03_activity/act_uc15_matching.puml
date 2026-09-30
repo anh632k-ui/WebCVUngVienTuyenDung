@@ -18,11 +18,22 @@ if (Caller có quyền với JD/CV?) then (Có)
   if (Candidate?) then (Có)
     :Kiểm tra JD status=ACTIVE;
   endif
+  if (HR?) then (Có)
+    :Kiểm tra JD thuộc HR
+    và mọi CV đều thuộc kho HR;
+  endif
   if (Tài nguyên sẵn sàng?) then (Có)
-    :UPSERT match_results status=PENDING,
-    reset scores/error;
+    :UPSERT match_results;
+    :SET status=PENDING,
+    overall/skill/semantic/experience=NULL,
+    matched_skills=[], missing_skills=[],
+    gap_analysis_summary=NULL,
+    error_message=NULL,
+    calculated_at=NULL,
+    updated_at=NOW();
     :Queue một task cho mỗi resume_id;
-    :202 + match_ids[];
+    :202 { job_id, match_ids[],
+    total_matches, status=PENDING };
   else (Không)
     :422 Resource not ready;
     stop
@@ -56,11 +67,15 @@ endif
 :Build matched_skills + missing_skills;
 if (Tính toán thành công?) then (Có)
   :UPDATE scores 0..100,
+  evidence,
   status=COMPLETED,
   algorithm_version=hybrid-v1,
-  calculated_at=NOW();
+  calculated_at=NOW(),
+  updated_at=NOW();
 else (Không)
-  :UPDATE status=FAILED, error_message;
+  :UPDATE status=FAILED,
+  error_message,
+  updated_at=NOW();
 endif
 stop
 @enduml
