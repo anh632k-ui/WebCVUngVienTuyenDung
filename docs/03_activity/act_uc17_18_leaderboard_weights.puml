@@ -7,7 +7,8 @@ start
 if (Xem leaderboard?) then (Có)
   :HR owner JD hoặc Admin;
   :GET /jobs/{id}/leaderboard;
-  :Chỉ Match COMPLETED;
+  :Require JD is_deleted=FALSE;
+  :Chỉ Match COMPLETED có linked Resume is_deleted=FALSE;
   if (HR?) then (Có)
     :Chỉ row có resume.owner_user_id=current_user.id;
   endif
@@ -15,6 +16,7 @@ if (Xem leaderboard?) then (Có)
   :200 LeaderboardResponse;
 else (Cập nhật weights)
   :PUT /jobs/{id}/weights;
+  :Require JD is_deleted=FALSE;
   :Validate mỗi weight [0,1], tổng=1;
   if (invalid?) then (Có)
     :422;
@@ -24,7 +26,8 @@ else (Cập nhật weights)
   :Update weights;
   :job.revision++;
   :Invalidate related Match:
-generation++, PENDING, clear stale payload;
+generation++, refresh revision snapshots,
+PENDING, clear stale payload;
   :COMMIT;
   if (recalculate=true?) then (Có)
     :Dispatch task với generation/revision mới;
