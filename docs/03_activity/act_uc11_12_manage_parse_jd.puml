@@ -23,6 +23,7 @@ if (Tạo JD mới?) then (Có)
 else (Cập nhật JD hiện có)
   :HR owner hoặc Admin override;
   if (raw_content đổi?) then (Có)
+    :Require is_deleted=FALSE;
     :BEGIN;
     :job.revision++ TRƯỚC computation mới;
     :status=DRAFT; parsing_status=PENDING;
@@ -41,33 +42,38 @@ endif
 :Worker nhận parse(job_id, expected_revision);
 :Exclusive CAS claim PROCESSING
 WHERE revision=expected_revision
-AND parsing_status=PENDING;
+AND parsing_status=PENDING
+AND is_deleted=FALSE;
 if (claim rowcount=0?) then (Có)
-  :Stale/duplicate task -> discard;
+  :Stale/duplicate/deleted task -> discard;
   stop
 endif
 :Extract/normalize criteria + embedding;
 if (parse lỗi?) then (Có)
   :CAS FAILED + parsing_error_message
 WHERE revision=expected_revision
-AND parsing_status=PROCESSING;
+AND parsing_status=PROCESSING
+AND is_deleted=FALSE;
   stop
 endif
 :BEGIN terminal transaction;
-:Lock/check JD vẫn PROCESSING
-và revision=expected_revision;
+:Lock/check JD vẫn PROCESSING,
+revision=expected_revision,
+is_deleted=FALSE;
 if (check fail?) then (Có)
-  :ROLLBACK + stale/duplicate discard;
+  :ROLLBACK + stale/duplicate/deleted discard;
 else (Hợp lệ)
   :Replace job_skills + parsed fields;
   :CAS PARSED
 WHERE revision=expected_revision
-AND parsing_status=PROCESSING;
+AND parsing_status=PROCESSING
+AND is_deleted=FALSE;
   :COMMIT;
   :Worker KHÔNG tăng revision khi commit;
 endif
 
 if (PATCH status?) then (Có)
+  :Require is_deleted=FALSE;
   :Áp dụng transition matrix;
   if (DRAFT -> CLOSED?) then (Có)
     :422;
@@ -81,7 +87,8 @@ endif
 stop
 
 legend bottom
-Recovery sweeper chỉ re-dispatch JD PENDING quá grace window bằng current revision.
+Recovery sweeper chỉ re-dispatch JD PENDING + is_deleted=FALSE quá grace window bằng current revision.
 Không reset PROCESSING timeout trong MVP nếu chưa có lease/attempt token.
+Concurrent soft-delete làm terminal CAS fail/rollback.
 endlegend
 @enduml
