@@ -1,63 +1,45 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-
-title ACTIVITY - UC07 UPLOAD CV & UC08 PHÂN TÍCH CV
+title ACTIVITY - UC07/08 UPLOAD & PARSE CV WITH REVISION GUARD
 
 start
 :Candidate/HR chọn PDF/DOCX;
-:Frontend pre-check size/extension;
-:POST /api/v1/resumes/upload (multipart);
-:Backend xác thực user;
-:Kiểm tra <= 5 MB và MIME/Magic Bytes;
-if (File hợp lệ?) then (Có)
-  :Sinh storage key an toàn;
-  :Lưu file vật lý;
-  :INSERT resumes
-  owner_user_id=current_user.id,
-  parsing_status=PENDING;
-  :Kích hoạt parse task;
-  :202 Accepted + resume_id;
-else (Không)
-  :413 hoặc 415;
+:Backend kiểm <=5MB + MIME/magic bytes;
+if (file invalid?) then (Có)
+  :413/415;
   stop
 endif
+:Lưu safe storage_key;
+:Tạo Resume PENDING, revision=1, owner=current_user;
+:Enqueue parse(resume_id, expected_revision=1);
+:202 Accepted;
 
-:Worker/Background handler nhận resume_id;
-:UPDATE parsing_status=PROCESSING;
-:Đọc file;
-if (DOCX?) then (Có)
-  :python-docx extract text;
-else (PDF)
-  :pdfplumber/PyMuPDF extract text;
-  if (Text layer đủ dùng?) then (Có)
+:Worker conditional claim PROCESSING
+WHERE revision=expected_revision;
+if (rowcount=0?) then (Có)
+  :Stale task -> discard;
+  stop
+endif
+:Extract text;
+if (không có text?) then (Có)
+  if (OCR Advanced bật?) then (Có)
+    :OCR fallback;
   else (Không)
-    if (OCR module bật?) then (Có)
-      :OCR fallback;
-    else (Không)
-      :Đánh dấu lỗi thiếu text;
-    endif
+    :Conditional UPDATE FAILED + error
+WHERE revision=expected_revision;
+    stop
   endif
 endif
-
-if (Có raw text hợp lệ?) then (Có)
-  :Normalize Unicode / whitespace;
-  :Section segmentation;
-  :Regex/NER trích thông tin;
-  :Trích experience/education;
-  :Map skill -> Skill Taxonomy;
-  :Sinh resume_embedding cùng model version;
-  :BEGIN TRANSACTION;
-  :UPSERT candidate_profiles;
-  :Replace/Upsert resume_skills;
-  :Replace resume_experiences;
-  :Replace resume_educations;
-  :UPDATE resumes raw_text, embedding,
-  parsing_status=PARSED, parsed_at=NOW();
-  :COMMIT;
+:Parse entities/sections/skills;
+:Map Skill Taxonomy seed;
+:Generate embedding + model + preprocessing version;
+:Conditional transaction persist aggregate + PARSED
+WHERE revision=expected_revision;
+if (terminal rowcount=0?) then (Có)
+  :Stale result -> discard;
 else (Không)
-  :UPDATE resumes parsing_status=FAILED,
-  error_message;
+  :PARSED;
 endif
 stop
 @enduml
