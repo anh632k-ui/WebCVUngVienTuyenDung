@@ -1,4 +1,4 @@
-# FINAL PTTK AUDIT REPORT — ROUND 3
+# FINAL PTTK AUDIT REPORT — POST ROUND 3 RELIABILITY LOCK
 
 ## Phạm vi
 Requirements -> BFD -> Use Case -> Activity -> Sequence -> Database -> Architecture/AI -> API Contract/OpenAPI -> Traceability -> Delivery Gate.
@@ -11,52 +11,80 @@ Requirements -> BFD -> Use Case -> Activity -> Sequence -> Database -> Architect
 - vector(1024), cosine HNSW.
 - current Match unique `(job_id,resume_id)`.
 
-## Các lỗi vòng 1-2 đã xử lý
-Candidate profile thiếu; parse/business state lẫn; scores NOT NULL khi pending; route matching lệch; API/OpenAPI lệch; privacy HR/Candidate; stale payload; email CI uniqueness; advanced export exposure.
+## Các lỗi vòng 1-3 đã xử lý
+Candidate profile thiếu; parse/business state lẫn; scores NOT NULL khi pending; route matching lệch; API/OpenAPI lệch; privacy HR/Candidate; stale payload; email CI uniqueness; advanced export exposure; stale worker revision/generation; taxonomy bootstrap; role lifecycle; preprocessing provenance; JD transitions; Admin-create ambiguity; batch atomicity; missing-date scoring; error lifecycle.
 
-## Semantic review vòng 3 — lỗi và cách khóa
+## Review sau vòng 3 — các lỗi reliability còn lại và cách khóa
 
-### 1. Stale background worker race — FIXED
-Thêm `resumes.revision`, `job_descriptions.revision`, `match_results.generation`, `resume_revision`, `job_revision`.
-Parse task dùng expected_revision. Match task dùng expected generation + revisions. Conditional terminal write; mismatch/rowcount=0 => stale task discard.
+### R1. Duplicate delivery có thể cùng claim một revision/generation — FIXED
+Trước đây conditional worker write mới chỉ kiểm expected revision/generation, chưa bắt current state.
 
-### 2. Skill Taxonomy bootstrap — FIXED
-Thêm `05_database/skill_taxonomy_seed.sql`. Reset environment bắt buộc chạy schema rồi seed. Pipeline không tự insert skill lạ.
+Đã khóa exclusive CAS:
+- CV/JD parse claim: `expected_revision + PENDING -> PROCESSING`;
+- CV/JD terminal: `expected_revision + PROCESSING -> PARSED|FAILED`;
+- Match claim: expected generation + stored snapshots + linked revisions + `PENDING -> PROCESSING`;
+- Match terminal: same expected values + `PROCESSING -> COMPLETED|FAILED`.
 
-### 3. Role lifecycle — FIXED
-Admin đổi Candidate<->HR chỉ khi target không có Resume/JD chưa soft-delete. Conflict 409. Không tự reinterpret ownership.
+`rowcount=0` luôn được coi là stale/duplicate và discard. Vì chỉ một worker claim được PENDING, duplicate task không còn race FAILED/PARSED hoặc FAILED/COMPLETED.
 
-### 4. CandidateProfile cardinality — FIXED
-Canonical 0..1 ở requirements/CDM/LDM/PDM/ERD. OpenAPI `candidate_profile` nullable.
+### R2. Parse dispatcher lỗi sau DB commit có thể để resource PENDING vô hạn — FIXED
+Đã tách persistence khỏi dispatch:
+- Resume/JD commit trước;
+- best-effort immediate dispatch;
+- dispatcher lỗi không rollback resource đã persist;
+- resource giữ PENDING;
+- startup/periodic Parse Recovery Sweeper scan PENDING quá grace window và re-dispatch current revision.
 
-### 5. Refresh Token scope — FIXED
-Refresh/logout server-side chuyển Advanced, không nằm OpenAPI MVP. MVP login dùng Access Token JWT.
+Recovery không tăng revision, không đổi state trước enqueue. Duplicate re-dispatch an toàn nhờ exclusive CAS.
 
-### 6. Preprocessing version — FIXED
-Resume/JD lưu `embedding_preprocessing_version`; Match COMPLETED lưu provenance model + preprocessing. Matching yêu cầu CV/JD cùng cả hai.
+MVP cố ý **không** blind-reset PROCESSING timeout về PENDING khi chưa có lease/attempt token, vì cách đó có thể resurrect worker cũ và tái tạo race.
 
-### 7. JD status transitions — FIXED
-Allowed: same-state, DRAFT->ACTIVE, ACTIVE->DRAFT|CLOSED, CLOSED->DRAFT|ACTIVE. DRAFT->CLOSED => 422.
+### R3. Retry create sau lost response có thể tạo Resume/JD thứ hai — FIXED
+`POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID.
+Server derive deterministic resource UUIDv5 từ application namespace + actor + route + key. Retry cùng logical request dùng cùng resource id; không tạo duplicate row.
 
-### 8. Admin tạo JD ambiguity — FIXED
-POST /jobs chỉ HR. Admin chỉ override quản trị JD đã tồn tại.
+### R4. Nghĩa revision chưa thống nhất — FIXED
+`revision` được khóa là **version của input/computation request**:
+- initial resource revision=1;
+- input/reparse mới => service tăng revision trước enqueue;
+- direct scoring-input mutation tăng revision trong transaction;
+- worker của chính expected revision không tăng revision khi terminal commit;
+- recovery/re-dispatch cùng computation giữ nguyên revision.
 
-### 9. Batch matching atomicity/dispatch — FIXED
-Validate entire batch before mutation; one transaction prepare all rows; dispatch after commit. Dispatcher failure => 503; PENDING rows retry-safe nhờ generation.
+## Artefact đã đồng bộ
+- `PTTK_MASTER.md`.
+- Functional/NFR/Business Rules.
+- Use Case specifications.
+- CV/JD/Matching Activity.
+- CV/JD/Matching Sequence.
+- System/Component Architecture.
+- Matching algorithm.
+- API Contract + OpenAPI.
+- Traceability Matrix.
+- Implementation Gate.
+- GitHub Actions semantic validator.
 
-### 10. Experience missing dates — FIXED
-Chỉ interval định lượng; current end=today; missing start hoặc non-current missing end bị exclude. required>0 mà không có interval định lượng => 0.
+## Static validation gate
+Workflow cuối phải PASS đồng thời:
+1. OpenAPI syntax + route boundary.
+2. Required Idempotency-Key trên 2 create endpoints.
+3. CandidateProfile nullable, revision/generation/provenance.
+4. PlantUML syntax toàn bộ.
+5. 10 bảng/schema/seed/HNSW/error-state invariants.
+6. Exclusive CAS phrases/state guards trong CV/JD/Matching Sequence.
+7. Parse Recovery + Idempotency architecture.
+8. Traceability FR-43/44/45 reliability links.
 
-### 11. Error lifecycle — FIXED
-FAILED bắt buộc error_message; non-FAILED phải NULL. Non-COMPLETED clear stale score/evidence/embedding provenance/calculated_at.
-
-## Runtime checks còn lại
+## Runtime checks còn lại sau merge
 PTTK tĩnh chỉ chuyển `IMPLEMENTATION_READY` sau:
-1. CI HEAD cuối vòng 3 PASS.
-2. PR merge.
-3. Reset DB.
-4. Run schema + taxonomy seed.
-5. Smoke test constraints/indexes/error states/revisions.
+1. PR merge.
+2. Reset DB.
+3. Run schema + taxonomy seed.
+4. Duplicate parse task smoke test: đúng 1 worker claim.
+5. Duplicate Match task smoke test: đúng 1 worker claim; không race terminal.
+6. Dispatcher failure smoke test: resource PENDING và recovery re-dispatch.
+7. Retry same Idempotency-Key: cùng resource id, không duplicate.
+8. Stale old revision/generation không overwrite version mới.
 
 ## Kết luận
-Sau vòng 3, các blocker đã biết về concurrency, bootstrap taxonomy, role transition, cardinality, Advanced auth scope, embedding reproducibility, status transition, JD ownership, batch semantics, missing-date scoring và error lifecycle đã được khóa trong tài liệu canonical.
+Các blocker static đã biết sau review vòng 3 hiện được khóa ở mức thiết kế: stale-version guard, exclusive state CAS, duplicate-delivery safety, idempotent create, post-commit parse recovery và canonical revision semantics. Phần còn lại cần chứng minh bằng runtime integration/concurrency tests sau khi merge và dựng database thật.
