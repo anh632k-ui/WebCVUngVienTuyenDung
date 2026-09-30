@@ -52,8 +52,10 @@
 - **FR-41** Benchmark MAE/Pearson/NDCG@K/Precision@K khi có ground truth.
 - **FR-42** Environment bootstrap seed Skill Taxonomy trước khi chạy NLP.
 
-## F. Reliability bổ sung
-- **FR-43** `POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID; retry cùng logical request không tạo duplicate resource.
+## F. Reliability
+- **FR-43** `POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID. Resource id derive bằng UUIDv5 từ application namespace cố định `bd7b1f30-b2de-549c-a8dd-8d742ee5bc12`, actor id, canonical route và key.
 - **FR-44** DB/resource persistence commit trước parse dispatch; dispatcher lỗi sau commit để resource PENDING và không rollback resource đã tạo.
 - **FR-45** Parse Recovery Sweeper startup/periodic re-dispatch Resume/JD PENDING quá grace window bằng current revision; không tăng revision và không tự reset PROCESSING trong MVP.
 - **FR-46** Concurrent soft-delete phải làm parse/match worker claim hoặc terminal CAS thất bại; không worker nào được ghi output mới vào Resume/JD đã soft-delete, và current matching/leaderboard phải loại resource đã xóa.
+- **FR-47** Mỗi Resume/JD create persist `create_request_fingerprint` SHA-256. Resume hash raw file bytes; Job hash canonical validated create payload sau defaults. Retry cùng key + cùng fingerprint trả cùng resource; cùng key + fingerprint khác trả `409 IDEMPOTENCY_KEY_REUSED`.
+- **FR-48** Resume storage dùng deterministic no-overwrite key theo resume id. Nếu storage object tồn tại nhưng DB row chưa có, service phải hash object để reconcile: fingerprint giống thì reuse/retry insert, fingerprint khác thì 409; concurrent deterministic-PK insert loser phải re-read row và compare fingerprint.
