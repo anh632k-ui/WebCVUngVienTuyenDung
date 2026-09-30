@@ -2,21 +2,31 @@
 skinparam monochrome true
 skinparam shadowing false
 
-title SEQUENCE - GAP ANALYSIS & LEADERBOARD
+title SEQUENCE - MATCH HISTORY, GAP ANALYSIS & LEADERBOARD
 
 actor Candidate
 actor HR
+actor Admin
 participant "Next.js" as FE
 participant "Matching/Jobs API" as API
 participant "Matching Service" as Service
 database "PostgreSQL" as DB
 participant "XAI Adapter [optional]" as XAI
 
-== Candidate/HR xem Skill Gap ==
-Candidate -> FE : mở kết quả của CV mình
-HR -> FE : mở kết quả thuộc JD mình
+== Lịch sử matching theo scope ==
+Candidate -> FE : mở lịch sử của CV mình
+HR -> FE : mở lịch sử thuộc JD mình
+Admin -> FE : mở lịch sử hệ thống
+FE -> API : GET /matching?page&limit&filters
+API -> Service : authorize + apply ownership scope
+Service -> DB : SELECT match_results theo scope
+DB --> Service : paginated rows
+Service --> API : match summaries
+API --> FE : 200
+
+== Candidate/HR/Admin xem Skill Gap ==
 FE -> API : GET /matching/{match_id}/gap-analysis
-API -> Service : authorize by CV owner or JD owner
+API -> Service : authorize by CV owner / JD owner / Admin
 Service -> DB : SELECT match + skill evidence
 DB --> Service : scores/matched/missing
 Service -> Service : classify CRITICAL/MINOR/PARTIAL
@@ -27,10 +37,11 @@ end
 Service --> API : gap DTO
 API --> FE : 200
 
-== HR xem leaderboard ==
+== HR/Admin xem leaderboard ==
 HR -> FE : mở leaderboard JD
+Admin -> FE : mở leaderboard JD
 FE -> API : GET /jobs/{id}/leaderboard
-API -> Service : require JD owner HR/Admin
+API -> Service : require JD owner HR or Admin
 Service -> DB : SELECT COMPLETED matches\nORDER BY overall_score DESC
 DB --> Service : ranking rows
 Service --> API : leaderboard DTO
