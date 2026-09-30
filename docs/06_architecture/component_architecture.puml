@@ -26,7 +26,7 @@ package "Core" {
   component "database.py" as Database
   component "security.py" as Security
   component "idempotency.py\nUUIDv5 create guard" as Idem
-  component "version_guard.py\nexclusive revision/generation CAS helpers" as Guard
+  component "version_guard.py\nexclusive version/state/delete CAS" as Guard
 }
 
 package "Service Layer" {
@@ -84,14 +84,14 @@ Idem --> ORM : deterministic id / load existing
 ResumeService --> Guard
 JobService --> Guard
 MatchService --> Guard
-Guard --> ORM : status + expected-version CAS
+Guard --> ORM : status + expected-version + delete-state CAS
 ORM --> Database
 Database --> DB
 
 ResumeService --> Dispatcher
 JobService --> Dispatcher
 MatchService --> Dispatcher
-Recovery --> ORM : scan PENDING older than grace
+Recovery --> ORM : scan PENDING + is_deleted=false
 Recovery --> Dispatcher : re-dispatch current revision
 Dispatcher --> Queue
 Queue --> Tasks
@@ -105,9 +105,10 @@ Engine --> XAI
 Tasks --> ORM
 
 note bottom of Guard
-Parse: claim requires PENDING, terminal requires PROCESSING.
-Match: claim requires PENDING, terminal requires PROCESSING.
-Expected revision/generation/snapshots must still match.
+Parse: claim requires PENDING, terminal requires PROCESSING,
+both require expected revision + is_deleted=false.
+Match: claim requires PENDING, terminal requires PROCESSING,
+both require expected generation/revisions + linked resources not deleted.
 end note
 
 note bottom of Recovery
