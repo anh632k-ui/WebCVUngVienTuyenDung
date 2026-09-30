@@ -17,7 +17,7 @@ User -> FE : chọn JD + CV(s)
 FE -> API : POST /matching/calculate
 API -> Service : calculate(current_user,payload)
 Service -> DB : load JD + ALL CVs
-Service -> Service : validate full batch ownership/readiness\nmodel+preprocessing versions
+Service -> Service : validate full batch ownership/readiness\nmodel+preprocessing + is_deleted=FALSE
 alt any invalid
   Service --> API : 403/404/422
   API --> FE : error, no Match mutation
@@ -42,23 +42,23 @@ else all valid
 end
 
 Queue -> Worker : expected generation/revisions
-Worker -> DB : exclusive CAS PENDING->PROCESSING\nWHERE id + generation + snapshots match expected\nAND linked Resume/JD revisions match expected
+Worker -> DB : exclusive CAS PENDING->PROCESSING\nWHERE id + generation + snapshots match expected\nAND linked revisions match expected\nAND Resume/JD is_deleted=FALSE
 alt rowcount=0
-  Worker -> Worker : stale/duplicate task -> discard
+  Worker -> Worker : stale/duplicate/deleted task -> discard
 else exclusive claim acquired
   Worker -> DB : load Match + Resume + JD + criteria
-  Worker -> Worker : verify model/preprocessing
-  alt mismatch/error
-    Worker -> DB : CAS FAILED,error\nWHERE status='PROCESSING'\nAND generation/snapshots/linked revisions still expected
+  Worker -> Worker : verify model/preprocessing + not deleted
+  alt mismatch/deleted/error
+    Worker -> DB : CAS FAILED,error\nWHERE status='PROCESSING'\nAND generation/snapshots/linked revisions expected\nAND Resume/JD is_deleted=FALSE
     alt rowcount=0
-      Worker -> Worker : stale/duplicate terminal -> discard
+      Worker -> Worker : stale/duplicate/deleted terminal -> discard
     end
   else current
     Worker -> Engine : compute hybrid-v1
     Engine --> Worker : scores/evidence
-    Worker -> DB : terminal CAS COMPLETED\nWHERE status='PROCESSING'\nAND generation/snapshots/linked revisions still expected
+    Worker -> DB : terminal CAS COMPLETED\nWHERE status='PROCESSING'\nAND generation/snapshots/linked revisions expected\nAND Resume/JD is_deleted=FALSE
     alt rowcount=0
-      Worker -> Worker : stale/duplicate result -> discard
+      Worker -> Worker : stale/duplicate/deleted result -> discard
     else committed
       Worker -> Worker : done
     end
@@ -69,5 +69,6 @@ note over Queue,Worker
 At-least-once/duplicate delivery is expected-safe:
 only one worker can claim a PENDING generation.
 FAILED and COMPLETED both require the same exclusive PROCESSING claim.
+Concurrent soft-delete invalidates terminal writes.
 end note
 @enduml
