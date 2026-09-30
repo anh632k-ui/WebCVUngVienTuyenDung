@@ -7,9 +7,11 @@ Tạo điểm hỗ trợ đánh giá mức độ phù hợp CV–JD theo cách c
 ## 2. Tiền điều kiện
 
 - Resume `PARSED`, chưa soft-delete, có quyền truy cập.
-- JD `PARSED`, chưa soft-delete; Candidate chỉ match JD `ACTIVE`.
-- CV/JD embedding phải cùng `embedding_model` và dimension.
+- JD `PARSED`, chưa soft-delete, `is_criteria_verified=true` và có ít nhất một `job_skill` hợp lệ; Candidate chỉ match JD `ACTIVE`.
+- CV/JD embedding phải tồn tại, cùng `embedding_model` và cùng dimension.
 - Trọng số JD hợp lệ: `w_skill + w_semantic + w_experience = 1`.
+
+Nếu một tiền điều kiện không đạt, service trả lỗi nghiệp vụ/`422` thay vì tạo một điểm giả định.
 
 ## 3. Skill Score
 
@@ -28,7 +30,7 @@ Trong đó `matched_i` bằng 1 nếu CV có skill, ngược lại 0.
 
 `SkillScore = 100 * SkillCoverage`.
 
-Nếu JD không có skill nào thì `SkillScore = 100` và service ghi rõ lý do trong evidence, tránh chia 0.
+Do UC13/BR-JOB-08 yêu cầu criteria đã xác minh và có ít nhất một `job_skill`, mẫu số không được rỗng trong một Match hợp lệ. Nếu dữ liệu nội bộ vi phạm invariant này, matching phải fail validation thay vì gán `SkillScore=100`.
 
 ### Breakdown HARD/SOFT
 
@@ -36,7 +38,7 @@ Nếu JD không có skill nào thì `SkillScore = 100` và service ghi rõ lý d
 
 ### Min years theo từng skill
 
-`job_skills.min_years_required` được dùng để đánh dấu gap chi tiết. Phiên bản `hybrid-v1` **không trừ điểm SkillScore lần thứ hai theo số năm**, tránh double-count với Experience Score. Có thể nâng cấp ở `hybrid-v2` sau khi có benchmark.
+`job_skills.min_years_required` được dùng để đánh dấu gap chi tiết. Phiên bản `hybrid-v1` **không trừ điểm SkillScore lần thứ hai theo số năm**, tránh double-count với Experience Score. Có thể nâng cấp ở phiên bản thuật toán sau khi có benchmark.
 
 ## 4. Semantic Score
 
@@ -52,7 +54,14 @@ Không dùng `(cos + 1) / 2` vì similarity âm không nên tự động đượ
 
 ### Vai trò `rank_bm25`
 
-Đề cương có `rank_bm25`. Trong `hybrid-v1`, BM25 được dùng như tín hiệu lexical hỗ trợ tìm kiếm/diagnostic/reranking thử nghiệm, **không đưa trực tiếp vào Final Score mặc định** vì raw BM25 không có thang cố định giữa corpus khác nhau. Như vậy hybrid v1 vẫn kết hợp keyword/rule skill matching với embedding semantic. Nếu benchmark chứng minh BM25 hữu ích, v2 có thể thêm công thức chuẩn hóa riêng và tăng `algorithm_version`.
+Đề cương có `rank_bm25`. Trong `hybrid-v1`, BM25 được dùng như tín hiệu lexical hỗ trợ tìm kiếm/diagnostic/reranking thử nghiệm, **không đưa trực tiếp vào SemanticScore hoặc Final Score mặc định** vì raw BM25 không có thang cố định giữa các corpus.
+
+Nếu sau benchmark hệ thống quyết định blend BM25 vào Semantic/Text Score, phải:
+
+1. định nghĩa công thức normalization rõ ràng;
+2. cập nhật tài liệu PTTK;
+3. đổi `algorithm_version` (ví dụ `hybrid-v2`);
+4. tính lại các kết quả cần so sánh.
 
 ## 5. Experience Score
 
@@ -99,7 +108,7 @@ Khi một trong các yếu tố sau thay đổi, kết quả cũ có thể bị 
 - embedding model/preprocessing;
 - algorithm version.
 
-Service có thể đặt match về `PENDING` và tính lại trên cùng unique pair `(job_id, resume_id)`.
+Service có thể đặt match về `PENDING`, reset scores/error và tính lại trên cùng unique pair `(job_id, resume_id)`.
 
 ## 9. LLM/XAI
 
