@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: WebCV Ung Vien Tuyen Dung API
-  version: 1.3.0
-  description: MVP API sau reliability/CAS lock. Parse create endpoints dùng Idempotency-Key và internal recovery.
+  version: 1.4.0
+  description: MVP API sau reliability/CAS/fingerprinted-idempotency lock. Parse create endpoints dùng Idempotency-Key, SHA-256 request fingerprint và internal recovery.
 servers:
   - url: http://localhost:8000/api/v1
 
@@ -137,7 +137,7 @@ paths:
     post:
       tags: [Resumes]
       summary: Upload CV idempotently
-      description: Persist trước dispatch. Nếu dispatcher lỗi, Resume giữ PENDING và internal recovery re-dispatch current revision.
+      description: Fixed UUIDv5 namespace + SHA-256 raw file fingerprint. Same key/same fingerprint returns same Resume; same key/different fingerprint returns 409 IDEMPOTENCY_KEY_REUSED. Storage orphan is reused only after SHA-256 verification. Persist trước dispatch; dispatcher lỗi để Resume PENDING cho internal recovery.
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
@@ -150,7 +150,8 @@ paths:
               properties:
                 file: {type: string, format: binary}
       responses:
-        '202': {description: Persisted/accepted; same key returns same Resume, content: {application/json: {schema: {$ref: '#/components/schemas/ResumeUploadResponse'}}}}
+        '202': {description: Persisted/accepted; same key and same fingerprint returns same Resume, content: {application/json: {schema: {$ref: '#/components/schemas/ResumeUploadResponse'}}}}
+        '409': {$ref: '#/components/responses/IdempotencyConflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -238,7 +239,7 @@ paths:
     post:
       tags: [Jobs]
       summary: HR tạo JD mới idempotently
-      description: HR only; deterministic resource id từ actor+route+Idempotency-Key. Persist trước dispatch; dispatcher lỗi được recovery xử lý khi JD còn PENDING.
+      description: HR only; fixed UUIDv5 namespace and SHA-256 canonical create-payload fingerprint. Same key/same fingerprint returns same JD; same key/different fingerprint returns 409 IDEMPOTENCY_KEY_REUSED. Persist trước dispatch; dispatcher lỗi được recovery xử lý khi JD còn PENDING.
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
@@ -247,8 +248,9 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/JobCreateRequest'}
       responses:
-        '201': {description: Persisted/created; same key returns same JD, content: {application/json: {schema: {$ref: '#/components/schemas/JobResponse'}}}}
+        '201': {description: Persisted/created; same key and same fingerprint returns same JD, content: {application/json: {schema: {$ref: '#/components/schemas/JobResponse'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/IdempotencyConflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
   /jobs/{id}:
@@ -419,7 +421,7 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: UUID unique per logical create request; retry same key returns same resource.
+      description: UUID unique per logical create request. Stable UUIDv5 namespace derives resource id; same key is valid only when SHA-256 request fingerprint matches the persisted fingerprint.
       schema: {type: string, format: uuid}
 
   responses:
@@ -428,6 +430,7 @@ components:
     Forbidden: {description: Forbidden, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
     NotFound: {description: Not found or hidden, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
     Conflict: {description: Conflict, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    IdempotencyConflict: {description: Same Idempotency-Key/deterministic resource id was reused with a different request fingerprint; error.code=IDEMPOTENCY_KEY_REUSED, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
     PayloadTooLarge: {description: File too large, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
     UnsupportedMediaType: {description: Unsupported media, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
     ValidationError: {description: Validation/precondition error, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
