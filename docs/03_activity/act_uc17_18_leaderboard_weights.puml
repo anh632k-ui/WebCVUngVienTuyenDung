@@ -1,0 +1,38 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title ACTIVITY - UC17 LEADERBOARD / UC18 WEIGHTS
+
+start
+if (Xem leaderboard?) then (Có)
+  :HR owner JD hoặc Admin;
+  :GET /jobs/{id}/leaderboard;
+  :Require JD is_deleted=FALSE;
+  :Chỉ Match COMPLETED có linked Resume is_deleted=FALSE;
+  if (HR?) then (Có)
+    :Chỉ row có resume.owner_user_id=current_user.id;
+  endif
+  :Sort overall_score DESC;
+  :200 LeaderboardResponse;
+else (Cập nhật weights)
+  :PUT /jobs/{id}/weights;
+  :Require JD is_deleted=FALSE;
+  :Validate mỗi weight [0,1], tổng=1;
+  if (invalid?) then (Có)
+    :422;
+    stop
+  endif
+  :BEGIN TRANSACTION;
+  :Update weights;
+  :job.revision++;
+  :Invalidate related Match:
+generation++, refresh revision snapshots,
+PENDING, clear stale payload;
+  :COMMIT;
+  if (recalculate=true?) then (Có)
+    :Dispatch task với generation/revision mới;
+  endif
+  :200 JobResponse;
+endif
+stop
+@enduml

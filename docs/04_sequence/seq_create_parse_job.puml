@@ -1,0 +1,113 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title SEQUENCE - CREATE/UPDATE & PARSE JD - FINGERPRINTED IDEMPOTENCY + EXCLUSIVE CAS
+
+actor HR
+participant "Next.js" as FE
+participant "Jobs API" as API
+participant "Job Service" as Service
+participant "Idempotency/UUIDv5 + SHA-256" as Idem
+database "PostgreSQL" as DB
+participant "Task Dispatcher" as Dispatcher
+participant "Parse Recovery Sweeper" as Recovery
+queue "Redis/Celery" as Queue
+participant "JD Worker" as Worker
+participant "JD NLP/Embedding" as NLP
+
+== Create ==
+HR -> FE : nhập JD
+FE -> FE : generate Idempotency-Key UUID
+FE -> API : POST /api/v1/jobs + Idempotency-Key
+API -> Service : create_job(HR,key,payload)
+Service -> Service : validate + apply defaults + canonicalize v1
+Service -> Idem : SHA-256(canonical UTF-8 JSON)
+Idem --> Service : request_fingerprint
+Service -> Idem : UUIDv5(FIXED_NAMESPACE, HR.id+route+key)
+Idem --> Service : deterministic job_id
+Service -> DB : lookup job_id
+alt existing JD
+  DB --> Service : JD + create_request_fingerprint
+  alt fingerprint mismatch
+    Service --> API : 409 IDEMPOTENCY_KEY_REUSED
+    API --> FE : conflict
+  else same fingerprint
+    Service -> Dispatcher : best-effort re-dispatch if PENDING
+    Service --> API : 201 same JobResponse
+    API --> FE : same JD
+  end
+else no row
+  Service -> DB : INSERT DRAFT/PENDING revision=1\n+ create_request_fingerprint
+  alt deterministic PK race
+    DB --> Service : unique conflict
+    Service -> DB : re-read job_id
+    DB --> Service : persisted fingerprint
+    alt mismatch
+      Service --> API : 409 IDEMPOTENCY_KEY_REUSED
+    else same fingerprint
+      Service -> Service : use existing JD
+    end
+  else inserted
+    Service -> DB : COMMIT persistence
+  end
+  Service -> Dispatcher : best-effort enqueue(job_id,current_revision)
+  alt dispatcher accepted
+    Dispatcher -> Queue : task
+  else dispatcher failed
+    Service -> Service : log failure; keep PENDING
+  end
+  Service --> API : 201 JobResponse
+  API --> FE : created/existing
+end
+
+== Update raw content ==
+HR -> FE : sửa raw_content
+FE -> API : PUT /jobs/{id}
+API -> Service : update_job(...)
+Service -> DB : verify HR owner/Admin + is_deleted=FALSE
+Service -> DB : BEGIN
+Service -> DB : revision++ BEFORE new computation\nDRAFT/PENDING, verified=false\nclear embedding/model/preprocessing/parsed_at
+Service -> DB : invalidate Matches: generation++, refresh snapshots,\nPENDING, clear stale payload
+Service -> DB : COMMIT
+Service -> Dispatcher : best-effort enqueue(job_id,new_revision)
+alt dispatcher failed
+  Service -> Service : log; recovery will re-dispatch PENDING
+end
+Service --> API : 200
+
+== Recovery ==
+Recovery -> DB : SELECT JD PENDING\nWHERE is_deleted=FALSE and older than grace
+DB --> Recovery : job_id,current_revision
+Recovery -> Dispatcher : re-dispatch(job_id,current_revision)
+Dispatcher -> Queue : task
+note over Recovery,Queue
+No revision increment on recovery.
+Duplicate dispatch safe via PENDING->PROCESSING CAS.
+end note
+
+== Parse ==
+Queue -> Worker : job_id, expected_revision
+Worker -> DB : CAS UPDATE PROCESSING\nWHERE revision=? AND parsing_status='PENDING'\nAND is_deleted=FALSE
+alt rowcount=0
+  Worker -> Worker : stale/duplicate/deleted -> discard
+else exclusive claim acquired
+  Worker -> NLP : parse criteria + embedding
+  alt error
+    Worker -> DB : CAS FAILED + parsing_error_message\nWHERE revision=? AND parsing_status='PROCESSING'\nAND is_deleted=FALSE
+  else success
+    Worker -> DB : BEGIN + lock/check revision=?\nAND PROCESSING AND is_deleted=FALSE
+    alt check failed
+      Worker -> DB : ROLLBACK
+      Worker -> Worker : stale/duplicate/deleted -> discard
+    else current claim
+      Worker -> DB : replace job_skills + parsed fields + model/preprocessing
+      Worker -> DB : CAS PARSED\nWHERE revision=? AND parsing_status='PROCESSING'\nAND is_deleted=FALSE
+      Worker -> DB : COMMIT
+      note right of Worker
+      Worker không tăng revision.
+      Concurrent soft-delete làm CAS/check fail.
+      end note
+    end
+  end
+end
+@enduml

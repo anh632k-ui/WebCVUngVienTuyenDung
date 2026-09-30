@@ -1,0 +1,109 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+title PDM - POSTGRESQL 18 + PGVECTOR
+
+entity users {
+ * id : UUID <<PK>>
+ * email : VARCHAR <<CI-UQ>>
+ * role : VARCHAR <<CHECK>>
+}
+entity skills {
+ * id : SERIAL <<PK>>
+ * normalized_name : VARCHAR <<UQ>>
+ * skill_kind : VARCHAR <<CHECK>>
+}
+entity resumes {
+ * id : UUID <<PK>>
+ * owner_user_id : UUID <<FK>>
+ * create_request_fingerprint : VARCHAR(64) <<CHECK>>
+ * revision : BIGINT <<CHECK>>
+ * parsing_status : VARCHAR <<CHECK>>
+ resume_embedding : vector(1024)
+ embedding_model : VARCHAR
+ embedding_preprocessing_version : VARCHAR
+ error_message : TEXT
+}
+entity candidate_profiles {
+ * id : BIGSERIAL <<PK>>
+ * resume_id : UUID <<FK,UQ>>
+}
+entity resume_skills {
+ * id : BIGSERIAL <<PK>>
+ * resume_id : UUID <<FK>>
+ * skill_id : INTEGER <<FK>>
+}
+entity resume_experiences {
+ * id : BIGSERIAL <<PK>>
+ * resume_id : UUID <<FK>>
+ start_date : DATE
+ end_date : DATE
+ is_current : BOOLEAN
+}
+entity resume_educations {
+ * id : BIGSERIAL <<PK>>
+ * resume_id : UUID <<FK>>
+}
+entity job_descriptions {
+ * id : UUID <<PK>>
+ * recruiter_id : UUID <<FK>>
+ * create_request_fingerprint : VARCHAR(64) <<CHECK>>
+ * revision : BIGINT <<CHECK>>
+ * parsing_status : VARCHAR <<CHECK>>
+ job_embedding : vector(1024)
+ embedding_model : VARCHAR
+ embedding_preprocessing_version : VARCHAR
+ * is_criteria_verified : BOOLEAN
+ * status : VARCHAR <<CHECK>>
+}
+entity job_skills {
+ * id : BIGSERIAL <<PK>>
+ * job_id : UUID <<FK>>
+ * skill_id : INTEGER <<FK>>
+ * importance : VARCHAR <<CHECK>>
+}
+entity match_results {
+ * id : UUID <<PK>>
+ * job_id : UUID <<FK>>
+ * resume_id : UUID <<FK>>
+ * generation : BIGINT <<CHECK>>
+ * resume_revision : BIGINT
+ * job_revision : BIGINT
+ overall_score : NUMERIC
+ * algorithm_version : VARCHAR
+ embedding_model : VARCHAR
+ embedding_preprocessing_version : VARCHAR
+ * status : VARCHAR <<CHECK>>
+ error_message : TEXT
+}
+
+users ||--o{ resumes
+users ||--o{ job_descriptions
+resumes ||--o| candidate_profiles
+resumes ||--o{ resume_skills
+skills ||--o{ resume_skills
+resumes ||--o{ resume_experiences
+resumes ||--o{ resume_educations
+job_descriptions ||--o{ job_skills
+skills ||--o{ job_skills
+job_descriptions ||--o{ match_results
+resumes ||--o{ match_results
+
+note right of resumes
+create_request_fingerprint = SHA-256(raw file bytes).
+Same deterministic id + different fingerprint => 409.
+end note
+
+note right of job_descriptions
+create_request_fingerprint = SHA-256(canonical create payload).
+Same deterministic id + different fingerprint => 409.
+end note
+
+note right of match_results
+UQ(job_id,resume_id)
+generation + resource revisions guard stale workers.
+COMPLETED requires scores/provenance/calculated_at.
+FAILED requires error_message.
+end note
+@enduml

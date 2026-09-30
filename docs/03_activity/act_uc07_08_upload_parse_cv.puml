@@ -1,0 +1,115 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title ACTIVITY - UC07/08 UPLOAD & PARSE CV - FINGERPRINTED IDEMPOTENCY + EXCLUSIVE CAS
+
+start
+:Candidate/HR chọn PDF/DOCX;
+:Client tạo Idempotency-Key UUID cho logical upload;
+:POST /api/v1/resumes/upload + Idempotency-Key;
+:Backend đọc bytes, kiểm <=5MB + MIME/magic bytes;
+if (file invalid?) then (Có)
+  :413/415;
+  stop
+endif
+:request_fingerprint = SHA-256(raw file bytes);
+:Derive resume_id UUIDv5 bằng namespace cố định
+bd7b1f30-b2de-549c-a8dd-8d742ee5bc12
++ actor + canonical route + key;
+:Lookup deterministic Resume id;
+if (Resume đã tồn tại?) then (Có)
+  if (stored fingerprint = request fingerprint?) then (Không)
+    :409 IDEMPOTENCY_KEY_REUSED;
+    stop
+  endif
+  :Không ghi đè file/storage;
+  if (existing vẫn PENDING và chưa xóa?) then (Có)
+    :Best-effort re-dispatch current_revision;
+  endif
+  :202 cùng Resume hiện hữu;
+  stop
+endif
+
+:storage_key = resumes/{resume_id}/source;
+:put-if-absent/no-overwrite;
+if (storage object đã tồn tại?) then (Có)
+  :Compute SHA-256 bytes object hiện hữu;
+  if (object fingerprint != request fingerprint?) then (Có)
+    :409 IDEMPOTENCY_KEY_REUSED;
+    :Không overwrite object;
+    stop
+  endif
+  :Reuse verified orphan/current object;
+endif
+
+:INSERT Resume PENDING revision=1
++ create_request_fingerprint;
+if (deterministic PK race?) then (Có)
+  :Re-read Resume;
+  if (persisted fingerprint != request fingerprint?) then (Có)
+    :409 IDEMPOTENCY_KEY_REUSED;
+    stop
+  endif
+  :Return existing resource semantics;
+else (Không)
+  :COMMIT persistence;
+endif
+:Best-effort enqueue parse(resume_id,current_revision);
+if (dispatcher lỗi?) then (Có)
+  :Log dispatch failure;
+  :Giữ Resume PENDING;
+  :Recovery sweeper sẽ re-dispatch current_revision;
+endif
+:202 ResumeUploadResponse;
+
+:Worker nhận resume_id, expected_revision;
+:Exclusive CAS claim PROCESSING
+WHERE revision=expected_revision
+AND parsing_status=PENDING
+AND is_deleted=FALSE;
+if (claim rowcount=0?) then (Có)
+  :Stale/duplicate/deleted task -> discard;
+  stop
+endif
+:Extract text;
+if (không có text?) then (Có)
+  if (OCR Advanced bật?) then (Có)
+    :OCR fallback;
+  else (Không)
+    :CAS FAILED + error
+WHERE revision=expected_revision
+AND parsing_status=PROCESSING
+AND is_deleted=FALSE;
+    stop
+  endif
+endif
+:Parse entities/sections/skills;
+:Map Skill Taxonomy seed;
+:Generate embedding + model + preprocessing version;
+:BEGIN terminal transaction;
+:Lock/check Resume vẫn PROCESSING,
+revision=expected_revision,
+is_deleted=FALSE;
+if (check fail?) then (Có)
+  :ROLLBACK + stale/duplicate/deleted discard;
+  stop
+endif
+:Persist candidate_profile/skills/exp/edu + embedding;
+:CAS PARSED
+WHERE revision=expected_revision
+AND parsing_status=PROCESSING
+AND is_deleted=FALSE;
+:COMMIT;
+:Worker không tăng revision khi commit;
+stop
+
+legend bottom
+Fingerprint Resume = SHA-256 raw file bytes.
+Same key + different fingerprint => 409 IDEMPOTENCY_KEY_REUSED.
+Nếu storage write thành công nhưng DB insert fail, orphan object được giữ;
+retry chỉ reuse sau khi hash object khớp fingerprint, không overwrite.
+Recovery sweeper chỉ scan PENDING + is_deleted=FALSE quá grace window và re-dispatch current revision.
+Không reset PROCESSING timeout trong MVP nếu chưa có lease/attempt token.
+Concurrent soft-delete làm terminal CAS fail/rollback.
+endlegend
+@enduml

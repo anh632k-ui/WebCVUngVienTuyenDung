@@ -1,0 +1,58 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC16 KẾT QUẢ HIỆN HÀNH & SKILL GAP
+
+start
+:User mở danh sách kết quả matching;
+:GET /api/v1/matching?page&limit&filters;
+:Backend JOIN Resume/JD và yêu cầu
+resume.is_deleted=FALSE AND job.is_deleted=FALSE;
+:Áp dụng ownership scope;
+if (Candidate?) then (Có)
+  :Chỉ Match có resume.owner_user_id=current_user.id;
+else (Không)
+  if (HR?) then (Có)
+    :Chỉ Match có job.recruiter_id=current_user.id
+    VÀ resume.owner_user_id=current_user.id;
+  else (Admin)
+    :Có thể xem toàn bộ resource chưa xóa;
+  endif
+endif
+:200 danh sách kết quả hiện hành;
+
+if (User chọn một match?) then (Có)
+  :GET /api/v1/matching/{match_id};
+  :Backend kiểm ownership + linked Resume/JD chưa xóa;
+  if (Có quyền và resource active?) then (Có)
+    if (status=COMPLETED?) then (Có)
+      :Trả overall + component scores
+      + matched/missing skills;
+    else (PROCESSING/PENDING/FAILED)
+      :Trả trạng thái hiện tại;
+      stop
+    endif
+  else (Không)
+    :404/403;
+    stop
+  endif
+else (Không)
+  stop
+endif
+
+:GET /api/v1/matching/{match_id}/gap-analysis;
+:Backend kiểm ownership + status=COMPLETED
++ linked Resume/JD is_deleted=FALSE;
+:Phân loại missing skills:
+MANDATORY => CRITICAL,
+OPTIONAL => MINOR;
+:Tạo recommendation rule-based từ taxonomy;
+if (LLM/XAI được bật?) then (Có)
+  :Đưa dữ liệu score/gap đã xác định
+cho LLM tạo giải thích bổ sung;
+  :Không cho LLM thay score/matched set;
+endif
+:200 Gap Analysis;
+stop
+@enduml

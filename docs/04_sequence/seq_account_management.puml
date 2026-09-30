@@ -1,0 +1,55 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title SEQUENCE - ACCOUNT PROFILE & CHANGE PASSWORD
+
+actor User
+participant "Next.js" as FE
+participant "Users/Auth API" as API
+participant "User/Auth Service" as Service
+database "PostgreSQL" as DB
+participant "Security" as Sec
+database "Redis [optional refresh]" as Redis
+
+== Profile ==
+User -> FE : mở Account Settings
+FE -> API : GET /users/me
+API -> Service : get_current_user(jwt user_id)
+Service -> DB : SELECT users WHERE id=current_user.id
+DB --> Service : user
+Service --> API : user DTO
+API --> FE : 200
+
+User -> FE : sửa họ tên/SĐT
+FE -> API : PUT /users/me
+API -> Service : update_current_user(payload)
+Service -> DB : UPDATE users current_user.id
+DB --> Service : updated user
+Service --> API : user DTO
+API --> FE : 200
+
+== Change password ==
+User -> FE : current_password + new_password
+FE -> API : PUT /auth/change-password
+API -> Service : change_password(current_user,payload)
+Service -> DB : SELECT password_hash
+DB --> Service : hash
+Service -> Sec : verify current password
+alt wrong current password
+  Sec --> Service : false
+  Service --> API : bad request
+  API --> FE : 400
+else valid
+  Sec --> Service : true
+  Service -> Sec : hash new password
+  Sec --> Service : new hash
+  Service -> DB : UPDATE password_hash
+  opt refresh sessions enabled
+    Service -> Redis : revoke all user refresh sessions
+  end
+  Service --> API : success
+  API --> FE : 200
+end
+
+@enduml

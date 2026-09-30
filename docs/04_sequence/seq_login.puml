@@ -1,0 +1,38 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title SEQUENCE - LOGIN MVP
+
+actor User
+participant "Next.js" as FE
+participant "FastAPI Auth API" as API
+participant "User/Auth Service" as Service
+database "PostgreSQL" as DB
+participant "Security/JWT" as Sec
+
+User -> FE : nhập email/password
+FE -> API : POST /api/v1/auth/login
+API -> Service : login(email,password)
+Service -> DB : SELECT user by normalized email
+DB --> Service : user/password_hash
+Service -> Sec : verify_password()
+Sec --> Service : valid/invalid
+alt invalid credential
+  Service --> API : 401
+  API --> FE : Unauthorized
+else account disabled
+  Service --> API : 403
+  API --> FE : Forbidden
+else success
+  Service -> Sec : create_access_token(user)
+  Sec --> Service : access_token
+  Service --> API : access token + user
+  API --> FE : 200 LoginResponse
+  FE --> User : redirect dashboard
+end
+
+note over FE,Sec
+Refresh Token Rotation/HttpOnly session là Advanced
+và không nằm trong OpenAPI MVP.
+end note
+@enduml

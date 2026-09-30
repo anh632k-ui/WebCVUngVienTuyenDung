@@ -1,0 +1,64 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title SEQUENCE - CURRENT MATCH RESULTS, GAP ANALYSIS & LEADERBOARD
+
+actor Candidate
+actor HR
+actor Admin
+participant "Next.js" as FE
+participant "Matching/Jobs API" as API
+participant "Matching Service" as Service
+database "PostgreSQL" as DB
+participant "XAI Adapter [optional]" as XAI
+
+== Danh sách kết quả matching hiện hành ==
+Candidate -> FE : mở kết quả của CV mình
+HR -> FE : mở kết quả JD mình + CV thuộc kho HR
+Admin -> FE : mở kết quả hệ thống
+FE -> API : GET /matching?page&limit&filters
+API -> Service : authorize + apply ownership scope
+Service -> DB : SELECT match_results JOIN resumes/jobs\nWHERE resume.is_deleted=FALSE AND job.is_deleted=FALSE\nCandidate: resume owner\nHR: JD owner AND resume owner\nAdmin: all active resources
+DB --> Service : paginated current rows
+Service --> API : match summaries
+API --> FE : 200
+
+== Candidate/HR/Admin xem Skill Gap ==
+FE -> API : GET /matching/{match_id}/gap-analysis
+API -> Service : authorize ownership
+Service -> DB : SELECT match + resume + job + skill evidence\nWHERE resume.is_deleted=FALSE AND job.is_deleted=FALSE
+DB --> Service : result + ownership
+alt Candidate
+  Service -> Service : require resume.owner_user_id=current_user.id
+else HR
+  Service -> Service : require job.recruiter_id=current_user.id\nand resume.owner_user_id=current_user.id
+else Admin
+  Service -> Service : allow active linked resources
+end
+Service -> Service : require status=COMPLETED
+Service -> Service : classify CRITICAL/MINOR/PARTIAL
+opt XAI enabled
+  Service -> XAI : evidence only
+  XAI --> Service : explanation/recommendation
+end
+Service --> API : gap DTO
+API --> FE : 200
+
+== HR/Admin xem leaderboard ==
+HR -> FE : mở leaderboard JD
+Admin -> FE : mở leaderboard JD
+FE -> API : GET /jobs/{id}/leaderboard
+API -> Service : require JD owner HR or Admin + job.is_deleted=FALSE
+Service -> DB : SELECT COMPLETED matches JOIN resumes\nWHERE resume.is_deleted=FALSE\nHR additionally requires resume.owner_user_id=current_user.id\nORDER BY overall_score DESC
+DB --> Service : ranking rows
+Service --> API : leaderboard DTO
+API --> FE : 200
+
+note bottom
+  Candidate self-match với JD của HR không tự động
+  xuất hiện trong danh sách/leaderboard của HR ở MVP.
+  Match linked tới Resume/JD đã soft-delete không phải current result.
+end note
+
+@enduml

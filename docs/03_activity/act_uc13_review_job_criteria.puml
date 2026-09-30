@@ -1,0 +1,24 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title ACTIVITY - UC13 REVIEW CRITERIA JD
+
+start
+:HR owner/Admin mở criteria;
+:GET /jobs/{id}/criteria;
+:Chỉnh min experience/education/skills;
+:Tra cứu GET /skills;
+:Validate >=1 skill, taxonomy IDs, no duplicate;
+if (invalid?) then (Có)
+  :422;
+  stop
+endif
+:BEGIN TRANSACTION;
+:Replace/update criteria + is_criteria_verified=true;
+:job.revision++;
+:Invalidate Match liên quan:
+generation++, PENDING, clear scores/evidence/error/provenance/calculated_at;
+:COMMIT;
+:200 JobCriteriaResponse;
+stop
+@enduml

@@ -1,0 +1,45 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title SEQUENCE - REVIEW CRITERIA & WEIGHTS WITH REVISION
+
+actor "HR/Admin" as User
+participant "Next.js" as FE
+participant "Jobs API" as API
+participant "Job Service" as Service
+database "PostgreSQL" as DB
+participant "Task Dispatcher" as Dispatcher
+
+== Criteria ==
+User -> FE : chỉnh criteria
+FE -> API : PUT /jobs/{id}/criteria
+API -> Service : update_criteria(...)
+Service -> Service : validate owner/Admin, >=1 skill, taxonomy, duplicates
+alt invalid
+  Service --> API : 422
+else valid
+  Service -> DB : BEGIN
+  Service -> DB : save criteria + verified=true + job.revision++
+  Service -> DB : invalidate Matches:\ngeneration++; refresh resume_revision/job_revision snapshots;\nPENDING + clear stale payload
+  Service -> DB : COMMIT
+  Service --> API : 200 JobCriteriaResponse
+end
+
+== Weights ==
+User -> FE : chỉnh weights
+FE -> API : PUT /jobs/{id}/weights
+API -> Service : update_weights(...)
+Service -> Service : validate [0,1] and sum=1
+alt invalid
+  Service --> API : 422
+else valid
+  Service -> DB : BEGIN
+  Service -> DB : update weights + job.revision++
+  Service -> DB : invalidate Matches:\ngeneration++; refresh resume_revision/job_revision snapshots;\nPENDING + clear stale payload
+  Service -> DB : COMMIT
+  opt recalculate=true
+    Service -> Dispatcher : dispatch tasks with committed generation/revisions
+  end
+  Service --> API : 200 JobResponse
+end
+@enduml

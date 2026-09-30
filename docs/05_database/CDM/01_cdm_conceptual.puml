@@ -1,0 +1,30 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+title CDM - MÔ HÌNH DỮ LIỆU KHÁI NIỆM
+
+entity "Người dùng" as User
+entity "Hồ sơ CV" as Resume
+entity "Thông tin ứng viên từ CV" as CandidateProfile
+entity "Kỹ năng chuẩn" as Skill
+entity "Kinh nghiệm" as Experience
+entity "Học vấn" as Education
+entity "Tin tuyển dụng (JD)" as Job
+entity "Kết quả so khớp" as Match
+
+User ||--o{ Resume : sở hữu
+User ||--o{ Job : đăng tuyển
+Resume ||--o| CandidateProfile : có thể có snapshot
+Resume ||--o{ Experience
+Resume ||--o{ Education
+Resume }o--o{ Skill
+Job }o--o{ Skill
+Resume ||--o{ Match
+Job ||--o{ Match
+
+note bottom of CandidateProfile
+0..1 profile cho mỗi Resume.
+PENDING/FAILED có thể chưa có profile.
+end note
+@enduml

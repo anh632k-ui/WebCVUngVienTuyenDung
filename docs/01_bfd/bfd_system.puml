@@ -1,0 +1,55 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+title BFD - SƠ ĐỒ PHÂN RÃ CHỨC NĂNG HỆ THỐNG
+
+rectangle "0. HỆ THỐNG PHÂN TÍCH CV & MATCHING JD" as SYS {
+  rectangle "1. Xác thực & Tài khoản" {
+    rectangle "1.1 Đăng ký" 
+    rectangle "1.2 Đăng nhập JWT Access Token"
+    rectangle "1.3 Hồ sơ tài khoản"
+    rectangle "1.4 Đổi mật khẩu"
+    rectangle "1.5 Quản trị user / RBAC"
+    rectangle "1.6 Refresh Session [Advanced]"
+  }
+  rectangle "2. CV & NLP" {
+    rectangle "2.1 Upload / lưu CV"
+    rectangle "2.2 Bóc text PDF/DOCX"
+    rectangle "2.3 Trích xuất thực thể"
+    rectangle "2.4 Chuẩn hóa kỹ năng"
+    rectangle "2.5 Sinh embedding + version"
+    rectangle "2.6 Rà soát / chỉnh dữ liệu"
+    rectangle "2.7 Quản lý kho CV"
+  }
+  rectangle "3. JD & NLP" {
+    rectangle "3.1 HR CRUD JD"
+    rectangle "3.2 Bóc tách yêu cầu"
+    rectangle "3.3 MANDATORY/OPTIONAL"
+    rectangle "3.4 Skill Taxonomy"
+    rectangle "3.5 Sinh embedding + version"
+    rectangle "3.6 Rà soát criteria"
+    rectangle "3.7 Công bố / đóng JD"
+  }
+  rectangle "4. Matching & Analytics" {
+    rectangle "4.1 Yêu cầu single/batch matching"
+    rectangle "4.2 Skill Score"
+    rectangle "4.3 Semantic Score"
+    rectangle "4.4 Experience Score"
+    rectangle "4.5 Overall Score"
+    rectangle "4.6 Skill Gap"
+    rectangle "4.7 Leaderboard"
+    rectangle "4.8 Trọng số + invalidation"
+    rectangle "4.9 Stale-worker guard"
+    rectangle "4.10 Xuất báo cáo [Advanced]"
+  }
+  rectangle "5. AI Explainability & Thực nghiệm" {
+    rectangle "5.1 LLM/XAI [Advanced]"
+    rectangle "5.2 Benchmark dataset"
+    rectangle "5.3 MAE / Pearson"
+    rectangle "5.4 NDCG@K / Precision@K"
+  }
+}
+@enduml

@@ -1,0 +1,117 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title ACTIVITY - UC11/12 QUẢN LÝ & PHÂN TÍCH JD - FINGERPRINTED IDEMPOTENCY + EXCLUSIVE CAS
+
+start
+if (Tạo JD mới?) then (Có)
+  :Chỉ HR;
+  :Client tạo Idempotency-Key UUID;
+  :POST /api/v1/jobs + Idempotency-Key;
+  :Apply defaults + canonicalize create payload v1;
+  :request_fingerprint = SHA-256(canonical UTF-8 JSON);
+  :Derive job_id UUIDv5 bằng namespace cố định
+bd7b1f30-b2de-549c-a8dd-8d742ee5bc12
++ actor + canonical route + key;
+  :Lookup deterministic JD id;
+  if (JD đã tồn tại?) then (Có)
+    if (stored fingerprint != request fingerprint?) then (Có)
+      :409 IDEMPOTENCY_KEY_REUSED;
+      stop
+    endif
+    :Dùng lại cùng JD, không create side-effect mới;
+  else (Không)
+    :INSERT JD DRAFT/PENDING revision=1
++ create_request_fingerprint;
+    if (deterministic PK race?) then (Có)
+      :Re-read JD;
+      if (persisted fingerprint != request fingerprint?) then (Có)
+        :409 IDEMPOTENCY_KEY_REUSED;
+        stop
+      endif
+      :Return existing semantics;
+    else (Không)
+      :COMMIT;
+    endif
+  endif
+  :Best-effort enqueue parse(job_id,current_revision);
+  if (dispatcher lỗi?) then (Có)
+    :Log lỗi + giữ JD PENDING;
+    :Recovery sweeper sẽ re-dispatch current_revision;
+  endif
+  :201 JobResponse;
+else (Cập nhật JD hiện có)
+  :HR owner hoặc Admin override;
+  if (raw_content đổi?) then (Có)
+    :Require is_deleted=FALSE;
+    :BEGIN;
+    :job.revision++ TRƯỚC computation mới;
+    :status=DRAFT; parsing_status=PENDING;
+    :verified=false; clear embedding/model/preprocessing/parsed_at;
+    :Invalidate Match liên quan:
+generation++, refresh revision snapshots,
+PENDING, clear stale payload;
+    :COMMIT;
+    :Best-effort enqueue parse(job_id, expected_revision=new_revision);
+    if (dispatcher lỗi?) then (Có)
+      :Log lỗi; recovery sweeper sẽ re-dispatch;
+    endif
+  endif
+endif
+
+:Worker nhận parse(job_id, expected_revision);
+:Exclusive CAS claim PROCESSING
+WHERE revision=expected_revision
+AND parsing_status=PENDING
+AND is_deleted=FALSE;
+if (claim rowcount=0?) then (Có)
+  :Stale/duplicate/deleted task -> discard;
+  stop
+endif
+:Extract/normalize criteria + embedding;
+if (parse lỗi?) then (Có)
+  :CAS FAILED + parsing_error_message
+WHERE revision=expected_revision
+AND parsing_status=PROCESSING
+AND is_deleted=FALSE;
+  stop
+endif
+:BEGIN terminal transaction;
+:Lock/check JD vẫn PROCESSING,
+revision=expected_revision,
+is_deleted=FALSE;
+if (check fail?) then (Có)
+  :ROLLBACK + stale/duplicate/deleted discard;
+else (Hợp lệ)
+  :Replace job_skills + parsed fields;
+  :CAS PARSED
+WHERE revision=expected_revision
+AND parsing_status=PROCESSING
+AND is_deleted=FALSE;
+  :COMMIT;
+  :Worker KHÔNG tăng revision khi commit;
+endif
+
+if (PATCH status?) then (Có)
+  :Require is_deleted=FALSE;
+  :Áp dụng transition matrix;
+  if (DRAFT -> CLOSED?) then (Có)
+    :422;
+  else (Hợp lệ)
+    if (target ACTIVE?) then (Có)
+      :Require PARSED + verified + embedding/model/preprocessing + >=1 skill;
+    endif
+    :Update status;
+  endif
+endif
+stop
+
+legend bottom
+Job fingerprint = SHA-256 canonical validated create payload after defaults.
+Same key + different fingerprint => 409 IDEMPOTENCY_KEY_REUSED.
+Concurrent deterministic-PK loser re-reads JD and compares fingerprint.
+Recovery sweeper chỉ re-dispatch JD PENDING + is_deleted=FALSE quá grace window bằng current revision.
+Không reset PROCESSING timeout trong MVP nếu chưa có lease/attempt token.
+Concurrent soft-delete làm terminal CAS fail/rollback.
+endlegend
+@enduml

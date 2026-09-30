@@ -1,0 +1,123 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+
+title SYSTEM ARCHITECTURE - WEBCVUNGVIENTUYENDUNG
+
+node "Client" {
+  [Candidate Browser] as Candidate
+  [HR Browser] as HR
+  [Admin Browser] as Admin
+}
+
+package "Presentation Layer" {
+  [Next.js App Router\nTypeScript + Tailwind CSS] as Frontend
+  [HTTP API Client] as HttpClient
+  Frontend --> HttpClient
+}
+
+package "Application Layer - FastAPI" {
+  [API v1 Router] as Router
+  [Auth / RBAC / Ownership] as Security
+  [User Service] as UserService
+  [Resume Service] as ResumeService
+  [Job Service] as JobService
+  [Matching Service] as MatchService
+  [Idempotency / UUIDv5 / SHA-256 Guard] as IdemGuard
+  [Revision / Generation / Delete-state CAS Guard] as VersionGuard
+  [Task Dispatcher] as Dispatcher
+  [Parse Recovery Sweeper] as Recovery
+
+  Router --> Security
+  Router --> UserService
+  Router --> ResumeService
+  Router --> JobService
+  Router --> MatchService
+  ResumeService --> IdemGuard : create POST
+  JobService --> IdemGuard : create POST
+  ResumeService --> VersionGuard
+  JobService --> VersionGuard
+  MatchService --> VersionGuard
+  ResumeService --> Dispatcher
+  JobService --> Dispatcher
+  MatchService --> Dispatcher
+  Recovery --> Dispatcher : re-dispatch PENDING
+}
+
+package "AI / NLP & Background Processing" {
+  [Celery Worker\n(or development fallback)] as Worker
+  [Text Extractor\npdfplumber/python-docx] as Extractor
+  [OCR Adapter\nAdvanced] as OCR
+  [Entity / Section Extractor] as Entity
+  [Skill Normalizer\nseeded taxonomy] as Normalizer
+  [Embedding Service\nmodel + preprocessing version] as Embedding
+  [BM25 Adapter\ndiagnostic v1] as BM25
+  [Hybrid Matching Engine] as Matching
+  [LLM/XAI Adapter\nAdvanced] as LLM
+
+  Worker --> Extractor
+  Extractor --> OCR : fallback when enabled
+  Worker --> Entity
+  Worker --> Normalizer
+  Worker --> Embedding
+  Worker --> Matching
+  Matching --> BM25
+  Matching --> LLM : explanation only
+}
+
+package "Persistence / Infrastructure" {
+  database "PostgreSQL 18 + pgvector\nrevision/generation/delete state\ncreate_request_fingerprint" as DB
+  database "Redis\nTask broker [when enabled]" as Redis
+  folder "CV File Storage\ndeterministic key + put-if-absent" as Storage
+}
+
+Candidate --> Frontend : HTTPS
+HR --> Frontend : HTTPS
+Admin --> Frontend : HTTPS
+HttpClient --> Router : REST/JSON + Idempotency-Key on create
+
+UserService --> DB
+ResumeService --> DB
+JobService --> DB
+MatchService --> DB
+IdemGuard --> DB : deterministic id / fingerprint compare
+IdemGuard --> Storage : orphan fingerprint reconciliation
+VersionGuard --> DB : exclusive status/version/delete-aware CAS
+Recovery --> DB : scan PENDING + not deleted only
+ResumeService --> Storage
+Worker --> Storage
+Worker --> DB : claim/terminal write via exclusive CAS
+Dispatcher --> Redis : queue when enabled
+Redis --> Worker
+
+note bottom of IdemGuard
+Fixed UUIDv5 namespace:
+bd7b1f30-b2de-549c-a8dd-8d742ee5bc12
+Resume fingerprint = SHA-256(raw file bytes).
+Job fingerprint = SHA-256(canonical validated create JSON).
+Same key + same fingerprint -> existing resource.
+Same key + different fingerprint -> 409 IDEMPOTENCY_KEY_REUSED.
+Resume orphan object is reused only after SHA-256 verification.
+end note
+
+note bottom of VersionGuard
+Parse claim: expected revision + PENDING + is_deleted=false.
+Parse terminal: same revision + PROCESSING + is_deleted=false.
+Match claim: expected generation/revisions + PENDING + linked not-deleted.
+Match terminal: same expected values + PROCESSING + linked not-deleted.
+Stale/duplicate/deleted task rowcount=0 -> discard.
+end note
+
+note bottom of Recovery
+Immediate dispatch failure after DB commit:
+keep resource PENDING.
+Startup/periodic sweep re-dispatches current revision if not deleted.
+No revision increment. MVP does not reset PROCESSING blindly.
+end note
+
+note bottom of Security
+MVP: JWT Access Token.
+Refresh Rotation/HttpOnly session là Advanced.
+end note
+@enduml

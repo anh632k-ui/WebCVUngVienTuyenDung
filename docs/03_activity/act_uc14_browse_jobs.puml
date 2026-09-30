@@ -1,0 +1,26 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title ACTIVITY - UC14 XEM JD ĐANG TUYỂN
+
+start
+:Candidate mở danh sách việc làm;
+:GET /api/v1/jobs?page&limit&keyword;
+:Backend xác thực Candidate;
+:Query job_descriptions
+WHERE status='ACTIVE'
+AND is_deleted=false;
+:Trả danh sách phân trang;
+
+if (Candidate chọn một JD?) then (Có)
+  :GET /api/v1/jobs/{id};
+  :Backend kiểm JD ACTIVE + not deleted;
+  if (Hợp lệ?) then (Có)
+    :Trả chi tiết JD + criteria public cần thiết;
+  else (Không)
+    :404 Not Found;
+  endif
+endif
+stop
+@enduml

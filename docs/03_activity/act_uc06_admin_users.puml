@@ -1,0 +1,25 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title ACTIVITY - UC06 QUẢN TRỊ USER
+
+start
+:Admin mở danh sách user;
+:GET /api/v1/admin/users;
+:Chọn user và thao tác;
+if (self-lock hoặc self-demote?) then (Có)
+  :400;
+  stop
+endif
+if (đổi role CANDIDATE <-> HR?) then (Có)
+  :Kiểm Resume/JD chưa soft-delete của target user;
+  if (còn resource?) then (Có)
+    :409 ROLE_CHANGE_CONFLICT;
+    stop
+  endif
+endif
+:PATCH /api/v1/admin/users/{id};
+:Cập nhật role/is_active;
+:200 UserResponse;
+stop
+@enduml

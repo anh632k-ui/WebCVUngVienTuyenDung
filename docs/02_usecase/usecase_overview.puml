@@ -1,0 +1,95 @@
+@startuml
+left to right direction
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+title USE CASE OVERVIEW - WEBCV UNG VIEN TUYEN DUNG
+
+actor Guest
+actor "Authenticated User" as AuthUser
+actor Candidate
+actor HR
+actor Admin
+
+AuthUser <|-- Candidate
+AuthUser <|-- HR
+AuthUser <|-- Admin
+
+rectangle "WebCVUngVienTuyenDung" {
+  usecase "UC01 Đăng ký" as UC01
+  usecase "UC02 Đăng nhập" as UC02
+  usecase "UC03 Refresh/Logout\n[Advanced]" as UC03
+  usecase "UC04 Quản lý profile" as UC04
+  usecase "UC05 Đổi mật khẩu" as UC05
+  usecase "UC06 Quản trị user" as UC06
+
+  usecase "UC07 Upload CV" as UC07
+  usecase "UC08 Phân tích CV tự động" as UC08
+  usecase "UC09 Rà soát/chỉnh CV" as UC09
+  usecase "UC10 Quản lý kho CV" as UC10
+
+  usecase "UC11 Quản lý JD" as UC11
+  usecase "UC12 Phân tích JD tự động" as UC12
+  usecase "UC13 Rà soát criteria JD" as UC13
+  usecase "UC14 Xem JD đang tuyển" as UC14
+
+  usecase "UC15 Tính mức độ tương thích" as UC15
+  usecase "UC16 Xem kết quả hiện hành\n& Skill Gap" as UC16
+  usecase "UC17 Xem leaderboard\n(kho CV của HR)" as UC17
+  usecase "UC18 Cấu hình trọng số" as UC18
+  usecase "UC19 Xuất báo cáo [Advanced]" as UC19
+}
+
+Guest --> UC01
+Guest --> UC02
+AuthUser --> UC04
+AuthUser --> UC05
+Admin --> UC06
+
+Candidate --> UC07
+Candidate --> UC09
+Candidate --> UC10
+HR --> UC07
+HR --> UC09
+HR --> UC10
+Admin --> UC09
+Admin --> UC10
+UC07 ..> UC08 : <<include>>
+
+HR --> UC11
+HR --> UC13
+Candidate --> UC14
+Admin --> UC11 : quản trị JD hiện có
+Admin --> UC13
+UC12 ..> UC11 : <<extend>>\n[khi tạo/đổi raw_content]
+
+Candidate --> UC15
+HR --> UC15
+Admin --> UC15
+Candidate --> UC16
+HR --> UC16
+Admin --> UC16
+HR --> UC17
+Admin --> UC17
+HR --> UC18
+Admin --> UC18
+HR --> UC19
+Admin --> UC19
+
+note right of UC03
+Không thuộc OpenAPI MVP.
+Khi bật: backend quản lý HttpOnly refresh cookie.
+end note
+
+note bottom of UC11
+Chỉ HR tạo JD mới.
+Admin chỉ override quản trị JD đã tồn tại.
+end note
+
+note bottom of UC16
+Candidate chỉ Match của CV mình.
+HR cần JD và CV đều thuộc HR.
+end note
+@enduml

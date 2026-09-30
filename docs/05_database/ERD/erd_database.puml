@@ -1,0 +1,36 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+title ERD - WEBCV UNG VIEN TUYEN DUNG
+
+entity users
+entity skills
+entity resumes
+entity candidate_profiles
+entity resume_skills
+entity resume_experiences
+entity resume_educations
+entity job_descriptions
+entity job_skills
+entity match_results
+
+users ||--o{ resumes
+users ||--o{ job_descriptions
+resumes ||--o| candidate_profiles : "0..1 snapshot"
+resumes ||--o{ resume_skills
+skills ||--o{ resume_skills
+resumes ||--o{ resume_experiences
+resumes ||--o{ resume_educations
+job_descriptions ||--o{ job_skills
+skills ||--o{ job_skills
+job_descriptions ||--o{ match_results
+resumes ||--o{ match_results
+
+note "UQ(resume_id, skill_id)" as N1
+resume_skills .. N1
+note "UQ(job_id, skill_id)" as N2
+job_skills .. N2
+note "UQ(job_id, resume_id)" as N3
+match_results .. N3
+@enduml

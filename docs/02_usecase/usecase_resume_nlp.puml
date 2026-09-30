@@ -1,0 +1,44 @@
+@startuml
+left to right direction
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+title USE CASE - PHÂN HỆ CV & NLP
+
+actor Candidate
+actor HR
+actor Admin
+
+rectangle "CV & NLP" {
+  usecase "UC07 Upload CV" as UC07
+  usecase "UC08 Phân tích CV tự động\n(expected_revision)" as UC08
+  usecase "Bóc text PDF/DOCX" as P1
+  usecase "OCR fallback [Advanced]" as P2
+  usecase "Trích xuất thực thể" as P3
+  usecase "Chuẩn hóa Skill Taxonomy\n(seed baseline)" as P4
+  usecase "Sinh embedding CV\nmodel + preprocessing version" as P5
+  usecase "UC09 Rà soát/chỉnh dữ liệu CV\nrevision++ + invalidate" as UC09
+  usecase "UC10 Quản lý kho CV" as UC10
+}
+
+Candidate --> UC07
+Candidate --> UC09
+Candidate --> UC10
+HR --> UC07
+HR --> UC09
+HR --> UC10
+Admin --> UC10
+
+UC07 ..> UC08 : <<include>>
+UC08 ..> P1 : <<include>>
+P2 ..> P1 : <<extend>>
+UC08 ..> P3 : <<include>>
+UC08 ..> P4 : <<include>>
+UC08 ..> P5 : <<include>>
+
+note bottom of UC08
+Task parse cũ không được commit nếu Resume revision đã đổi.
+end note
+@enduml

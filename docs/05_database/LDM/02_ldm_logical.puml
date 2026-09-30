@@ -1,0 +1,118 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+title LDM - MÔ HÌNH DỮ LIỆU LOGIC
+
+entity USER {
+ + user_id [PK]
+ email [CI-UQ]
+ password_hash
+ full_name
+ phone_number
+ role
+ is_active
+}
+entity SKILL {
+ + skill_id [PK]
+ name [UQ]
+ normalized_name [UQ]
+ skill_kind
+ category
+}
+entity RESUME {
+ + resume_id [PK]
+ # owner_user_id [FK]
+ revision
+ file_name
+ storage_key [UQ]
+ parsing_status
+ resume_embedding
+ embedding_model
+ embedding_preprocessing_version
+}
+entity CANDIDATE_PROFILE {
+ + candidate_profile_id [PK]
+ # resume_id [FK,UQ]
+ full_name
+ email
+ current_title
+}
+entity RESUME_SKILL {
+ + id [PK]
+ # resume_id [FK]
+ # skill_id [FK]
+ years_of_experience
+ [UQ resume_id+skill_id]
+}
+entity RESUME_EXPERIENCE {
+ + id [PK]
+ # resume_id [FK]
+ company_name
+ job_title
+ start_date
+ end_date
+ is_current
+}
+entity RESUME_EDUCATION {
+ + id [PK]
+ # resume_id [FK]
+ institution_name
+ degree
+ field_of_study
+}
+entity JOB_DESCRIPTION {
+ + job_id [PK]
+ # recruiter_id [FK]
+ revision
+ title
+ raw_content
+ job_embedding
+ embedding_model
+ embedding_preprocessing_version
+ parsing_status
+ is_criteria_verified
+ w_skill
+ w_semantic
+ w_experience
+ status
+}
+entity JOB_SKILL {
+ + id [PK]
+ # job_id [FK]
+ # skill_id [FK]
+ importance
+ min_years_required
+ [UQ job_id+skill_id]
+}
+entity MATCH_RESULT {
+ + match_id [PK]
+ # job_id [FK]
+ # resume_id [FK]
+ generation
+ resume_revision
+ job_revision
+ overall_score
+ skill_score
+ semantic_score
+ experience_score
+ algorithm_version
+ embedding_model
+ embedding_preprocessing_version
+ status
+ error_message
+ [UQ job_id+resume_id]
+}
+
+USER ||--o{ RESUME
+USER ||--o{ JOB_DESCRIPTION
+RESUME ||--o| CANDIDATE_PROFILE
+RESUME ||--o{ RESUME_SKILL
+SKILL ||--o{ RESUME_SKILL
+RESUME ||--o{ RESUME_EXPERIENCE
+RESUME ||--o{ RESUME_EDUCATION
+JOB_DESCRIPTION ||--o{ JOB_SKILL
+SKILL ||--o{ JOB_SKILL
+JOB_DESCRIPTION ||--o{ MATCH_RESULT
+RESUME ||--o{ MATCH_RESULT
+@enduml

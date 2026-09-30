@@ -1,0 +1,31 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title SEQUENCE - REFRESH / LOGOUT [ADVANCED]
+
+actor User
+participant "Next.js" as FE
+participant "Auth API" as API
+participant "Security Service" as Security
+database "Redis session store" as Redis
+
+note over User,Redis
+Advanced feature. Không nằm trong OpenAPI MVP.
+MVP logout chỉ xóa Access Token phía client.
+end note
+
+== Refresh ==
+User -> FE : access token hết hạn
+FE -> API : POST /auth/refresh + HttpOnly Cookie
+API -> Security : verify/rotate refresh session
+Security -> Redis : validate + rotate/revoke old session
+Redis --> Security : OK
+Security --> API : new access + refresh
+API --> FE : 200 access token + Set-Cookie HttpOnly
+
+== Logout ==
+FE -> API : POST /auth/logout
+API -> Security : revoke current refresh session
+Security -> Redis : revoke
+API --> FE : 204 + clear cookie
+@enduml

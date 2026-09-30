@@ -1,0 +1,36 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+title ACTIVITY - UC09/10 REVIEW & QUẢN LÝ CV
+
+start
+:User mở kho CV;
+:GET /api/v1/resumes;
+:Backend scope owner/Admin;
+if (chọn CV?) then (Có)
+  :GET /resumes/{id};
+  if (PARSED?) then (Có)
+    :Hiển thị candidate_profile 0..1 + skills/exp/edu;
+    if (user sửa parsed data?) then (Có)
+      :Validate taxonomy/date ranges;
+      :Regenerate canonical embedding;
+      :BEGIN TRANSACTION;
+      :resume.revision = revision + 1;
+      :Save aggregate + embedding_model + preprocessing_version;
+      :Set is_manually_edited=true;
+      :Invalidate related Match:
+generation++, PENDING, clear stale payload;
+      :COMMIT;
+    endif
+  else (Không)
+    :Hiển thị parsing_status/error nếu FAILED;
+  endif
+endif
+if (download?) then (Có)
+  :GET /resumes/{id}/download;
+endif
+if (soft delete?) then (Có)
+  :DELETE /resumes/{id};
+endif
+stop
+@enduml

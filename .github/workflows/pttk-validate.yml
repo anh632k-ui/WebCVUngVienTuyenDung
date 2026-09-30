@@ -1,0 +1,221 @@
+name: Validate PTTK
+
+on:
+  push:
+    branches: [pttk-sync-v2]
+    paths: ['docs/**', '.github/workflows/pttk-validate.yml']
+  pull_request:
+    paths: ['docs/**', '.github/workflows/pttk-validate.yml']
+
+jobs:
+  validate-pttk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install validators
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml openapi-spec-validator
+
+      - name: Validate OpenAPI and reliability invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          from openapi_spec_validator import validate_spec
+
+          spec = yaml.safe_load(Path('docs/07_api/openapi.yaml').read_text(encoding='utf-8'))
+          validate_spec(spec)
+          paths = spec['paths']
+
+          for forbidden in ('/auth/refresh','/auth/logout','/jobs/{id}/export'):
+              assert forbidden not in paths, f'Advanced route exposed in MVP: {forbidden}'
+          for required in ('/matching/calculate','/matching','/skills','/jobs','/resumes/upload'):
+              assert required in paths
+
+          assert spec['components']['schemas']['MatchStatus']['enum'] == ['PENDING','PROCESSING','COMPLETED','FAILED']
+          assert spec['components']['schemas']['MatchTriggerData']['properties']['status']['enum'] == ['PENDING']
+          assert '503' in paths['/matching/calculate']['post']['responses']
+          assert '409' in paths['/admin/users/{id}']['patch']['responses']
+
+          idem = spec['components']['parameters']['IdempotencyKey']
+          assert idem['name'] == 'Idempotency-Key'
+          assert idem['in'] == 'header' and idem['required'] is True
+          assert idem['schema']['format'] == 'uuid'
+          assert 'fingerprint' in idem['description'].lower()
+          for route in ('/resumes/upload','/jobs'):
+              params = paths[route]['post'].get('parameters', [])
+              assert any(p.get('$ref') == '#/components/parameters/IdempotencyKey' for p in params), route
+              conflict = paths[route]['post']['responses'].get('409')
+              assert conflict and conflict.get('$ref') == '#/components/responses/IdempotencyConflict', route
+          idem_conflict = spec['components']['responses']['IdempotencyConflict']['description']
+          assert 'IDEMPOTENCY_KEY_REUSED' in idem_conflict
+
+          match = spec['components']['schemas']['MatchSummary']['properties']
+          for f in ('generation','resume_revision','job_revision','embedding_model','embedding_preprocessing_version'):
+              assert f in match
+          resume = spec['components']['schemas']['ResumeSummary']['properties']
+          job = spec['components']['schemas']['Job']['properties']
+          assert 'revision' in resume and 'revision' in job
+
+          cp = spec['components']['schemas']['ResumeDetailData']['properties']['candidate_profile']
+          assert cp.get('nullable') is True
+
+          for route, item in paths.items():
+              for method, op in item.items():
+                  if method not in {'get','post','put','patch','delete'}:
+                      continue
+                  for code in ('200','201','202'):
+                      resp = op.get('responses',{}).get(code)
+                      if not resp:
+                          continue
+                      content = resp.get('content')
+                      assert content, f'{method.upper()} {route} {code} missing content'
+                      if 'application/json' in content:
+                          assert 'schema' in content['application/json']
+
+          print('OpenAPI fingerprint/reliability validation: OK')
+          PY
+
+      - name: Install PlantUML
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y plantuml
+
+      - name: Validate PlantUML
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(find docs -type f -name '*.puml' -print0)
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do plantuml -checkonly "$file"; done
+          echo "PlantUML OK: ${#files[@]} files"
+
+      - name: Validate schema seed and semantic invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def read(path):
+              return Path(path).read_text(encoding='utf-8')
+
+          sql = read('docs/05_database/schema.sql')
+          tables = set(re.findall(r'(?im)^CREATE TABLE\s+([a-z_][a-z0-9_]*)\s*\(', sql))
+          expected = {'users','skills','resumes','candidate_profiles','resume_skills','resume_experiences','resume_educations','job_descriptions','job_skills','match_results'}
+          assert tables == expected
+          for text in (
+              'revision BIGINT NOT NULL DEFAULT 1',
+              'generation BIGINT NOT NULL DEFAULT 1',
+              'resume_revision BIGINT NOT NULL',
+              'job_revision BIGINT NOT NULL',
+              'embedding_preprocessing_version',
+              'chk_match_error_state',
+              'chk_resume_error_state',
+              'chk_job_error_state',
+              'chk_noncompleted_match_cleared',
+              'vector_cosine_ops',
+              'CREATE UNIQUE INDEX uq_users_email_ci',
+              'is_deleted BOOLEAN NOT NULL DEFAULT FALSE',
+          ):
+              assert text in sql, text
+          assert sql.count('create_request_fingerprint VARCHAR(64) NOT NULL') == 2
+          assert sql.count("create_request_fingerprint ~ '^[0-9a-f]{64}$'") == 2
+
+          seed = read('docs/05_database/skill_taxonomy_seed.sql')
+          assert 'INSERT INTO skills' in seed
+          assert "'HARD'" in seed and "'SOFT'" in seed
+          assert seed.count("('") >= 30
+
+          rules = read('docs/00_requirements/business_rules.md')
+          for key in (
+              'BR-AUTH-07','BR-CV-07','BR-CV-11','BR-CV-12','BR-CV-13','BR-CV-14',
+              'BR-JOB-10','BR-JOB-11','BR-JOB-12','BR-JOB-13','BR-JOB-14',
+              'BR-MATCH-13','BR-MATCH-14','BR-MATCH-15','BR-MATCH-16',
+              'BR-REL-01','BR-REL-02','BR-REL-03','BR-REL-04','BR-REL-05','BR-REL-06','BR-REL-07','BR-REL-08'
+          ):
+              assert key in rules, key
+          assert 'is_deleted=false' in rules.lower()
+          assert 'IDEMPOTENCY_KEY_REUSED' in rules
+          assert 'bd7b1f30-b2de-549c-a8dd-8d742ee5bc12' in rules
+
+          fr = read('docs/00_requirements/functional_requirements.md')
+          for key in ('FR-43','FR-44','FR-45','FR-46','FR-47','FR-48'):
+              assert key in fr, key
+
+          master = read('docs/PTTK_MASTER.md')
+          for phrase in (
+              'input/computation request',
+              'Parse Recovery Sweeper',
+              'UUIDv5',
+              'Idempotency-Key',
+              'put-if-absent',
+              'is_deleted=FALSE',
+              'create_request_fingerprint',
+              'IDEMPOTENCY_KEY_REUSED',
+              'bd7b1f30-b2de-549c-a8dd-8d742ee5bc12',
+              'SHA-256(raw file bytes)',
+              'canonical UTF-8 JSON',
+          ):
+              assert phrase in master, phrase
+          assert 'không tăng revision thêm lần nữa khi commit kết quả' in master
+
+          cv_seq = read('docs/04_sequence/seq_upload_parse_cv.puml')
+          jd_seq = read('docs/04_sequence/seq_create_parse_job.puml')
+          match_seq = read('docs/04_sequence/seq_matching.puml')
+          for text in (cv_seq, jd_seq):
+              assert "parsing_status='PENDING'" in text
+              assert "parsing_status='PROCESSING'" in text
+              assert 'is_deleted=FALSE' in text
+              assert 'Recovery' in text
+              assert 'Idempotency-Key' in text
+              assert 'IDEMPOTENCY_KEY_REUSED' in text
+              assert 'fingerprint' in text.lower()
+          assert 'put-if-absent' in cv_seq
+          assert 'orphan' in cv_seq.lower()
+          assert 'PENDING->PROCESSING' in match_seq or 'PENDING -> PROCESSING' in match_seq
+          assert "status='PROCESSING'" in match_seq
+          assert 'is_deleted=FALSE' in match_seq
+          assert 'stale/duplicate/deleted' in match_seq.lower()
+
+          cv_act = read('docs/03_activity/act_uc07_08_upload_parse_cv.puml')
+          jd_act = read('docs/03_activity/act_uc11_12_manage_parse_jd.puml')
+          match_act = read('docs/03_activity/act_uc15_matching.puml')
+          for text in (cv_act, jd_act):
+              assert 'is_deleted=FALSE' in text
+              assert 'parsing_status=PROCESSING' in text
+              assert 'IDEMPOTENCY_KEY_REUSED' in text
+              assert 'fingerprint' in text.lower()
+          assert 'put-if-absent' in cv_act
+          assert 'is_deleted=FALSE' in match_act
+
+          arch = read('docs/06_architecture/system_architecture.puml')
+          assert 'Parse Recovery Sweeper' in arch
+          assert 'UUIDv5 / SHA-256 Guard' in arch
+          assert 'IDEMPOTENCY_KEY_REUSED' in arch
+          assert 'bd7b1f30-b2de-549c-a8dd-8d742ee5bc12' in arch
+          assert 'is_deleted=false' in arch
+
+          api = read('docs/07_api/api_contract.md')
+          for phrase in ('Idempotency-Key','put-if-absent','Parse Recovery Sweeper','is_deleted=FALSE','IDEMPOTENCY_KEY_REUSED','create_request_fingerprint','bd7b1f30-b2de-549c-a8dd-8d742ee5bc12'):
+              assert phrase in api, phrase
+
+          dictionary = read('docs/05_database/data_dictionary.md')
+          pdm = read('docs/05_database/PDM/03_pdm_physical_erd.puml')
+          assert dictionary.count('create_request_fingerprint') >= 2
+          assert 'IDEMPOTENCY_KEY_REUSED' in dictionary
+          assert pdm.count('create_request_fingerprint') >= 2
+
+          trace = read('docs/08_traceability/traceability_matrix.md')
+          for phrase in ('FR-43','FR-44','FR-45','FR-46','FR-47','FR-48','Request fingerprint','Resume storage orphan','Parse exclusive CAS','Match exclusive CAS'):
+              assert phrase in trace, phrase
+
+          gate = read('docs/09_delivery/implementation_gate.md')
+          for phrase in ('Soft-delete Resume/JD sau claim','Current Match/Leaderboard','IDEMPOTENCY_KEY_REUSED','storage orphan','bd7b1f30-b2de-549c-a8dd-8d742ee5bc12'):
+              assert phrase in gate, phrase
+
+          print('Schema/seed/fingerprint/reliability semantic validation: OK')
+          PY
