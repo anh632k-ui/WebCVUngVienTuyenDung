@@ -1,7 +1,6 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-
 title SEQUENCE - HUMAN-IN-THE-LOOP REVIEW CV
 
 actor "Candidate/HR" as User
@@ -12,31 +11,28 @@ database "PostgreSQL" as DB
 participant "Embedding Service" as Embedding
 participant "Task Dispatcher" as Dispatcher
 
-User -> FE : mở CV đã PARSED
+User -> FE : mở CV
 FE -> API : GET /resumes/{id}
 API -> Service : get_detail(current_user,id)
-Service -> DB : authorize owner + SELECT structured data
-DB --> Service : resume/profile/skills/experience/education
+Service -> DB : authorize owner + SELECT aggregate
+DB --> Service : resume + candidate_profile(0..1) + children
 Service --> API : detail DTO
 API --> FE : 200
 
-User -> FE : chỉnh thông tin AI bóc sai
+User -> FE : chỉnh dữ liệu parse
 FE -> API : PUT /resumes/{id}/parsed-data
-API -> Service : update_parsed_data(current_user,id,payload)
-Service -> DB : verify ownership + current PARSED
-Service -> Service : validate taxonomy IDs/dates/duplicates
-Service -> DB : BEGIN; update profile; replace child rows
-Service -> Embedding : rebuild canonical CV embedding
-Embedding --> Service : vector + model id
-Service -> DB : update embedding + is_manually_edited=true
-Service -> DB : invalidate match_results of resume\nstatus=PENDING; clear scores/evidence/error/calculated_at
+API -> Service : update_parsed_data(...)
+Service -> Service : validate taxonomy/dates/duplicates
+Service -> Embedding : rebuild canonical text
+Embedding --> Service : vector + model + preprocessing_version
+Service -> DB : BEGIN
+Service -> DB : update aggregate + embedding + is_manually_edited\nresume.revision++
+Service -> DB : invalidate Matches\ngeneration++, PENDING, clear stale payload/provenance
 Service -> DB : COMMIT
-DB --> Service : committed
-opt policy enqueues immediate recalculation
-  Service -> Dispatcher : enqueue affected match_ids
+DB --> Service : new revision + affected match ids
+opt recalculate policy
+  Service -> Dispatcher : dispatch with new generation/revisions
 end
-Service --> API : updated detail
+Service --> API : ResumeDetailResponse
 API --> FE : 200
-FE --> User : hiển thị dữ liệu mới
-
 @enduml
