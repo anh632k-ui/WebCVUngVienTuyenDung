@@ -2,7 +2,7 @@
 skinparam monochrome true
 skinparam shadowing false
 
-title SEQUENCE - MATCH HISTORY, GAP ANALYSIS & LEADERBOARD
+title SEQUENCE - CURRENT MATCH RESULTS, GAP ANALYSIS & LEADERBOARD
 
 actor Candidate
 actor HR
@@ -13,22 +13,30 @@ participant "Matching Service" as Service
 database "PostgreSQL" as DB
 participant "XAI Adapter [optional]" as XAI
 
-== Lịch sử matching theo scope ==
-Candidate -> FE : mở lịch sử của CV mình
-HR -> FE : mở lịch sử thuộc JD mình
-Admin -> FE : mở lịch sử hệ thống
+== Danh sách kết quả matching hiện hành ==
+Candidate -> FE : mở kết quả của CV mình
+HR -> FE : mở kết quả JD mình + CV thuộc kho HR
+Admin -> FE : mở kết quả hệ thống
 FE -> API : GET /matching?page&limit&filters
 API -> Service : authorize + apply ownership scope
-Service -> DB : SELECT match_results theo scope
+Service -> DB : SELECT match_results JOIN resumes/jobs\nCandidate: resume owner\nHR: JD owner AND resume owner\nAdmin: all
 DB --> Service : paginated rows
 Service --> API : match summaries
 API --> FE : 200
 
 == Candidate/HR/Admin xem Skill Gap ==
 FE -> API : GET /matching/{match_id}/gap-analysis
-API -> Service : authorize by CV owner / JD owner / Admin
-Service -> DB : SELECT match + skill evidence
-DB --> Service : scores/matched/missing
+API -> Service : authorize ownership
+Service -> DB : SELECT match + resume + job ownership + skill evidence
+DB --> Service : result + ownership
+alt Candidate
+  Service -> Service : require resume.owner_user_id=current_user.id
+else HR
+  Service -> Service : require job.recruiter_id=current_user.id\nand resume.owner_user_id=current_user.id
+else Admin
+  Service -> Service : allow
+end
+Service -> Service : require status=COMPLETED
 Service -> Service : classify CRITICAL/MINOR/PARTIAL
 opt XAI enabled
   Service -> XAI : evidence only
@@ -42,9 +50,14 @@ HR -> FE : mở leaderboard JD
 Admin -> FE : mở leaderboard JD
 FE -> API : GET /jobs/{id}/leaderboard
 API -> Service : require JD owner HR or Admin
-Service -> DB : SELECT COMPLETED matches\nORDER BY overall_score DESC
+Service -> DB : SELECT COMPLETED matches JOIN resumes\nHR additionally requires resume.owner_user_id=current_user.id\nORDER BY overall_score DESC
 DB --> Service : ranking rows
 Service --> API : leaderboard DTO
 API --> FE : 200
+
+note bottom
+  Candidate self-match với JD của HR không tự động
+  xuất hiện trong danh sách/leaderboard của HR ở MVP.
+end note
 
 @enduml
