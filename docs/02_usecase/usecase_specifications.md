@@ -13,7 +13,7 @@ Tài liệu này là đặc tả chuẩn cho các Use Case trong `usecase_overvi
   1. Guest nhập email, mật khẩu, họ tên, số điện thoại tùy chọn và role.
   2. Frontend validation cơ bản.
   3. Backend validation lại toàn bộ dữ liệu.
-  4. Kiểm tra email chưa tồn tại.
+  4. Normalize email lowercase và kiểm tra email chưa tồn tại theo so sánh không phân biệt hoa/thường.
   5. Hash mật khẩu.
   6. Tạo user.
   7. Trả `201 Created`.
@@ -25,7 +25,7 @@ Tài liệu này là đặc tả chuẩn cho các Use Case trong `usecase_overvi
 - **Actor chính:** Guest.
 - **Tiền điều kiện:** Có tài khoản active.
 - **Hậu điều kiện:** Cấp Access Token; nếu bật refresh session thì backend set HttpOnly Cookie.
-- **Luồng chính:** nhập email/password -> xác minh hash -> kiểm `is_active` -> phát token -> trả profile tối thiểu.
+- **Luồng chính:** nhập email/password -> normalize email -> xác minh hash -> kiểm `is_active` -> phát token -> trả profile tối thiểu.
 - **Ngoại lệ:** Sai credential `401`; tài khoản khóa `403`.
 - **API:** `POST /api/v1/auth/login`.
 
@@ -94,7 +94,8 @@ Tài liệu này là đặc tả chuẩn cho các Use Case trong `usecase_overvi
 
 - **Actor chính:** Owner Candidate/HR hoặc Admin.
 - **Tiền điều kiện:** Resume `PARSED`, caller có quyền.
-- **Luồng chính:** GET detail -> hiển thị file + structured data -> user tra cứu taxonomy khi cần -> sửa -> backend validate -> tái sinh embedding từ dữ liệu canonical đã chỉnh -> transaction replace/update child rows + embedding -> set `is_manually_edited=true`.
+- **Luồng chính:** GET detail -> hiển thị file + structured data -> user tra cứu taxonomy khi cần -> sửa -> backend validate -> tái sinh embedding từ dữ liệu canonical đã chỉnh -> transaction replace/update child rows + embedding -> set `is_manually_edited=true` -> invalidate mọi Match hiện hành của resume nếu dữ liệu ảnh hưởng matching thay đổi.
+- **Invalidate:** các Match liên quan chuyển `PENDING`; clear toàn bộ scores, matched/missing evidence, gap summary, error và `calculated_at`. Có thể enqueue recalculate theo policy riêng.
 - **API chính:** `GET /api/v1/resumes/{id}`, `PUT /api/v1/resumes/{id}/parsed-data`.
 - **API hỗ trợ:** `GET /api/v1/skills`.
 
@@ -112,7 +113,7 @@ Tài liệu này là đặc tả chuẩn cho các Use Case trong `usecase_overvi
 - **Actor chính:** HR; Admin có quyền quản trị.
 - **Tiền điều kiện:** HR/Admin authenticated.
 - **Luồng Create:** nhập metadata + raw content + weights -> validate -> tạo JD `DRAFT`, `parsing_status=PENDING` -> kích hoạt UC12.
-- **Luồng Update:** HR sửa JD của mình; chỉ khi `raw_content` đổi mới kích hoạt lại UC12, đồng thời đưa JD về `DRAFT`, invalidate criteria/embedding/parsed timestamp cũ.
+- **Luồng Update:** HR sửa JD của mình; chỉ khi `raw_content` đổi mới kích hoạt lại UC12, đồng thời đưa JD về `DRAFT`, invalidate criteria/embedding/parsed timestamp cũ **và invalidate mọi Match hiện hành của JD**.
 - **Luồng Status:** DRAFT/ACTIVE/CLOSED; chỉ ACTIVE khi JD đã PARSED, criteria verified và chưa xóa.
 - **Luồng Delete:** soft delete.
 - **API:** `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `PUT /api/v1/jobs/{id}`, `PATCH /api/v1/jobs/{id}/status`, `DELETE /api/v1/jobs/{id}`.
@@ -128,7 +129,8 @@ Tài liệu này là đặc tả chuẩn cho các Use Case trong `usecase_overvi
 
 - **Actor chính:** HR owner hoặc Admin.
 - **Tiền điều kiện:** JD `PARSED`.
-- **Luồng chính:** load criteria -> tra cứu taxonomy khi cần -> HR thêm/xóa skill, đổi MANDATORY/OPTIONAL, sửa min years/education -> validate tối thiểu một skill và không trùng `skill_id` -> transaction save -> `is_criteria_verified=true`.
+- **Luồng chính:** load criteria -> tra cứu taxonomy khi cần -> HR thêm/xóa skill, đổi MANDATORY/OPTIONAL, sửa min years/education -> validate tối thiểu một skill và không trùng `skill_id` -> transaction save -> `is_criteria_verified=true` -> invalidate mọi Match hiện hành của JD.
+- **Invalidate:** Match về `PENDING`, clear scores/evidence/timestamps; có thể enqueue recalculate theo policy riêng.
 - **API chính:** `GET /api/v1/jobs/{id}/criteria`, `PUT /api/v1/jobs/{id}/criteria`.
 - **API hỗ trợ:** `GET /api/v1/skills`.
 
@@ -144,17 +146,20 @@ Tài liệu này là đặc tả chuẩn cho các Use Case trong `usecase_overvi
 
 - **Actor chính:** Candidate hoặc HR; Admin có quyền vận hành.
 - **Tiền điều kiện:** caller có quyền; CV `PARSED`; JD `PARSED`; `is_criteria_verified=true`; JD có ít nhất một `job_skill`; embedding CV/JD hợp lệ; tài nguyên chưa xóa; Candidate chỉ match JD ACTIVE.
-- **Luồng Candidate:** gửi 1 resume của mình + 1 JD ACTIVE.
-- **Luồng HR:** gửi 1 JD mình sở hữu + một hoặc nhiều resume mình có quyền.
-- **Xử lý:** tạo/upsert match `PENDING` -> worker PROCESSING -> Skill Score -> Semantic/Text Score -> Experience Score -> Overall Score -> matched/missing skills -> COMPLETED.
+- **Luồng Candidate:** gửi 1 resume của mình + 1 JD ACTIVE. Kết quả self-match chỉ Candidate/Admin được đọc trong MVP.
+- **Luồng HR:** gửi 1 JD mình sở hữu + một hoặc nhiều resume **thuộc kho HR**.
+- **Xử lý:** upsert Match hiện hành về `PENDING` và clear toàn bộ stale score/evidence/timestamp -> worker `PROCESSING` -> Skill Score -> Semantic Score -> Experience Score -> Overall Score -> matched/missing skills -> `COMPLETED`.
 - **API thống nhất:** `POST /api/v1/matching/calculate` với `resume_ids[]`; không tách `/single-match` và `/batch-match`.
-- **Response:** `202 Accepted` với danh sách `match_ids`.
+- **Response:** `202 Accepted` với `job_id`, `match_ids`, `total_matches`, `status=PENDING`.
 
-## UC16 — Xem lịch sử, kết quả & Skill Gap
+## UC16 — Xem danh sách kết quả hiện hành, chi tiết & Skill Gap
 
-- **Actor chính:** Candidate owner CV, HR owner JD, Admin.
+- **Actor chính:** Candidate, HR, Admin theo ownership.
 - **Tiền điều kiện:** Authenticated; khi xem một Match cụ thể, Match phải tồn tại và caller có quyền.
-- **Luồng lịch sử:** GET danh sách matching theo ownership/scope -> filter theo JD/CV/status -> chọn một kết quả.
+- **Scope Candidate:** Match có resume thuộc Candidate.
+- **Scope HR:** Match chỉ khi JD thuộc HR **và** resume cũng thuộc kho HR.
+- **Scope Admin:** toàn bộ.
+- **Luồng danh sách:** GET danh sách kết quả hiện hành -> filter theo JD/CV/status -> chọn một kết quả. MVP không lưu nhiều attempt cho cùng `(job_id,resume_id)`.
 - **Luồng chi tiết:** GET match -> nếu PENDING/PROCESSING hiển thị trạng thái; nếu COMPLETED hiển thị overall + component scores + matched/missing skills.
 - **Luồng Skill Gap:** với Match COMPLETED, hiển thị criticality/gap type/recommendation; LLM/XAI nếu bật chỉ bổ sung explanation/recommendation.
 - **API:** `GET /api/v1/matching`, `GET /api/v1/matching/{match_id}`, `GET /api/v1/matching/{match_id}/gap-analysis`.
@@ -163,20 +168,21 @@ Tài liệu này là đặc tả chuẩn cho các Use Case trong `usecase_overvi
 
 - **Actor chính:** HR owner JD hoặc Admin.
 - **Tiền điều kiện:** JD tồn tại, caller có quyền.
-- **Luồng:** lọc match COMPLETED của JD -> min_score tùy chọn -> order `overall_score DESC` -> trả ranking + pagination/limit.
+- **Luồng:** lọc Match `COMPLETED` của JD; nếu caller là HR thì chỉ giữ resume có `owner_user_id=current_user.id`; filter `min_score` tùy chọn -> order `overall_score DESC` -> trả ranking + pagination/limit.
 - **Candidate:** Không được gọi endpoint leaderboard.
+- **Bảo mật:** Candidate self-match với JD của HR không xuất hiện cho HR trong MVP nếu CV không thuộc kho HR.
 - **API:** `GET /api/v1/jobs/{id}/leaderboard`.
 
 ## UC18 — Cấu hình trọng số matching
 
 - **Actor chính:** HR owner JD hoặc Admin.
-- **Luồng:** nhập `w_skill`, `w_semantic`, `w_experience` -> validate mỗi số [0,1] và tổng=1 -> update -> tùy chọn kích hoạt recalculate các match đã có.
+- **Luồng:** nhập `w_skill`, `w_semantic`, `w_experience` -> validate mỗi số [0,1] và tổng=1 -> update -> **bắt buộc invalidate** mọi Match hiện hành của JD. Nếu `recalculate=true` thì enqueue tính lại ngay; nếu false, Match vẫn ở `PENDING` và không được leaderboard coi là hợp lệ.
 - **API:** `PUT /api/v1/jobs/{id}/weights`.
 
 ## UC19 — Xuất báo cáo [Advanced]
 
 - **Actor chính:** HR owner JD hoặc Admin.
-- **Tiền điều kiện:** Có kết quả matching COMPLETED.
+- **Tiền điều kiện:** Có kết quả matching COMPLETED và đúng scope quyền riêng tư.
 - **Luồng:** chọn PDF hoặc Excel -> backend lấy leaderboard/skill gap -> tạo file -> stream về client.
-- **API:** `GET /api/v1/jobs/{id}/export?format=pdf|excel`.
-- **Ghi chú:** Nếu module chưa triển khai thì không expose route production; đây không phải điều kiện làm hỏng MVP.
+- **API dự kiến:** `GET /api/v1/jobs/{id}/export?format=pdf|excel`.
+- **Ghi chú:** Đây là feature Advanced, **không nằm trong OpenAPI MVP v1 cho tới khi được triển khai/bật thật**; không trình bày như tính năng đã hoàn thành nếu chưa code.
