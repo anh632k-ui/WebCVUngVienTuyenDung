@@ -27,7 +27,7 @@
 - **FR-17**: Candidate xem danh sách/chi tiết JD đang ACTIVE.
 - **FR-18**: Hệ thống phân tích JD, trích kinh nghiệm/học vấn/kỹ năng và phân loại MANDATORY/OPTIONAL.
 - **FR-19**: Hệ thống sinh embedding JD.
-- **FR-20**: HR rà soát, thêm/xóa/chuyển loại skill criteria đã bóc tách.
+- **FR-20**: HR rà soát, thêm/xóa/chuyển loại skill criteria đã bóc tách và xác nhận criteria trước khi công bố/matching.
 - **FR-21**: HR cấu hình `w_skill`, `w_semantic`, `w_experience` sao cho tổng bằng 1.
 
 ## Nhóm D — Matching & Analytics
@@ -39,7 +39,7 @@
 - **FR-26**: Hệ thống tính Experience Score.
 - **FR-27**: Hệ thống tính Overall Score 0–100 theo trọng số JD.
 - **FR-28**: Hệ thống lưu matched skills, missing skills và dữ liệu giải thích cơ bản.
-- **FR-29**: Candidate/HR có quyền xem chi tiết kết quả và Skill Gap.
+- **FR-29**: Candidate/HR có quyền xem chi tiết kết quả và Skill Gap theo ownership.
 - **FR-30**: HR xem leaderboard ứng viên cho JD của mình.
 - **FR-31**: Khi HR thay trọng số, hệ thống có thể recalculate các kết quả liên quan.
 - **FR-32**: Hệ thống có thể xuất leaderboard/chi tiết ra PDF/Excel nếu module nâng cao được triển khai.
@@ -49,7 +49,7 @@
 - **FR-33**: Nếu tích hợp LLM/XAI, hệ thống tạo tóm tắt/gợi ý dựa trên score + matched/missing skills; output này không sửa score cốt lõi.
 - **FR-34**: Hệ thống hỗ trợ thu thập kết quả thực nghiệm trên tập CV/JD mẫu để đánh giá MAE, Pearson, NDCG@K, Precision@K khi có ground truth phù hợp.
 
-## Nhóm F — Chức năng hỗ trợ dùng chung
+## Nhóm F — Chức năng hỗ trợ xuyên suốt
 
-- **FR-35**: Candidate/HR/Admin có thể tra cứu Skill Taxonomy theo từ khóa, loại HARD/SOFT và category để phục vụ Human-in-the-loop cho CV/JD; taxonomy không được hard-code thành hai bản khác nhau giữa frontend và backend.
-- **FR-36**: Candidate/HR/Admin có thể xem lịch sử kết quả matching trong phạm vi ownership của mình; Candidate chỉ thấy match của CV mình, HR chỉ thấy match của JD mình, Admin có quyền quản trị toàn bộ.
+- **FR-35**: Người dùng đã xác thực tra cứu Skill Taxonomy để autocomplete/tìm kỹ năng chuẩn khi rà soát CV hoặc criteria JD.
+- **FR-36**: Candidate/HR/Admin xem danh sách lịch sử kết quả matching theo đúng ownership/scope, có phân trang và lọc theo JD/CV/trạng thái.
