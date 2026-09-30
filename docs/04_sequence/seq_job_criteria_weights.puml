@@ -4,7 +4,7 @@ skinparam shadowing false
 
 title SEQUENCE - REVIEW JD CRITERIA & UPDATE WEIGHTS
 
-actor HR
+actor "HR/Admin" as User
 participant "Next.js" as FE
 participant "Jobs API" as API
 participant "Job Service" as Service
@@ -12,25 +12,38 @@ database "PostgreSQL" as DB
 participant "Task Dispatcher" as Dispatcher
 
 == Review criteria ==
-HR -> FE : mở Criteria
+User -> FE : mở Criteria
 FE -> API : GET /jobs/{id}/criteria
 API -> Service : get_criteria(current_user,id)
-Service -> DB : verify recruiter_id + SELECT JD/job_skills
+Service -> DB : verify recruiter_id/Admin + SELECT JD/job_skills
 DB --> Service : criteria
 Service --> API : criteria DTO
 API --> FE : 200
 
-HR -> FE : chỉnh experience/education/skills
-FE -> API : PUT /jobs/{id}/criteria
-API -> Service : update_criteria(current_user,id,payload)
-Service -> Service : validate ownership, skill IDs, duplicates
-Service -> DB : transaction update JD + replace/upsert job_skills\nset is_criteria_verified=true
-DB --> Service : commit
-Service --> API : updated criteria
+User -> FE : chỉnh experience/education/skills
+FE -> API : GET /skills?keyword=...
+API -> Service : search taxonomy
+Service -> DB : SELECT skills
+DB --> Service : skill options
+Service --> API : taxonomy DTO
 API --> FE : 200
 
+User -> FE : lưu criteria
+FE -> API : PUT /jobs/{id}/criteria
+API -> Service : update_criteria(current_user,id,payload)
+Service -> Service : validate ownership, >=1 skill,\nskill IDs, duplicates, values
+alt invalid
+  Service --> API : validation error
+  API --> FE : 422
+else valid
+  Service -> DB : transaction update JD + replace/upsert job_skills\nset is_criteria_verified=true
+  DB --> Service : commit
+  Service --> API : updated criteria
+  API --> FE : 200
+end
+
 == Weights ==
-HR -> FE : chỉnh w_skill/w_semantic/w_experience
+User -> FE : chỉnh w_skill/w_semantic/w_experience
 FE -> API : PUT /jobs/{id}/weights
 API -> Service : update_weights(...)
 Service -> Service : validate each [0,1] and sum=1.000
