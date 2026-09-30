@@ -8,8 +8,8 @@ start
 :HR/Admin mở màn hình quản lý JD;
 
 if (Tạo JD mới?) then (Có)
-  :Nhập title, level, location, raw_content,
-  min experience và weights;
+  :Nhập title, level, location, raw_content
+  và weights;
   :POST /api/v1/jobs;
   :Backend kiểm HR/Admin + validate tổng weights=1;
   :INSERT job_descriptions
