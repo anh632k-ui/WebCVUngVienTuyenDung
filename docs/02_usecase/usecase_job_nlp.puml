@@ -26,9 +26,10 @@ rectangle "JD & NLP" {
 HR --> UC11
 HR --> UC13
 Admin --> UC11
+Admin --> UC13
 Candidate --> UC14
 
-UC12 ..> UC11 : <<extend>>\n[tạo mới hoặc raw_content thay đổi]
+UC12 ..> UC11 : <<extend>>\n[khi tạo hoặc đổi raw_content]
 UC12 ..> J1 : <<include>>
 UC12 ..> J2 : <<include>>
 UC12 ..> J3 : <<include>>
