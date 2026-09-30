@@ -13,7 +13,6 @@ package "FastAPI API Layer" {
   component "jobs.py" as JobsAPI
   component "matching.py" as MatchAPI
   component "router.py" as Router
-
   Router --> AuthAPI
   Router --> UsersAPI
   Router --> SkillsAPI
@@ -26,6 +25,7 @@ package "Core" {
   component "config.py" as Config
   component "database.py" as Database
   component "security.py" as Security
+  component "version_guard.py\nrevision/generation CAS helpers" as Guard
 }
 
 package "Service Layer" {
@@ -40,9 +40,9 @@ package "AI Pipeline" {
   component "pdf/docx_extractor.py" as Extractor
   component "entity_recognizer.py" as Entity
   component "skill_normalizer.py" as Normalizer
-  component "vector_embedding.py" as Vector
+  component "vector_embedding.py\nmodel + preprocessing version" as Vector
   component "matching_engine.py" as Engine
-  component "xai_adapter.py (optional)" as XAI
+  component "xai_adapter.py [Advanced]" as XAI
 }
 
 package "ORM and DTO" {
@@ -52,11 +52,11 @@ package "ORM and DTO" {
 
 package "Background Tasks" {
   component "task_dispatcher" as Dispatcher
-  component "celery_tasks.py" as Tasks
+  component "celery_tasks.py\nexpected versions in task payload" as Tasks
 }
 
-database "PostgreSQL + pgvector" as DB
-component "Redis/Celery (when enabled)" as Queue
+database "PostgreSQL 18 + pgvector" as DB
+component "Redis/Celery [when enabled]" as Queue
 
 AuthAPI --> UserService
 UsersAPI --> UserService
@@ -64,7 +64,6 @@ SkillsAPI --> SkillService
 ResumeAPI --> ResumeService
 JobsAPI --> JobService
 MatchAPI --> MatchService
-
 AuthAPI --> DTO
 UsersAPI --> DTO
 SkillsAPI --> DTO
@@ -77,6 +76,10 @@ SkillService --> ORM
 ResumeService --> ORM
 JobService --> ORM
 MatchService --> ORM
+ResumeService --> Guard
+JobService --> Guard
+MatchService --> Guard
+Guard --> ORM : conditional version-aware updates
 ORM --> Database
 Database --> DB
 
@@ -85,6 +88,7 @@ JobService --> Dispatcher
 MatchService --> Dispatcher
 Dispatcher --> Queue
 Queue --> Tasks
+Tasks --> Guard : claim/terminal CAS
 Tasks --> Extractor
 Tasks --> Entity
 Tasks --> Normalizer
@@ -96,5 +100,4 @@ Tasks --> ORM
 Security --> UserService
 Config --> Database
 Config --> Security
-
 @enduml
