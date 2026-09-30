@@ -29,7 +29,8 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/RegisterRequest'}
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
       responses:
         '201': {description: Created}
         '409': {$ref: '#/components/responses/Conflict'}
@@ -44,7 +45,8 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/LoginRequest'}
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
       responses:
         '200': {description: Logged in}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -77,7 +79,8 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/ChangePasswordRequest'}
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
       responses:
         '200': {description: Password changed}
         '400': {description: Current password is incorrect}
@@ -98,7 +101,8 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/UserUpdateRequest'}
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
       responses:
         '200': {description: Updated}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -111,9 +115,15 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit20'}
-        - {name: role, in: query, schema: {type: string, enum: [CANDIDATE, HR, ADMIN]}}
-        - {name: is_active, in: query, schema: {type: boolean}}
-        - {name: keyword, in: query, schema: {type: string}}
+        - name: role
+          in: query
+          schema: {$ref: '#/components/schemas/Role'}
+        - name: is_active
+          in: query
+          schema: {type: boolean}
+        - name: keyword
+          in: query
+          schema: {type: string}
       responses:
         '200': {description: Paginated users}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -128,7 +138,8 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/AdminUserPatchRequest'}
+            schema:
+              $ref: '#/components/schemas/AdminUserPatchRequest'
       responses:
         '200': {description: Updated}
         '400': {description: Self-lock/self-demote forbidden}
@@ -143,9 +154,17 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit20'}
-        - {name: keyword, in: query, schema: {type: string}}
-        - {name: skill_kind, in: query, schema: {type: string, enum: [HARD, SOFT]}}
-        - {name: category, in: query, schema: {type: string}}
+        - name: keyword
+          in: query
+          schema: {type: string}
+        - name: skill_kind
+          in: query
+          schema:
+            type: string
+            enum: [HARD, SOFT]
+        - name: category
+          in: query
+          schema: {type: string}
       responses:
         '200': {description: Paginated skills}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -162,7 +181,9 @@ paths:
               type: object
               required: [file]
               properties:
-                file: {type: string, format: binary}
+                file:
+                  type: string
+                  format: binary
       responses:
         '202': {description: Accepted for parsing}
         '413': {description: File exceeds 5 MB}
@@ -176,8 +197,12 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit20'}
-        - {name: keyword, in: query, schema: {type: string}}
-        - {name: parsing_status, in: query, schema: {$ref: '#/components/schemas/ParsingStatus'}}
+        - name: keyword
+          in: query
+          schema: {type: string}
+        - name: parsing_status
+          in: query
+          schema: {$ref: '#/components/schemas/ParsingStatus'}
         - name: skill_ids
           in: query
           style: form
@@ -187,6 +212,7 @@ paths:
             items: {type: integer}
       responses:
         '200': {description: Paginated resumes}
+        '401': {$ref: '#/components/responses/Unauthorized'}
 
   /resumes/{id}:
     get:
@@ -226,9 +252,10 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/ResumeParsedDataUpdate'}
+            schema:
+              $ref: '#/components/schemas/ResumeParsedDataUpdate'
       responses:
-        '200': {description: Parsed data updated}
+        '200': {description: Parsed data and embedding updated}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -253,11 +280,18 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit20'}
-        - {name: keyword, in: query, schema: {type: string}}
-        - {name: status, in: query, schema: {$ref: '#/components/schemas/JobStatus'}}
-        - {name: parsing_status, in: query, schema: {$ref: '#/components/schemas/ParsingStatus'}}
+        - name: keyword
+          in: query
+          schema: {type: string}
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/JobStatus'}
+        - name: parsing_status
+          in: query
+          schema: {$ref: '#/components/schemas/ParsingStatus'}
       responses:
         '200': {description: Paginated jobs}
+        '401': {$ref: '#/components/responses/Unauthorized'}
     post:
       tags: [Jobs]
       summary: HR/Admin tạo JD
@@ -265,7 +299,8 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/JobCreateRequest'}
+            schema:
+              $ref: '#/components/schemas/JobCreateRequest'
       responses:
         '201': {description: Created and queued for parsing}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -282,16 +317,18 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
     put:
       tags: [Jobs]
-      summary: Cập nhật JD
+      summary: Cập nhật metadata/raw content của JD
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/JobUpdateRequest'}
+            schema:
+              $ref: '#/components/schemas/JobUpdateRequest'
       responses:
         '200': {description: Updated}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
     delete:
@@ -301,21 +338,25 @@ paths:
         - {$ref: '#/components/parameters/UuidId'}
       responses:
         '204': {description: Soft deleted}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
   /jobs/{id}/status:
     patch:
       tags: [Jobs]
       summary: Đổi trạng thái DRAFT/ACTIVE/CLOSED
+      description: ACTIVE chỉ hợp lệ khi JD PARSED, criteria verified và có ít nhất một job skill.
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/JobStatusRequest'}
+            schema:
+              $ref: '#/components/schemas/JobStatusRequest'
       responses:
         '200': {description: Status updated}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -327,6 +368,7 @@ paths:
         - {$ref: '#/components/parameters/UuidId'}
       responses:
         '200': {description: Parsed criteria}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
     put:
       tags: [Jobs]
@@ -337,9 +379,11 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/JobCriteriaRequest'}
+            schema:
+              $ref: '#/components/schemas/JobCriteriaRequest'
       responses:
-        '200': {description: Criteria updated}
+        '200': {description: Criteria updated and verified}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -353,9 +397,11 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/WeightsRequest'}
+            schema:
+              $ref: '#/components/schemas/WeightsRequest'
       responses:
         '200': {description: Weights updated}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -366,23 +412,33 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit20'}
-        - {name: job_id, in: query, schema: {type: string, format: uuid}}
-        - {name: resume_id, in: query, schema: {type: string, format: uuid}}
-        - {name: status, in: query, schema: {$ref: '#/components/schemas/MatchStatus'}}
+        - name: job_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: resume_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/MatchStatus'}
       responses:
         '200': {description: Paginated matches}
+        '401': {$ref: '#/components/responses/Unauthorized'}
 
   /matching/calculate:
     post:
       tags: [Matching]
       summary: Trigger single/batch matching
+      description: JD phải PARSED, criteria verified, có ít nhất một job skill và embedding tương thích với CV.
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/MatchCalculateRequest'}
+            schema:
+              $ref: '#/components/schemas/MatchCalculateRequest'
       responses:
         '202': {description: Matching accepted}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -414,8 +470,12 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
         - {$ref: '#/components/parameters/Page'}
-        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
-        - {name: min_score, in: query, schema: {type: number, minimum: 0, maximum: 100}}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+        - name: min_score
+          in: query
+          schema: {type: number, minimum: 0, maximum: 100}
       responses:
         '200': {description: Ranked completed matches}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -425,10 +485,15 @@ paths:
     get:
       tags: [Matching]
       summary: Xuất báo cáo PDF/Excel
-      description: Advanced feature.
+      description: Advanced feature; không expose production nếu chưa triển khai.
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
-        - {name: format, in: query, required: true, schema: {type: string, enum: [pdf, excel]}}
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [pdf, excel]
       responses:
         '200': {description: Binary report}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -496,12 +561,15 @@ components:
     Role:
       type: string
       enum: [CANDIDATE, HR, ADMIN]
+
     ParsingStatus:
       type: string
       enum: [PENDING, PROCESSING, PARSED, FAILED]
+
     JobStatus:
       type: string
       enum: [DRAFT, ACTIVE, CLOSED]
+
     MatchStatus:
       type: string
       enum: [PENDING, PROCESSING, COMPLETED, FAILED]
@@ -510,7 +578,9 @@ components:
       type: object
       required: [success, error]
       properties:
-        success: {type: boolean, example: false}
+        success:
+          type: boolean
+          example: false
         error:
           type: object
           required: [code, message]
@@ -530,7 +600,9 @@ components:
         password: {type: string, minLength: 8}
         full_name: {type: string, minLength: 1, maxLength: 100}
         phone_number: {type: string, nullable: true, maxLength: 20}
-        role: {type: string, enum: [CANDIDATE, HR]}
+        role:
+          type: string
+          enum: [CANDIDATE, HR]
 
     LoginRequest:
       type: object
@@ -584,8 +656,8 @@ components:
       type: object
       required: [company_name, job_title]
       properties:
-        company_name: {type: string, maxLength: 150}
-        job_title: {type: string, maxLength: 150}
+        company_name: {type: string, minLength: 1, maxLength: 150}
+        job_title: {type: string, minLength: 1, maxLength: 150}
         start_date: {type: string, format: date, nullable: true}
         end_date: {type: string, format: date, nullable: true}
         is_current: {type: boolean, default: false}
@@ -595,7 +667,7 @@ components:
       type: object
       required: [institution_name]
       properties:
-        institution_name: {type: string, maxLength: 150}
+        institution_name: {type: string, minLength: 1, maxLength: 150}
         degree: {type: string, nullable: true, maxLength: 100}
         field_of_study: {type: string, nullable: true, maxLength: 150}
         start_year: {type: integer, nullable: true}
@@ -607,16 +679,21 @@ components:
       type: object
       required: [candidate_profile, skills, experiences, educations]
       properties:
-        candidate_profile: {$ref: '#/components/schemas/CandidateProfileInput'}
+        candidate_profile:
+          $ref: '#/components/schemas/CandidateProfileInput'
         skills:
           type: array
-          items: {$ref: '#/components/schemas/ResumeSkillInput'}
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ResumeSkillInput'
         experiences:
           type: array
-          items: {$ref: '#/components/schemas/ExperienceInput'}
+          items:
+            $ref: '#/components/schemas/ExperienceInput'
         educations:
           type: array
-          items: {$ref: '#/components/schemas/EducationInput'}
+          items:
+            $ref: '#/components/schemas/EducationInput'
 
     JobCreateRequest:
       type: object
@@ -626,8 +703,6 @@ components:
         job_level: {type: string, minLength: 1, maxLength: 50}
         location: {type: string, nullable: true, maxLength: 150}
         raw_content: {type: string, minLength: 1}
-        min_experience_years: {type: number, minimum: 0, default: 0}
-        education_requirement: {type: string, nullable: true, maxLength: 255}
         w_skill: {type: number, minimum: 0, maximum: 1, default: 0.5}
         w_semantic: {type: number, minimum: 0, maximum: 1, default: 0.3}
         w_experience: {type: number, minimum: 0, maximum: 1, default: 0.2}
@@ -636,25 +711,26 @@ components:
       type: object
       minProperties: 1
       properties:
-        title: {type: string, maxLength: 200}
-        job_level: {type: string, maxLength: 50}
+        title: {type: string, minLength: 1, maxLength: 200}
+        job_level: {type: string, minLength: 1, maxLength: 50}
         location: {type: string, nullable: true, maxLength: 150}
         raw_content: {type: string, minLength: 1}
-        min_experience_years: {type: number, minimum: 0}
-        education_requirement: {type: string, nullable: true, maxLength: 255}
 
     JobStatusRequest:
       type: object
       required: [status]
       properties:
-        status: {$ref: '#/components/schemas/JobStatus'}
+        status:
+          $ref: '#/components/schemas/JobStatus'
 
     JobSkillCriterion:
       type: object
       required: [skill_id, importance]
       properties:
         skill_id: {type: integer}
-        importance: {type: string, enum: [MANDATORY, OPTIONAL]}
+        importance:
+          type: string
+          enum: [MANDATORY, OPTIONAL]
         min_years_required: {type: number, minimum: 0, default: 0}
 
     JobCriteriaRequest:
@@ -665,8 +741,10 @@ components:
         education_requirement: {type: string, nullable: true, maxLength: 255}
         skills:
           type: array
+          minItems: 1
           uniqueItems: true
-          items: {$ref: '#/components/schemas/JobSkillCriterion'}
+          items:
+            $ref: '#/components/schemas/JobSkillCriterion'
 
     WeightsRequest:
       type: object
