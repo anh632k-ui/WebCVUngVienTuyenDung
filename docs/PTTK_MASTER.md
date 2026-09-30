@@ -119,7 +119,9 @@ Terminal COMPLETED/FAILED chỉ hợp lệ từ `PROCESSING` với cùng generat
 Server tạo resource UUID deterministic bằng UUIDv5 từ `(application namespace, actor_id, route, Idempotency-Key)`.
 - retry cùng actor+route+key -> cùng resource id, không tạo duplicate;
 - key chỉ được tái sử dụng cho cùng logical request;
-- client tạo key mới khi thực sự muốn tạo resource mới.
+- client tạo key mới khi thực sự muốn tạo resource mới;
+- nếu deterministic resource đã tồn tại, service trả resource hiện hữu **trước khi thực hiện create side-effect mới**;
+- với CV storage, write mới phải `put-if-absent`/no-overwrite theo deterministic resource key; retry không được ghi đè file của resource hiện hữu.
 
 ### 9.2 Dispatch sau commit
 DB/resource creation commit trước, dispatch parse sau. Nếu immediate dispatcher lỗi:
