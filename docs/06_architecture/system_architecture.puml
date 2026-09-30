@@ -24,20 +24,25 @@ package "Application Layer - FastAPI" {
   [Resume Service] as ResumeService
   [Job Service] as JobService
   [Matching Service] as MatchService
-  [Revision / Generation Guard] as VersionGuard
+  [Idempotency / UUIDv5 Guard] as IdemGuard
+  [Revision / Generation CAS Guard] as VersionGuard
   [Task Dispatcher] as Dispatcher
+  [Parse Recovery Sweeper] as Recovery
 
   Router --> Security
   Router --> UserService
   Router --> ResumeService
   Router --> JobService
   Router --> MatchService
+  ResumeService --> IdemGuard : create POST
+  JobService --> IdemGuard : create POST
   ResumeService --> VersionGuard
   JobService --> VersionGuard
   MatchService --> VersionGuard
   ResumeService --> Dispatcher
   JobService --> Dispatcher
   MatchService --> Dispatcher
+  Recovery --> Dispatcher : re-dispatch PENDING
 }
 
 package "AI / NLP & Background Processing" {
@@ -62,7 +67,7 @@ package "AI / NLP & Background Processing" {
 }
 
 package "Persistence / Infrastructure" {
-  database "PostgreSQL 18 + pgvector\nrevision/generation state" as DB
+  database "PostgreSQL 18 + pgvector\nrevision/generation/state" as DB
   database "Redis\nTask broker [when enabled]" as Redis
   folder "CV File Storage" as Storage
 }
@@ -70,23 +75,40 @@ package "Persistence / Infrastructure" {
 Candidate --> Frontend : HTTPS
 HR --> Frontend : HTTPS
 Admin --> Frontend : HTTPS
-HttpClient --> Router : REST/JSON
+HttpClient --> Router : REST/JSON + Idempotency-Key on create
 
 UserService --> DB
 ResumeService --> DB
 JobService --> DB
 MatchService --> DB
-VersionGuard --> DB : conditional writes
+IdemGuard --> DB : deterministic resource id / existing row
+VersionGuard --> DB : exclusive CAS conditional writes
+Recovery --> DB : scan stale PENDING only
 ResumeService --> Storage
 Worker --> Storage
-Worker --> DB : terminal write guarded by expected versions
+Worker --> DB : claim/terminal write via exclusive CAS
 Dispatcher --> Redis : queue when enabled
 Redis --> Worker
 
+note bottom of IdemGuard
+POST /resumes/upload và POST /jobs:
+UUIDv5(actor + route + Idempotency-Key).
+Retry same logical request -> same resource id.
+end note
+
 note bottom of VersionGuard
-Parse task: expected resource revision.
-Match task: expected generation + Resume/JD revisions.
-Stale task must not overwrite newer state.
+Parse claim: expected revision + status=PENDING.
+Parse terminal: same revision + status=PROCESSING.
+Match claim: expected generation/revisions + status=PENDING.
+Match terminal: same expected values + status=PROCESSING.
+Duplicate/stale task rowcount=0 -> discard.
+end note
+
+note bottom of Recovery
+Immediate dispatch failure after DB commit:
+keep resource PENDING.
+Startup/periodic sweep re-dispatches current revision.
+No revision increment. MVP does not reset PROCESSING blindly.
 end note
 
 note bottom of Security
