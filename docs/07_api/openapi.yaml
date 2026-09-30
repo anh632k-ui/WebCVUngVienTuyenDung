@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: WebCV Ung Vien Tuyen Dung API
-  version: 1.2.0
-  description: MVP API sau semantic review vòng 3.
+  version: 1.3.0
+  description: MVP API sau reliability/CAS lock. Parse create endpoints dùng Idempotency-Key và internal recovery.
 servers:
   - url: http://localhost:8000/api/v1
 
@@ -136,7 +136,10 @@ paths:
   /resumes/upload:
     post:
       tags: [Resumes]
-      summary: Upload CV
+      summary: Upload CV idempotently
+      description: Persist trước dispatch. Nếu dispatcher lỗi, Resume giữ PENDING và internal recovery re-dispatch current revision.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
@@ -147,7 +150,7 @@ paths:
               properties:
                 file: {type: string, format: binary}
       responses:
-        '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/ResumeUploadResponse'}}}}
+        '202': {description: Persisted/accepted; same key returns same Resume, content: {application/json: {schema: {$ref: '#/components/schemas/ResumeUploadResponse'}}}}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -194,7 +197,7 @@ paths:
     put:
       tags: [Resumes]
       summary: Human-in-the-loop cập nhật CV
-      description: Mutation tăng resume revision và invalidate Match generation.
+      description: Direct mutation tạo input revision mới rồi invalidate Match generation/snapshots.
       parameters: [{$ref: '#/components/parameters/UuidId'}]
       requestBody:
         required: true
@@ -234,15 +237,17 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
     post:
       tags: [Jobs]
-      summary: HR tạo JD mới
-      description: HR only; server gán recruiter_id=current_user.id.
+      summary: HR tạo JD mới idempotently
+      description: HR only; deterministic resource id từ actor+route+Idempotency-Key. Persist trước dispatch; dispatcher lỗi được recovery xử lý khi JD còn PENDING.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/JobCreateRequest'}
       responses:
-        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/JobResponse'}}}}
+        '201': {description: Persisted/created; same key returns same JD, content: {application/json: {schema: {$ref: '#/components/schemas/JobResponse'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
@@ -257,7 +262,7 @@ paths:
     put:
       tags: [Jobs]
       summary: Cập nhật JD
-      description: raw_content đổi => revision++, DRAFT/PENDING, clear embedding provenance, invalidate Match.
+      description: raw_content đổi => revision++ trước reparse, DRAFT/PENDING, invalidate Match; dispatch failure được PENDING recovery xử lý.
       parameters: [{$ref: '#/components/parameters/UuidId'}]
       requestBody:
         required: true
@@ -307,7 +312,7 @@ paths:
     put:
       tags: [Jobs]
       summary: Cập nhật criteria
-      description: revision++ và invalidate Match generation.
+      description: Direct mutation revision++ và invalidate Match generation/snapshots.
       parameters: [{$ref: '#/components/parameters/UuidId'}]
       requestBody:
         required: true
@@ -324,7 +329,7 @@ paths:
     put:
       tags: [Jobs]
       summary: Cập nhật trọng số
-      description: revision++ và invalidate Match generation; recalculate chỉ quyết định dispatch.
+      description: Direct mutation revision++ và invalidate Match; recalculate chỉ quyết định dispatch.
       parameters: [{$ref: '#/components/parameters/UuidId'}]
       requestBody:
         required: true
@@ -355,7 +360,7 @@ paths:
     post:
       tags: [Matching]
       summary: Trigger single/batch matching
-      description: Validate toàn batch trước mutation; atomic prepare; stale-worker guard bằng generation/revisions.
+      description: Validate toàn batch; atomic prepare; exclusive PENDING->PROCESSING claim và PROCESSING-only terminal CAS theo generation/revisions.
       requestBody:
         required: true
         content:
@@ -410,6 +415,12 @@ components:
     MatchUuid: {name: match_id, in: path, required: true, schema: {type: string, format: uuid}}
     Page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
     Limit20: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID unique per logical create request; retry same key returns same resource.
+      schema: {type: string, format: uuid}
 
   responses:
     BadRequest: {description: Bad request, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
