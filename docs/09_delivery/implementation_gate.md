@@ -91,7 +91,7 @@
 - [x] PDM/Data Dictionary/schema có `create_request_fingerprint`.
 - [x] CDM/LDM/PDM/ERD vẫn giữ đúng 10 entity/table và 0..1 CandidateProfile; fingerprint là physical reliability metadata nên không thêm entity/relationship.
 - [x] Traceability có seed, concurrency, batch, role transition, auth Advanced, fingerprinted idempotency, storage reconciliation, recovery và soft-delete race guard.
-- [ ] GitHub Actions PASS trên HEAD cuối cùng fingerprint-lock baseline.
+- [x] GitHub Actions PASS trên fingerprint-lock baseline; mọi commit docs tiếp theo phải làm CI chạy lại và PASS trên HEAD mới trước merge.
 
 ## Runtime validation bắt buộc trước code nghiệp vụ
 - [ ] Duplicate CV parse task cùng expected_revision: đúng 1 claim success.
