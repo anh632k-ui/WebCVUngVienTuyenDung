@@ -30,6 +30,14 @@ if (Criteria hợp lệ?) then (Có)
   :Update JD criteria fields;
   :Replace/upsert job_skills;
   :SET is_criteria_verified=true;
+  :Invalidate mọi match_results của JD:
+  status=PENDING,
+  scores=NULL,
+  matched_skills=[], missing_skills=[],
+  gap_analysis_summary=NULL,
+  error_message=NULL,
+  calculated_at=NULL,
+  updated_at=NOW();
   :COMMIT;
   :200 OK;
 else (Không)
@@ -37,8 +45,10 @@ else (Không)
   stop
 endif
 
-if (Criteria thay đổi ảnh hưởng match cũ?) then (Có)
-  :Đánh dấu/queue recalculate theo policy;
-endif
+note right
+  Invalidate là bắt buộc.
+  Enqueue recalculate ngay hay không
+  là policy riêng của service/UI.
+end note
 stop
 @enduml
