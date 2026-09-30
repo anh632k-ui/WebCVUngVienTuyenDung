@@ -1,54 +1,35 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-
-title ACTIVITY - UC17 LEADERBOARD & UC18 CẤU HÌNH TRỌNG SỐ
+title ACTIVITY - UC17 LEADERBOARD / UC18 WEIGHTS
 
 start
-:HR mở leaderboard của JD;
-:GET /api/v1/jobs/{id}/leaderboard;
-:Backend kiểm recruiter_id=current_user
-hoặc Admin;
-if (Có quyền?) then (Có)
-  :Query match_results status=COMPLETED;
-  if (Caller là HR?) then (Có)
-    :JOIN resumes và filter
-    owner_user_id=current_user.id;
+if (Xem leaderboard?) then (Có)
+  :HR owner JD hoặc Admin;
+  :GET /jobs/{id}/leaderboard;
+  :Chỉ Match COMPLETED;
+  if (HR?) then (Có)
+    :Chỉ row có resume.owner_user_id=current_user.id;
   endif
-  :Filter min_score nếu có;
-  :ORDER BY overall_score DESC;
-  :Trả rank + scores + candidate summary;
-else (Không)
-  :404/403;
-  stop
-endif
-
-if (HR chỉnh trọng số?) then (Có)
-  :Nhập w_skill, w_semantic, w_experience;
-  :PUT /api/v1/jobs/{id}/weights;
-  if (Mỗi weight trong [0,1]
-và tổng=1.00?) then (Có)
-    :BEGIN TRANSACTION;
-    :UPDATE job_descriptions weights;
-    :Invalidate mọi match_results của JD:
-    status=PENDING,
-    scores=NULL,
-    matched_skills=[], missing_skills=[],
-    gap_analysis_summary=NULL,
-    error_message=NULL,
-    calculated_at=NULL,
-    updated_at=NOW();
-    :COMMIT;
-    if (recalculate=true?) then (Có)
-      :Queue recalculate;
-    else (Không)
-      :Giữ PENDING, không xuất hiện trên leaderboard
-      cho tới lần tính lại tiếp theo;
-    endif
-    :200 OK;
-  else (Không)
-    :422 Validation Error;
+  :Sort overall_score DESC;
+  :200 LeaderboardResponse;
+else (Cập nhật weights)
+  :PUT /jobs/{id}/weights;
+  :Validate mỗi weight [0,1], tổng=1;
+  if (invalid?) then (Có)
+    :422;
+    stop
   endif
+  :BEGIN TRANSACTION;
+  :Update weights;
+  :job.revision++;
+  :Invalidate related Match:
+generation++, PENDING, clear stale payload;
+  :COMMIT;
+  if (recalculate=true?) then (Có)
+    :Dispatch task với generation/revision mới;
+  endif
+  :200 JobResponse;
 endif
 stop
 @enduml
