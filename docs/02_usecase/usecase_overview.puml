@@ -36,7 +36,7 @@ rectangle "WebCVUngVienTuyenDung" {
   usecase "UC14 Xem JD đang tuyển" as UC14
 
   usecase "UC15 Tính mức độ tương thích" as UC15
-  usecase "UC16 Xem kết quả & Skill Gap" as UC16
+  usecase "UC16 Xem lịch sử, kết quả\n& Skill Gap" as UC16
   usecase "UC17 Xem leaderboard" as UC17
   usecase "UC18 Cấu hình trọng số" as UC18
   usecase "UC19 Xuất báo cáo [Advanced]" as UC19
@@ -55,20 +55,28 @@ Candidate --> UC10
 HR --> UC07
 HR --> UC09
 HR --> UC10
+Admin --> UC09
+Admin --> UC10
 UC07 ..> UC08 : <<include>>
 
 HR --> UC11
-UC12 ..> UC11 : <<extend>>\n[tạo mới hoặc raw_content thay đổi]
 HR --> UC13
 Candidate --> UC14
+Admin --> UC11
+Admin --> UC13
+UC12 ..> UC11 : <<extend>>\n[khi tạo hoặc đổi raw_content]
 
 Candidate --> UC15
 HR --> UC15
+Admin --> UC15
 Candidate --> UC16
 HR --> UC16
+Admin --> UC16
 HR --> UC17
-HR --> UC18
-HR --> UC19
 Admin --> UC17
+HR --> UC18
+Admin --> UC18
+HR --> UC19
+Admin --> UC19
 
 @enduml
