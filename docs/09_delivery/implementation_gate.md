@@ -1,4 +1,4 @@
-# IMPLEMENTATION GATE — POST ROUND 3 RELIABILITY LOCK
+# IMPLEMENTATION GATE — RELIABILITY + FINGERPRINT LOCK
 
 ## Requirements
 - [x] Actor/ownership/privacy rõ.
@@ -9,12 +9,16 @@
 - [x] JD status transition matrix được khóa.
 - [x] `revision` được định nghĩa là input/computation version, tăng trước computation mới.
 - [x] Worker của chính expected revision không tăng revision khi terminal commit.
-- [x] Create Resume/JD có idempotency contract.
+- [x] Create Resume/JD có Idempotency-Key + persisted SHA-256 fingerprint contract.
+- [x] Stable application UUIDv5 namespace được khóa literal và không đổi theo deployment.
+- [x] Same key + different fingerprint trả `409 IDEMPOTENCY_KEY_REUSED`.
+- [x] Resume orphan storage có deterministic key + SHA-256 reconciliation/no-overwrite.
 - [x] Soft-deleted Resume/JD bị loại khỏi parse/matching/current analytics và chặn async terminal write mới.
 
 ## Database
 - [x] 10 bảng canonical.
 - [x] Resume/JD có `revision` + `is_deleted`.
+- [x] Resume/JD có `create_request_fingerprint VARCHAR(64)` + lowercase SHA-256 format CHECK.
 - [x] Match có `generation`, `resume_revision`, `job_revision`.
 - [x] Embedding lưu `embedding_model` + `embedding_preprocessing_version`.
 - [x] COMPLETED/non-COMPLETED payload constraints.
@@ -39,10 +43,20 @@
 - [x] Batch prepare Match trong một transaction.
 - [x] Matching dispatch sau commit; failure trả 503 và retry-safe.
 
-## Parse Dispatch Reliability
+## Create Idempotency / Storage Integrity
 - [x] `POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID.
-- [x] Server derive deterministic UUIDv5 từ actor+route+key để retry cùng logical request không tạo duplicate resource.
-- [x] CV retry existing key không overwrite storage; create storage dùng put-if-absent/no-overwrite.
+- [x] Namespace literal: `bd7b1f30-b2de-549c-a8dd-8d742ee5bc12`.
+- [x] Deterministic UUIDv5 input = actor id + canonical route + key.
+- [x] Resume fingerprint = SHA-256 raw file bytes.
+- [x] Job fingerprint = SHA-256 canonical validated create payload after defaults.
+- [x] Same deterministic id + same fingerprint trả same resource.
+- [x] Same deterministic id + different fingerprint trả 409 `IDEMPOTENCY_KEY_REUSED`.
+- [x] Concurrent deterministic-PK loser re-read row + compare fingerprint.
+- [x] CV canonical storage key = `resumes/{resume_id}/source`, put-if-absent/no-overwrite.
+- [x] Storage object tồn tại nhưng DB row thiếu: compute SHA-256 object; equal => reuse/retry DB insert, mismatch => 409/no-overwrite.
+- [x] Storage write success + DB insert fail được coi là orphan tạm thời và có reconciliation deterministic khi retry.
+
+## Parse Dispatch Reliability
 - [x] Resume/JD persistence commit trước parse dispatch.
 - [x] Immediate parse dispatcher failure giữ resource PENDING, không rollback resource.
 - [x] Startup/periodic Parse Recovery Sweeper re-dispatch PENDING + not-deleted quá grace window bằng current revision.
@@ -53,6 +67,7 @@
 - [x] OpenAPI MVP không expose `/auth/refresh`, `/auth/logout`, `/jobs/{id}/export`.
 - [x] POST `/jobs` là HR-only về mặt contract.
 - [x] POST `/jobs` và POST `/resumes/upload` có required `Idempotency-Key`.
+- [x] Hai create endpoint khai báo 409 `IdempotencyConflict`/`IDEMPOTENCY_KEY_REUSED`.
 - [x] Admin role change có 409 conflict.
 - [x] Candidate profile nullable trong Resume detail.
 - [x] Match response có generation/revisions/provenance.
@@ -69,12 +84,14 @@
 
 ## UML / Traceability
 - [x] Use Case/Activity/Sequence cập nhật revision/generation.
-- [x] CV/JD Activity/Sequence cập nhật exclusive CAS + idempotent create + recovery + delete-state guard.
+- [x] CV/JD Activity/Sequence cập nhật exclusive CAS + fingerprinted idempotent create + recovery + delete-state guard.
+- [x] CV Activity/Sequence có orphan storage SHA-256 reconciliation + no-overwrite.
 - [x] Matching Activity/Sequence cập nhật PENDING claim, PROCESSING-only terminal CAS + linked delete-state guard.
-- [x] System/Component Architecture có Idempotency Guard + Parse Recovery Sweeper + delete-aware CAS Guard.
-- [x] CDM/LDM/PDM/ERD dùng 0..1 CandidateProfile.
-- [x] Traceability có seed, concurrency, batch, role transition, auth Advanced, idempotency, recovery và FR-46 soft-delete race guard.
-- [x] GitHub Actions PASS trên reliability-lock baseline; mọi commit docs tiếp theo phải làm CI chạy lại và PASS trên HEAD mới trước merge.
+- [x] System/Component Architecture có UUIDv5/SHA-256 Idempotency Guard + Parse Recovery Sweeper + delete-aware CAS Guard.
+- [x] PDM/Data Dictionary/schema có `create_request_fingerprint`.
+- [x] CDM/LDM/PDM/ERD vẫn giữ đúng 10 entity/table và 0..1 CandidateProfile; fingerprint là physical reliability metadata nên không thêm entity/relationship.
+- [x] Traceability có seed, concurrency, batch, role transition, auth Advanced, fingerprinted idempotency, storage reconciliation, recovery và soft-delete race guard.
+- [ ] GitHub Actions PASS trên HEAD cuối cùng fingerprint-lock baseline.
 
 ## Runtime validation bắt buộc trước code nghiệp vụ
 - [ ] Duplicate CV parse task cùng expected_revision: đúng 1 claim success.
@@ -84,7 +101,12 @@
 - [ ] Soft-delete Resume/JD sau claim nhưng trước terminal commit: terminal write fail/rollback.
 - [ ] Current Match/Leaderboard không trả linked Resume/JD đã soft-delete.
 - [ ] Simulate parse dispatcher failure sau commit: resource còn PENDING và recovery re-dispatch được.
-- [ ] Retry POST create cùng Idempotency-Key: cùng resource id, không duplicate row/file.
+- [ ] Retry Resume POST cùng key + cùng file fingerprint: cùng resource id, không duplicate row/file.
+- [ ] Retry Job POST cùng key + cùng canonical fingerprint: cùng resource id, không duplicate row.
+- [ ] Reuse same key với Resume file khác hoặc Job payload khác: `409 IDEMPOTENCY_KEY_REUSED`.
+- [ ] Concurrent duplicate create cùng key/fingerprint: PK loser re-read và trả same resource.
+- [ ] Resume storage orphan cùng fingerprint: retry reuse object và insert DB; orphan khác fingerprint: 409, object không bị overwrite.
+- [ ] Restart/deploy với cùng code constant: UUIDv5 namespace cho cùng actor/route/key vẫn sinh cùng resource id.
 
 ## Deployment gate
 - [ ] User review/merge PR.
