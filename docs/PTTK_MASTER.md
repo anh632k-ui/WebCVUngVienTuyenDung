@@ -29,6 +29,7 @@ Có đúng **10 bảng**:
 
 Các field/version quan trọng:
 - Resume/JD có `revision BIGINT`.
+- Resume/JD có `create_request_fingerprint VARCHAR(64)` để bind deterministic create id với logical request ban đầu.
 - Resume/JD có `embedding_model` + `embedding_preprocessing_version`.
 - Match có `generation`, snapshot `resume_revision`, `job_revision`, `embedding_model`, `embedding_preprocessing_version`, `algorithm_version`.
 - `skills.skill_kind = HARD|SOFT`.
@@ -107,7 +108,7 @@ WHERE id=?
   AND is_deleted=FALSE
 ```
 
-Với success nhiều bảng, worker mở transaction, lock/check resource vẫn `PROCESSING + expected_revision + is_deleted=false`, ghi aggregate rồi terminal update. Nếu check/CAS fail thì rollback toàn bộ và discard. Nhờ vậy duplicate delivery và concurrent soft-delete không thể ghi terminal output sai.
+Với success nhiều bảng, worker mở transaction, lock/check resource vẫn `PROCESSING + expected_revision + is_deleted=false`, ghi aggregate rồi terminal update. Nếu check/CAS fail thì rollback toàn bộ và discard.
 
 ### 8.3 Match worker exclusive CAS
 Mỗi trigger/invalidate Match tăng `match_results.generation` và refresh snapshot `resume_revision`, `job_revision` về revision hiện tại.
@@ -119,33 +120,68 @@ Claim chỉ hợp lệ khi row còn `PENDING`, generation/snapshots khớp, link
 
 Terminal COMPLETED/FAILED chỉ hợp lệ từ `PROCESSING` với cùng generation/snapshots, linked revisions vẫn khớp và linked resources vẫn chưa xóa. `rowcount=0` => stale/duplicate/deleted-resource task discard.
 
-## 9. Idempotent creation và parse dispatch recovery
-### 9.1 Idempotent POST create
-`POST /resumes/upload` và `POST /jobs` bắt buộc header `Idempotency-Key` dạng UUID cho mỗi logical create.
+## 9. Idempotent creation, request fingerprint và parse dispatch recovery
+### 9.1 Stable application namespace
+Hai create endpoint dùng **một application UUIDv5 namespace cố định**, literal trong code/config source và không thay đổi theo deployment:
 
-Server tạo resource UUID deterministic bằng UUIDv5 từ `(application namespace, actor_id, route, Idempotency-Key)`.
-- retry cùng actor+route+key -> cùng resource id, không tạo duplicate;
-- key chỉ được tái sử dụng cho cùng logical request;
-- client tạo key mới khi thực sự muốn tạo resource mới;
-- nếu deterministic resource đã tồn tại, service trả resource hiện hữu **trước khi thực hiện create side-effect mới**;
-- với CV storage, write mới phải `put-if-absent`/no-overwrite theo deterministic resource key; retry không được ghi đè file của resource hiện hữu.
+`bd7b1f30-b2de-549c-a8dd-8d742ee5bc12`
 
-### 9.2 Dispatch sau commit
+Không generate namespace ngẫu nhiên khi startup và không lấy namespace từ biến môi trường có thể đổi. Resource id được derive:
+
+```text
+UUIDv5(APP_IDEMPOTENCY_NAMESPACE,
+      actor_id + "\n" + canonical_route + "\n" + lower(Idempotency-Key UUID string))
+```
+
+Canonical route chỉ là `/api/v1/resumes/upload` hoặc `/api/v1/jobs`.
+
+### 9.2 Request fingerprint SHA-256
+`POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID. Mỗi deterministic resource persist `create_request_fingerprint` lowercase hex 64 ký tự.
+
+**Resume fingerprint:** `SHA-256(raw file bytes)` sau khi backend đã đọc file để validate size/MIME/magic. `file_name` không tham gia fingerprint; retry cùng bytes nhưng tên client khác vẫn được coi là cùng logical upload và trả metadata đã persist ban đầu.
+
+**Job fingerprint:** SHA-256 của canonical UTF-8 JSON của **validated create payload sau khi server áp dụng defaults**. Canonicalization v1:
+- keys cố định: `title`, `job_level`, `location`, `raw_content`, `w_skill`, `w_semantic`, `w_experience`;
+- text Unicode NFC; `title/job_level/location` trim outer whitespace; `location` rỗng -> `null`;
+- `raw_content` giữ nội dung nhưng chuẩn hóa CRLF/CR -> LF;
+- weights dùng giá trị server-resolved và serialize fixed 3 decimal digits;
+- JSON không whitespace thừa, UTF-8, key order cố định.
+
+Quy tắc retry:
+- cùng actor + route + key -> cùng deterministic id;
+- resource đã tồn tại và fingerprint **giống** -> trả đúng resource hiện hữu, không create side-effect mới;
+- resource đã tồn tại và fingerprint **khác** -> `409 IDEMPOTENCY_KEY_REUSED`;
+- concurrent insert cùng deterministic PK: request thua unique race phải re-read row và so fingerprint; giống -> return existing, khác -> 409;
+- muốn tạo logical resource mới phải dùng key mới.
+
+### 9.3 Resume storage orphan/reconciliation
+Storage key create là deterministic theo resource id và không phụ thuộc filename, canonical form: `resumes/{resume_id}/source`.
+
+Flow khi DB chưa có Resume:
+1. `put-if-absent`/no-overwrite vào deterministic storage key;
+2. nếu object vừa được tạo: tiếp tục INSERT Resume với fingerprint;
+3. nếu object đã tồn tại nhưng DB row chưa tồn tại: compute SHA-256 bytes của object hiện hữu;
+4. fingerprint object == request fingerprint -> reuse object và retry INSERT DB;
+5. fingerprint object != request fingerprint -> `409 IDEMPOTENCY_KEY_REUSED`, không overwrite, không nhận object đó là file của request mới.
+
+Nếu storage write thành công nhưng DB INSERT thất bại, object được phép tồn tại như orphan tạm thời. Retry cùng logical request sẽ đi qua bước fingerprint reconciliation phía trên. Không xóa mù object trong error path vì có thể đang có request concurrent hợp lệ.
+
+### 9.4 Dispatch sau commit
 DB/resource creation commit trước, dispatch parse sau. Nếu immediate dispatcher lỗi:
 - resource vẫn ở `PENDING`;
 - server log lỗi dispatch;
 - endpoint vẫn trả resource đã tạo (`202` Resume, `201` Job) vì persistence đã thành công;
 - client **không cần POST tạo lại chỉ để cứu queue**.
 
-Nếu response mạng bị mất và client retry POST, cùng `Idempotency-Key` trả cùng resource, không duplicate.
+Nếu response mạng bị mất và client retry POST, cùng Idempotency-Key + cùng fingerprint trả cùng resource.
 
-### 9.3 Parse Recovery Sweeper
+### 9.5 Parse Recovery Sweeper
 MVP có recovery/re-dispatch nội bộ cho Resume/JD `PENDING` chưa được claim:
 - periodic/startup sweep chọn resource `PENDING`, `is_deleted=false`, `updated_at` cũ hơn grace window cấu hình;
 - enqueue lại `(resource_id, current_revision)` mà **không tăng revision** và không đổi payload;
 - duplicate re-dispatch an toàn vì exclusive CAS chỉ cho một worker claim `PENDING -> PROCESSING`.
 
-Recovery này xử lý failure **trước khi worker claim** (dispatcher/broker/transient delivery). Recovery stuck `PROCESSING` sau worker crash cần lease/attempt token riêng và thuộc hardening sau MVP; không được reset mù PROCESSING về PENDING vì có thể gây race worker cũ.
+Recovery này xử lý failure **trước khi worker claim**. Recovery stuck `PROCESSING` sau worker crash cần lease/attempt token riêng và thuộc hardening sau MVP; không được reset mù PROCESSING về PENDING.
 
 ## 10. Canonical invalidation
 Khi score stale, trong cùng transaction:
@@ -175,7 +211,7 @@ Khi score stale, trong cùng transaction:
 4. Use Case / Activity / Sequence / Architecture.
 5. Code.
 
-Muốn đổi API/database/enum/concurrency rule phải sửa PTTK trước.
+Muốn đổi API/database/enum/concurrency/idempotency rule phải sửa PTTK trước.
 
 ## 13. Gate trước code
 - CI OpenAPI/PlantUML/schema/design PASS.
@@ -184,5 +220,6 @@ Muốn đổi API/database/enum/concurrency rule phải sửa PTTK trước.
 - chạy `schema.sql`.
 - chạy `skill_taxonomy_seed.sql`.
 - verify 10 tables, constraints, HNSW, taxonomy seed.
-- smoke-test duplicate delivery CAS, stale revision/generation, soft-delete race guard, parse recovery re-dispatch và idempotent create.
+- smoke-test duplicate delivery CAS, stale revision/generation, soft-delete race guard, parse recovery re-dispatch.
+- smoke-test Idempotency-Key: same key+same fingerprint returns same resource; same key+different fingerprint -> 409; concurrent duplicate create; Resume storage orphan same/different fingerprint reconciliation.
 - sau đó mới ORM/Auth/API/AI.
