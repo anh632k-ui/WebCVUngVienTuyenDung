@@ -44,23 +44,28 @@ COMPLETED Match lưu:
 - generation của current computation.
 
 ## Invalidation
-Input scoring đổi => resource revision++ + Match generation++ + canonical clear payload.
+Input scoring đổi => resource revision++ khi phù hợp + Match generation++ + canonical clear payload.
+Trong transaction invalidation phải **refresh cả hai snapshot** của Match:
+- `resume_revision = resumes.revision` hiện tại;
+- `job_revision = job_descriptions.revision` hiện tại.
 Non-COMPLETED không giữ score/evidence/embedding provenance/calculated_at.
 
 ## Stale-worker protection
-Mỗi enqueue tăng/ghi generation và snapshot revisions. Worker chỉ commit nếu:
-`generation==expected_generation`
-AND `resume.revision==expected_resume_revision`
-AND `job.revision==expected_job_revision`.
+Mỗi enqueue dùng generation và revision snapshots đang lưu trên Match. Worker chỉ commit nếu đồng thời:
+- `match.generation==expected_generation`;
+- `match.resume_revision==expected_resume_revision`;
+- `match.job_revision==expected_job_revision`;
+- linked `resume.revision==expected_resume_revision`;
+- linked `job.revision==expected_job_revision`.
 
 Phải re-check ngay lúc terminal DB write. Nếu conditional UPDATE rowcount=0, task stale và kết quả bị bỏ.
 
 ## Batch semantics
 1. validate toàn bộ resume_ids;
 2. nếu một item fail => no mutation;
-3. atomic transaction prepare/upsert all Match rows;
+3. atomic transaction prepare/upsert all Match rows, generation++ và refresh revision snapshots;
 4. commit;
-5. dispatch each task;
+5. dispatch each task theo values vừa commit;
 6. dispatch failure => 503. Client retry same request; retry increments generation, nên task cũ không overwrite.
 
 ## Privacy
