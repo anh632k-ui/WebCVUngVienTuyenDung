@@ -2,18 +2,27 @@
 skinparam monochrome true
 skinparam shadowing false
 
-title ACTIVITY - UC16 XEM LỊCH SỬ, KẾT QUẢ & SKILL GAP
+title ACTIVITY - UC16 KẾT QUẢ HIỆN HÀNH & SKILL GAP
 
 start
-:User mở lịch sử matching;
+:User mở danh sách kết quả matching;
 :GET /api/v1/matching?page&limit&filters;
-:Backend scope theo Candidate owner CV,
-HR owner JD hoặc Admin;
-:200 danh sách matching;
+:Backend áp dụng ownership scope;
+if (Candidate?) then (Có)
+  :Chỉ Match có resume.owner_user_id=current_user.id;
+else (Không)
+  if (HR?) then (Có)
+    :Chỉ Match có job.recruiter_id=current_user.id
+    VÀ resume.owner_user_id=current_user.id;
+  else (Admin)
+    :Có thể xem toàn bộ;
+  endif
+endif
+:200 danh sách kết quả hiện hành;
 
 if (User chọn một match?) then (Có)
   :GET /api/v1/matching/{match_id};
-  :Backend kiểm ownership/role;
+  :Backend kiểm cùng ownership rule;
   if (Có quyền?) then (Có)
     if (status=COMPLETED?) then (Có)
       :Trả overall + component scores
@@ -31,6 +40,7 @@ else (Không)
 endif
 
 :GET /api/v1/matching/{match_id}/gap-analysis;
+:Backend kiểm ownership + status=COMPLETED;
 :Phân loại missing skills:
 MANDATORY => CRITICAL,
 OPTIONAL => MINOR;
