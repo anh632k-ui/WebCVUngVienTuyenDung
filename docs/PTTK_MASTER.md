@@ -1,193 +1,126 @@
 # PTTK MASTER — WEBCVUNGVIENTUYENDUNG
 
-**Status:** `DESIGN_LOCKED_FOR_REVIEW` — baseline nội bộ đã được đồng bộ; chỉ triển khai code sau khi Pull Request được review và database mới được tạo từ schema canonical.
+**Status:** `DESIGN_LOCKED_FOR_REVIEW` — chỉ code sau khi PR được duyệt, schema canonical chạy thật và Skill Taxonomy đã seed.
 
 ## 1. Căn cứ phạm vi
+Nguồn yêu cầu là đề cương `dc.docx`: Web Application, FastAPI async, Next.js/Tailwind, PostgreSQL + pgvector, xử lý PDF/DOCX, NLP/Information Extraction, Sentence Transformers, keyword/BM25, semantic similarity, Matching Score, Skill Gap và đánh giá thực nghiệm khi có ground truth.
 
-Nguồn gốc yêu cầu là đề cương `dc.docx`, trong đó xác định:
+MVP ưu tiên hệ thống chạy chắc. Refresh Token Rotation, OCR fallback, LLM/XAI và Export PDF/Excel là **Advanced**; không được làm điều kiện sống còn của MVP.
 
-- sản phẩm là Web Application;
-- backend Python/FastAPI RESTful async;
-- frontend ReactJS/Next.js + Tailwind;
-- PostgreSQL + pgvector;
-- xử lý PDF/DOCX;
-- Information Extraction/NLP;
-- Sentence Transformers (`bge-m3` hoặc tương đương);
-- keyword matching/BM25;
-- semantic similarity;
-- Matching Score, Skill Gap;
-- BFD, Use Case, Sequence Diagram, ERD;
-- thực nghiệm MAE/Pearson/NDCG@K/Precision@K khi có ground truth.
+## 2. Actor và ownership
+- Guest, Candidate, HR, Admin.
+- `resumes.owner_user_id`: chủ kho CV.
+- `job_descriptions.recruiter_id`: HR sở hữu JD.
+- Candidate chỉ dùng CV mình; HR chỉ dùng CV trong kho mình và JD mình; Admin có quyền giám sát.
+- Candidate self-match với JD của HR **không** cấp quyền cho HR xem CV/kết quả.
+- MVP chưa có `applications`; muốn mở chia sẻ CV phải sửa PTTK trước.
 
-Tên đề tài chính thức trong đề cương vẫn được giữ. Thiết kế kỹ thuật hướng tới hệ thống AI/NLP mạnh hơn nhưng không biến LLM thành điều kiện sống còn của MVP.
+### Role transition
+Admin chỉ đổi `CANDIDATE <-> HR` khi user **không còn resource nghiệp vụ chưa xóa** có thể đổi nghĩa ownership:
+- không có Resume `is_deleted=false`;
+- không có JD `is_deleted=false`.
+Nếu vi phạm trả `409 ROLE_CHANGE_CONFLICT`. Admin không tự khóa/tự hạ quyền chính mình.
 
-## 2. Kiến trúc được khóa
+## 3. Database canonical
+Có đúng **10 bảng**:
+`users`, `skills`, `resumes`, `candidate_profiles`, `resume_skills`, `resume_experiences`, `resume_educations`, `job_descriptions`, `job_skills`, `match_results`.
 
-```text
-Next.js App Router + TypeScript + Tailwind
-                  |
-              REST / JSON
-                  |
-               FastAPI
-                  |
-      Router -> Service -> ORM/AI
-             /             \
-PostgreSQL 18 + pgvector   File Storage
-             \
-      Redis/Celery khi background/session features được bật
-```
+`candidate_profiles` là quan hệ **0..1 cho mỗi Resume**: PENDING/FAILED có thể chưa có profile; PARSED thường có snapshot.
 
-## 3. Actor được khóa
+Các field/version quan trọng:
+- Resume/JD có `revision BIGINT`.
+- Resume/JD có `embedding_model` + `embedding_preprocessing_version`.
+- Match có `generation`, snapshot `resume_revision`, `job_revision`, `embedding_model`, `embedding_preprocessing_version`, `algorithm_version`.
+- `skills.skill_kind = HARD|SOFT`.
+- `job_skills.importance = MANDATORY|OPTIONAL`.
+- embedding là `vector(1024)` cho baseline bge-m3.
 
-- Guest
-- Candidate
-- HR
-- Admin
+## 4. Bootstrap Skill Taxonomy
+Sau `schema.sql` phải chạy `05_database/skill_taxonomy_seed.sql`.
+Pipeline **không tự INSERT skill lạ** vào taxonomy. Seed là dữ liệu khởi tạo bắt buộc của môi trường demo, không phải bảng thứ 11.
 
-Celery Worker, Redis, PostgreSQL và AI model là thành phần kỹ thuật, không phải actor nghiệp vụ.
-
-## 4. Aggregate / bảng được khóa
-
-Database canonical có **10 bảng**:
-
-1. `users`
-2. `skills`
-3. `resumes`
-4. `candidate_profiles`
-5. `resume_skills`
-6. `resume_experiences`
-7. `resume_educations`
-8. `job_descriptions`
-9. `job_skills`
-10. `match_results`
-
-`candidate_profiles` là snapshot nghề nghiệp được bóc từ từng CV và cố ý tách khỏi profile tài khoản trong `users`.
-
-## 5. Naming được khóa
-
-- Resume ownership: `owner_user_id`.
-- JD ownership: `recruiter_id`.
-- Skill hard/soft taxonomy: `skills.skill_kind = HARD|SOFT`.
-- Mức độ bắt buộc trong JD: `job_skills.importance = MANDATORY|OPTIONAL`.
-- Không dùng `job_skills.skill_type` để tránh nhầm với hard/soft.
-- Embedding: `resume_embedding`, `job_embedding`, hiện `vector(1024)`.
-- Model/version embedding được lưu ở `embedding_model` để không trộn vector từ model khác nhau.
-- Email account được normalize lowercase ở application và enforce unique không phân biệt hoa/thường bằng index `LOWER(email)`.
-
-## 6. State được khóa
-
-- Resume parsing: `PENDING|PROCESSING|PARSED|FAILED`.
-- Job parsing: `PENDING|PROCESSING|PARSED|FAILED`.
+## 5. State canonical
+- Resume parse: `PENDING|PROCESSING|PARSED|FAILED`.
+- Job parse: `PENDING|PROCESSING|PARSED|FAILED`.
 - Job business: `DRAFT|ACTIVE|CLOSED`.
 - Match: `PENDING|PROCESSING|COMPLETED|FAILED`.
 
-JD chỉ được `ACTIVE` khi đã `PARSED`, `is_criteria_verified=true`, embedding hợp lệ và có ít nhất một `job_skill` hợp lệ.
+Job transition qua API:
+- DRAFT -> ACTIVE khi ready.
+- ACTIVE -> DRAFT hoặc CLOSED.
+- CLOSED -> DRAFT hoặc ACTIVE khi ready.
+- same-state idempotent.
+- DRAFT -> CLOSED bị từ chối `422`.
 
-`QUEUED` **không** phải MatchStatus. Response trigger matching dùng `status=PENDING`; nếu cần mô tả trạng thái task queue thì dùng field khác.
+JD ACTIVE/matching cần PARSED + verified + embedding hợp lệ + >=1 `job_skill`.
 
-## 7. Ownership & privacy decision được khóa
+## 6. Auth MVP
+MVP chỉ bắt buộc Access Token JWT.
+`/auth/refresh` và server-side refresh-session logout thuộc **Advanced** và không nằm trong OpenAPI MVP. UI MVP logout bằng cách bỏ Access Token phía client. Khi bật Advanced, refresh token phải do backend `Set-Cookie; HttpOnly`.
 
-- Candidate chỉ quản lý CV của mình.
-- HR chỉ quản lý CV trong kho do chính HR upload trong MVP.
-- HR chỉ quản lý JD do mình sở hữu.
-- Candidate self-match với JD của HR **không cấp quyền cho HR xem CV/kết quả đó**.
-- Candidate đọc Match nếu resume thuộc Candidate.
-- HR đọc Match/Skill Gap/Leaderboard chỉ khi JD thuộc HR **và** resume cũng thuộc kho HR.
-- Admin toàn quyền.
-- MVP chưa có `applications`; nếu sau này có quy trình nộp/chia sẻ CV thì phải sửa PTTK trước khi mở rộng quyền HR.
+## 7. Matching `hybrid-v1`
+`Overall = w_skill*Skill + w_semantic*Semantic + w_experience*Experience`, mặc định `0.50/0.30/0.20`.
 
-## 8. API decision được khóa
+- Skill: weighted coverage MANDATORY=2, OPTIONAL=1.
+- Semantic: `100 * clamp(cosine,0,1)`; CV/JD phải cùng model + preprocessing version.
+- Experience: merge các interval có ngày xác định; current job dùng ngày hiện tại. Experience thiếu `start_date`, hoặc thiếu `end_date` khi `is_current=false`, không được đoán và không cộng vào total. Nếu JD yêu cầu >0 nhưng không có interval định lượng được thì ExperienceScore=0.
+- BM25 chỉ diagnostic/retrieval/experiment ở v1.
+- LLM/XAI chỉ explanation/recommendation.
 
-- Base URL: `/api/v1`.
-- Matching single/batch dùng **một endpoint**: `POST /matching/calculate` với `resume_ids[]`.
-- Không dùng `/matching/single-match` hoặc `/matching/batch-match`.
-- `GET /matching` cung cấp **danh sách kết quả hiện hành** theo ownership; MVP không lưu nhiều attempt cho cùng `(job_id,resume_id)`.
-- `GET /skills` là nguồn taxonomy duy nhất cho autocomplete/Human-in-the-loop ở CV và JD.
-- Candidate không được xem leaderboard của ứng viên khác.
-- Refresh Token HttpOnly nếu bật phải do backend gửi bằng `Set-Cookie`.
-- `/jobs/{id}/export` là Advanced và **không nằm trong OpenAPI MVP v1** cho tới khi được triển khai/bật thật.
+## 8. Concurrency / stale-worker guard
+Đây là invariant bắt buộc.
 
-## 9. Matching decision được khóa
+### Resource revision
+Mỗi thay đổi làm input scoring thay đổi phải tăng revision:
+- CV parsed/manual-edit/re-embedding -> `resumes.revision += 1`.
+- JD raw content/criteria/weights/re-embedding -> `job_descriptions.revision += 1`.
 
-Algorithm version đầu tiên: `hybrid-v1`.
+Parse task nhận `expected_revision`. Worker chỉ commit kết quả nếu resource vẫn ở revision đó; task cũ bị discard.
 
-```text
-Overall = w_skill * SkillScore
-        + w_semantic * SemanticScore
-        + w_experience * ExperienceScore
-```
+### Match generation
+Mỗi trigger/invalidate Match tăng `match_results.generation`.
+Task matching nhận:
+`match_id, expected_generation, expected_resume_revision, expected_job_revision, algorithm_version`.
 
-Mặc định `0.50 / 0.30 / 0.20`, tổng = 1.
+Worker chỉ ghi PROCESSING/COMPLETED/FAILED nếu generation và revision vẫn khớp. Trước commit COMPLETED phải re-check linked Resume/JD revision. Nếu mismatch hoặc conditional UPDATE ảnh hưởng 0 row, task được coi là stale và **không được overwrite** row mới.
 
-Matching chỉ chạy khi CV/JD đã `PARSED`, embedding hợp lệ, criteria JD đã verified và JD có ít nhất một `job_skill`; Candidate còn yêu cầu JD phải `ACTIVE`.
+## 9. Canonical invalidation
+Khi score stale:
+- tăng resource revision tương ứng;
+- tăng Match generation;
+- `status=PENDING`;
+- 4 scores=NULL;
+- `matched_skills=[]`, `missing_skills=[]`;
+- `gap_analysis_summary=NULL`;
+- `error_message=NULL`;
+- `embedding_model=NULL`, `embedding_preprocessing_version=NULL`;
+- `calculated_at=NULL`;
+- `updated_at=NOW()`.
 
-- Skill Score: taxonomy/rule matching, MANDATORY nặng hơn OPTIONAL.
-- Semantic Score: cosine similarity của embedding cùng model.
-- Experience Score: tỷ lệ đáp ứng kinh nghiệm tối thiểu, cap 100%.
-- `rank_bm25`: lexical/retrieval/experiment signal trong `hybrid-v1`, **không** cộng thẳng vào Semantic/Final Score. Muốn blend BM25 phải cập nhật công thức + đổi `algorithm_version`.
-- LLM/XAI: explanation/recommendation only; không sửa deterministic scores.
+`recalculate=true` chỉ quyết định dispatch ngay.
 
-## 10. Match invalidation được khóa
+## 10. Batch matching
+- Validate **toàn bộ** `resume_ids` trước khi mutate.
+- Nếu một item fail ownership/readiness -> cả request fail, không sửa Match nào.
+- Chuẩn bị/upsert toàn batch trong **một transaction**.
+- Sau commit mới dispatch task.
+- Nếu dispatcher lỗi, endpoint trả `503 TASK_DISPATCH_FAILED`; rows đã chuẩn bị có thể còn PENDING và request có thể retry an toàn. Lần retry tăng generation nên task cũ không overwrite task mới.
 
-Mỗi cặp `(job_id,resume_id)` có một row kết quả hiện hành. Khi criteria/weights/JD raw content/CV parsed data/embedding model/algorithm thay đổi, kết quả cũ phải bị invalidate ngay.
-
-Canonical invalidate:
-
-```text
-status=PENDING
-all four scores=NULL
-matched_skills=[]
-missing_skills=[]
-gap_analysis_summary=NULL
-error_message=NULL
-calculated_at=NULL
-updated_at=NOW()
-```
-
-Nếu `recalculate=true` thì enqueue tính lại ngay; nếu không, row vẫn `PENDING` và không được leaderboard sử dụng cho đến khi tính lại.
-
-## 11. Thứ tự nguồn chuẩn khi triển khai
-
-Khi code có mâu thuẫn, ưu tiên theo thứ tự:
-
+## 11. Nguồn chuẩn khi code
 1. `PTTK_MASTER.md` + requirements/business rules.
-2. `05_database/schema.sql` cho persistence.
-3. `07_api/api_contract.md` và `07_api/openapi.yaml` cho HTTP contract.
+2. `05_database/schema.sql` + `skill_taxonomy_seed.sql`.
+3. `07_api/api_contract.md` + `openapi.yaml`.
 4. Use Case / Activity / Sequence / Architecture.
-5. Code implementation.
+5. Code.
 
-Muốn thay đổi API/database/enum phải **sửa PTTK trước**, audit traceability, sau đó mới sửa code.
+Muốn đổi API/database/enum/concurrency rule phải sửa PTTK trước.
 
-## 12. Gate trước khi code
-
-Trước khi viết ORM/Auth nghiệp vụ:
-
-- legacy docs mâu thuẫn đã được loại khỏi branch;
-- OpenAPI phải parse được và không có local `$ref` hỏng;
-- OpenAPI phải khai báo response schema cho các endpoint JSON chính, không chỉ có `description`;
-- PlantUML phải vượt static syntax audit và nên render thử trên máy phát triển;
-- `schema.sql` phải thống nhất với Data Dictionary/PDM;
-- Traceability Matrix không chỉ tới endpoint/table không tồn tại;
-- ownership/privacy của Match phải nhất quán giữa Requirements -> API -> Service design;
-- stale Match phải bị invalidate theo rule canonical;
-- Pull Request PTTK phải được user review/merge;
-- database thực nghiệm cũ phải được reset và tạo lại từ schema canonical;
-- `schema.sql` phải chạy thành công trên PostgreSQL 18 + pgvector trước khi viết ORM.
-
-## 13. Cấu trúc tài liệu
-
-```text
-docs/
-├── 00_requirements/
-├── 01_bfd/
-├── 02_usecase/
-├── 03_activity/
-├── 04_sequence/
-├── 05_database/
-├── 06_architecture/
-├── 07_api/
-├── 08_traceability/
-├── 09_delivery/
-├── PTTK_MASTER.md
-└── README.md
-```
+## 12. Gate trước code
+- CI OpenAPI/PlantUML/schema/design PASS.
+- PR review/merge.
+- reset DB cũ.
+- chạy `schema.sql`.
+- chạy `skill_taxonomy_seed.sql`.
+- verify 10 tables, constraints, HNSW, taxonomy seed.
+- smoke-test revision/generation/error-state constraints.
+- sau đó mới ORM/Auth/API/AI.
