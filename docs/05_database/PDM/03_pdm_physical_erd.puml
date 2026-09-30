@@ -2,194 +2,96 @@
 skinparam monochrome true
 skinparam shadowing false
 skinparam linetype ortho
-
 title PDM - POSTGRESQL 18 + PGVECTOR
 
-entity "users" as users {
-  * id : UUID <<PK>>
-  * email : VARCHAR(255) <<CI-UQ INDEX>>
-  * password_hash : VARCHAR(255)
-  * full_name : VARCHAR(100)
-  phone_number : VARCHAR(20)
-  * role : VARCHAR(20) <<CHECK>>
-  * is_active : BOOLEAN
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
+entity users {
+ * id : UUID <<PK>>
+ * email : VARCHAR <<CI-UQ>>
+ * role : VARCHAR <<CHECK>>
+}
+entity skills {
+ * id : SERIAL <<PK>>
+ * normalized_name : VARCHAR <<UQ>>
+ * skill_kind : VARCHAR <<CHECK>>
+}
+entity resumes {
+ * id : UUID <<PK>>
+ * owner_user_id : UUID <<FK>>
+ * revision : BIGINT <<CHECK>>
+ * parsing_status : VARCHAR <<CHECK>>
+ resume_embedding : vector(1024)
+ embedding_model : VARCHAR
+ embedding_preprocessing_version : VARCHAR
+ error_message : TEXT
+}
+entity candidate_profiles {
+ * id : BIGSERIAL <<PK>>
+ * resume_id : UUID <<FK,UQ>>
+}
+entity resume_skills {
+ * id : BIGSERIAL <<PK>>
+ * resume_id : UUID <<FK>>
+ * skill_id : INTEGER <<FK>>
+}
+entity resume_experiences {
+ * id : BIGSERIAL <<PK>>
+ * resume_id : UUID <<FK>>
+ start_date : DATE
+ end_date : DATE
+ is_current : BOOLEAN
+}
+entity resume_educations {
+ * id : BIGSERIAL <<PK>>
+ * resume_id : UUID <<FK>>
+}
+entity job_descriptions {
+ * id : UUID <<PK>>
+ * recruiter_id : UUID <<FK>>
+ * revision : BIGINT <<CHECK>>
+ * parsing_status : VARCHAR <<CHECK>>
+ job_embedding : vector(1024)
+ embedding_model : VARCHAR
+ embedding_preprocessing_version : VARCHAR
+ * is_criteria_verified : BOOLEAN
+ * status : VARCHAR <<CHECK>>
+}
+entity job_skills {
+ * id : BIGSERIAL <<PK>>
+ * job_id : UUID <<FK>>
+ * skill_id : INTEGER <<FK>>
+ * importance : VARCHAR <<CHECK>>
+}
+entity match_results {
+ * id : UUID <<PK>>
+ * job_id : UUID <<FK>>
+ * resume_id : UUID <<FK>>
+ * generation : BIGINT <<CHECK>>
+ * resume_revision : BIGINT
+ * job_revision : BIGINT
+ overall_score : NUMERIC
+ * algorithm_version : VARCHAR
+ embedding_model : VARCHAR
+ embedding_preprocessing_version : VARCHAR
+ * status : VARCHAR <<CHECK>>
+ error_message : TEXT
 }
 
-entity "skills" as skills {
-  * id : SERIAL <<PK>>
-  * name : VARCHAR(100) <<UQ>>
-  * normalized_name : VARCHAR(100) <<UQ>>
-  * skill_kind : VARCHAR(10) <<CHECK>>
-  * category : VARCHAR(50)
-  description : TEXT
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-}
+users ||--o{ resumes
+users ||--o{ job_descriptions
+resumes ||--o| candidate_profiles
+resumes ||--o{ resume_skills
+skills ||--o{ resume_skills
+resumes ||--o{ resume_experiences
+resumes ||--o{ resume_educations
+job_descriptions ||--o{ job_skills
+skills ||--o{ job_skills
+job_descriptions ||--o{ match_results
+resumes ||--o{ match_results
 
-entity "resumes" as resumes {
-  * id : UUID <<PK>>
-  * owner_user_id : UUID <<FK>>
-  * file_name : VARCHAR(255)
-  * storage_key : VARCHAR(500) <<UQ>>
-  * file_size : INTEGER <<CHECK>>
-  * mime_type : VARCHAR(100)
-  * parsing_status : VARCHAR(20) <<CHECK>>
-  raw_text : TEXT
-  resume_embedding : vector(1024)
-  embedding_model : VARCHAR(100)
-  error_message : TEXT
-  * is_manually_edited : BOOLEAN
-  * is_deleted : BOOLEAN
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-  parsed_at : TIMESTAMPTZ
-  deleted_at : TIMESTAMPTZ
-}
-
-entity "candidate_profiles" as candidate_profiles {
-  * id : BIGSERIAL <<PK>>
-  * resume_id : UUID <<FK,UQ>>
-  full_name : VARCHAR(150)
-  email : VARCHAR(255)
-  phone_number : VARCHAR(30)
-  current_title : VARCHAR(150)
-  location : VARCHAR(150)
-  linkedin_url : VARCHAR(500)
-  github_url : VARCHAR(500)
-  professional_summary : TEXT
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-}
-
-entity "resume_skills" as resume_skills {
-  * id : BIGSERIAL <<PK>>
-  * resume_id : UUID <<FK>>
-  * skill_id : INTEGER <<FK>>
-  years_of_experience : NUMERIC(4,1)
-  proficiency_level : VARCHAR(30)
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-}
-
-entity "resume_experiences" as resume_experiences {
-  * id : BIGSERIAL <<PK>>
-  * resume_id : UUID <<FK>>
-  * company_name : VARCHAR(150)
-  * job_title : VARCHAR(150)
-  start_date : DATE
-  end_date : DATE
-  * is_current : BOOLEAN
-  description : TEXT
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-}
-
-entity "resume_educations" as resume_educations {
-  * id : BIGSERIAL <<PK>>
-  * resume_id : UUID <<FK>>
-  * institution_name : VARCHAR(150)
-  degree : VARCHAR(100)
-  field_of_study : VARCHAR(150)
-  start_year : SMALLINT
-  graduation_year : SMALLINT
-  gpa : NUMERIC(5,2)
-  description : TEXT
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-}
-
-entity "job_descriptions" as jobs {
-  * id : UUID <<PK>>
-  * recruiter_id : UUID <<FK>>
-  * title : VARCHAR(200)
-  * job_level : VARCHAR(50)
-  location : VARCHAR(150)
-  * raw_content : TEXT
-  * min_experience_years : NUMERIC(4,1)
-  education_requirement : VARCHAR(255)
-  job_embedding : vector(1024)
-  embedding_model : VARCHAR(100)
-  * parsing_status : VARCHAR(20) <<CHECK>>
-  parsing_error_message : TEXT
-  * is_criteria_verified : BOOLEAN
-  * w_skill : NUMERIC(4,3)
-  * w_semantic : NUMERIC(4,3)
-  * w_experience : NUMERIC(4,3)
-  * status : VARCHAR(20) <<CHECK>>
-  * is_deleted : BOOLEAN
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-  parsed_at : TIMESTAMPTZ
-  deleted_at : TIMESTAMPTZ
-}
-
-entity "job_skills" as job_skills {
-  * id : BIGSERIAL <<PK>>
-  * job_id : UUID <<FK>>
-  * skill_id : INTEGER <<FK>>
-  * importance : VARCHAR(20) <<CHECK>>
-  * min_years_required : NUMERIC(4,1)
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-}
-
-entity "match_results" as matches {
-  * id : UUID <<PK>>
-  * job_id : UUID <<FK>>
-  * resume_id : UUID <<FK>>
-  overall_score : NUMERIC(5,2)
-  skill_score : NUMERIC(5,2)
-  semantic_score : NUMERIC(5,2)
-  experience_score : NUMERIC(5,2)
-  * matched_skills : JSONB
-  * missing_skills : JSONB
-  gap_analysis_summary : TEXT
-  * algorithm_version : VARCHAR(50)
-  * status : VARCHAR(20) <<CHECK>>
-  error_message : TEXT
-  * created_at : TIMESTAMPTZ
-  * updated_at : TIMESTAMPTZ
-  calculated_at : TIMESTAMPTZ
-}
-
-users ||--o{ resumes : owner_user_id
-users ||--o{ jobs : recruiter_id
-resumes ||--|| candidate_profiles : resume_id
-resumes ||--o{ resume_skills : resume_id
-skills ||--o{ resume_skills : skill_id
-resumes ||--o{ resume_experiences : resume_id
-resumes ||--o{ resume_educations : resume_id
-jobs ||--o{ job_skills : job_id
-skills ||--o{ job_skills : skill_id
-jobs ||--o{ matches : job_id
-resumes ||--o{ matches : resume_id
-
-note right of users
-Case-insensitive unique index:
-uq_users_email_ci ON LOWER(email)
+note right of match_results
+UQ(job_id,resume_id)
+generation + resource revisions guard stale workers.
+COMPLETED requires scores/provenance/calculated_at.
+FAILED requires error_message.
 end note
-
-note right of resumes
-PARSED requires raw_text,
-embedding_model, embedding,
-parsed_at.
-HNSW: resume_embedding vector_cosine_ops
-end note
-
-note right of jobs
-ACTIVE requires PARSED
-and is_criteria_verified=true.
-Service additionally requires >=1 job_skill.
-PARSED requires embedding + model + parsed_at.
-HNSW: job_embedding vector_cosine_ops
-end note
-
-note right of matches
-One current result per (job_id,resume_id).
-COMPLETED requires 4 scores + calculated_at.
-Non-COMPLETED must clear stale scores/evidence/timestamp.
-end note
-
 @enduml
