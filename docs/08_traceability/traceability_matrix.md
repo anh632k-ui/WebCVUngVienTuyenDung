@@ -1,6 +1,6 @@
 # TRACEABILITY MATRIX — USE CASE -> DESIGN -> API -> DATABASE
 
-Mục tiêu của bảng này là bảo đảm mỗi chức năng có đường truy vết từ yêu cầu đến API/data. Khi thay đổi một dòng, phải kiểm tra các artefact liên quan trong cùng dòng.
+Mục tiêu của bảng này là bảo đảm mỗi chức năng có đường truy vết từ yêu cầu đến code/data. Khi thay đổi một dòng, phải kiểm tra các artefact liên quan trong cùng dòng.
 
 | UC | Functional Requirement | Activity | Sequence | API chính | Bảng chính |
 |---|---|---|---|---|---|
@@ -12,14 +12,14 @@ Mục tiêu của bảng này là bảo đảm mỗi chức năng có đường 
 | UC06 Admin user | FR-06 | `act_uc06_admin_users.puml` | — | `GET /admin/users`, `PATCH /admin/users/{id}` | `users` |
 | UC07 Upload CV | FR-07, FR-08 | `act_uc07_08_upload_parse_cv.puml` | `seq_upload_parse_cv.puml` | `POST /resumes/upload` | `resumes` |
 | UC08 Phân tích CV | FR-09, FR-10 | `act_uc07_08_upload_parse_cv.puml` | `seq_upload_parse_cv.puml` | background task + status API | `resumes`, `candidate_profiles`, `skills`, `resume_skills`, `resume_experiences`, `resume_educations` |
-| UC09 Review CV | FR-11, FR-12, FR-35 | `act_uc09_10_review_manage_cv.puml` | `seq_review_cv.puml` | `GET /resumes/{id}`, `PUT /resumes/{id}/parsed-data`, `GET /skills` | Resume aggregate + `skills` |
+| UC09 Review CV | FR-11, FR-12, FR-35 | `act_uc09_10_review_manage_cv.puml` | `seq_review_cv.puml` | `GET /resumes/{id}`, `PUT /resumes/{id}/parsed-data`, support `GET /skills` | Resume aggregate tables + `skills` |
 | UC10 Kho CV | FR-13, FR-14 | `act_uc09_10_review_manage_cv.puml` | — | `GET /resumes`, status/download/delete | `resumes` + child tables |
 | UC11 Quản lý JD | FR-15, FR-16 | `act_uc11_12_manage_parse_jd.puml` | `seq_create_parse_job.puml` | CRUD `/jobs` | `job_descriptions` |
 | UC12 Phân tích JD | FR-18, FR-19 | `act_uc11_12_manage_parse_jd.puml` | `seq_create_parse_job.puml` | background task | `job_descriptions`, `skills`, `job_skills` |
-| UC13 Review criteria | FR-20, FR-35 | `act_uc13_review_job_criteria.puml` | `seq_job_criteria_weights.puml` | `GET/PUT /jobs/{id}/criteria`, `GET /skills` | `job_descriptions`, `job_skills`, `skills` |
+| UC13 Review criteria | FR-20, FR-35 | `act_uc13_review_job_criteria.puml` | `seq_job_criteria_weights.puml` | `GET/PUT /jobs/{id}/criteria`, support `GET /skills` | `job_descriptions`, `job_skills`, `skills` |
 | UC14 Xem JD Active | FR-17 | `act_uc14_browse_jobs.puml` | — | `GET /jobs`, `GET /jobs/{id}` | `job_descriptions`, `job_skills` |
 | UC15 Matching | FR-22..FR-28 | `act_uc15_matching.puml` | `seq_matching.puml` | `POST /matching/calculate` | `match_results` + CV/JD aggregate tables |
-| UC16 Kết quả & Skill Gap | FR-29, FR-33, FR-36 | `act_uc16_gap_analysis.puml` | `seq_gap_leaderboard.puml` | `GET /matching`, `GET /matching/{id}`, `/gap-analysis` | `match_results`, `skills` |
+| UC16 Lịch sử/Kết quả/Skill Gap | FR-29, FR-33, FR-36 | `act_uc16_gap_analysis.puml` | `seq_gap_leaderboard.puml` | `GET /matching`, `GET /matching/{id}`, `/gap-analysis` | `match_results`, `skills` |
 | UC17 Leaderboard | FR-30 | `act_uc17_18_leaderboard_weights.puml` | `seq_gap_leaderboard.puml` | `GET /jobs/{id}/leaderboard` | `match_results`, `resumes`, `candidate_profiles` |
 | UC18 Trọng số | FR-21, FR-31 | `act_uc17_18_leaderboard_weights.puml` | `seq_job_criteria_weights.puml` | `PUT /jobs/{id}/weights` | `job_descriptions`, `match_results` |
 | UC19 Export | FR-32 | `act_uc19_export_report.puml` | — | `GET /jobs/{id}/export` | read-only từ match/JD/CV data |
@@ -30,10 +30,11 @@ Mục tiêu của bảng này là bảo đảm mỗi chức năng có đường 
 |---|---|
 | FR-33 LLM/XAI | `06_architecture/ai_nlp_pipeline.md`, `matching_algorithm.md`, UC16 |
 | FR-34 Benchmark/metrics | `06_architecture/matching_algorithm.md`; báo cáo thực nghiệm giai đoạn Chapter 3 |
-| FR-35 Skill Taxonomy lookup | API Contract/OpenAPI `/skills`; UC09/UC13; bảng `skills` |
-| FR-36 Match history | API Contract/OpenAPI `GET /matching`; UC16; `match_results` |
+| FR-35 Skill Taxonomy lookup | UC09, UC13, `GET /skills`, `skills` |
+| FR-36 Matching history | UC16, `GET /matching`, `match_results` |
 | Ownership/BOLA | `00_requirements/actors_roles_ownership.md`, API Contract, mọi service có `{id}` |
 | State consistency | `00_requirements/state_models.puml`, `05_database/schema.sql` |
+| Verified JD criteria before match | BR-JOB-08, BR-MATCH-01, UC13, UC15, API Contract |
 | Vector 1024 | `05_database/schema.sql`, PDM, AI pipeline, matching algorithm |
 | PostgreSQL 18 + pgvector | `06_architecture/system_architecture.puml`, PDM, schema.sql |
 
