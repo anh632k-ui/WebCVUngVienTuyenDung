@@ -35,6 +35,8 @@ CREATE TABLE resumes (
     storage_key VARCHAR(500) NOT NULL UNIQUE,
     file_size INTEGER NOT NULL CHECK (file_size > 0 AND file_size <= 5242880),
     mime_type VARCHAR(100) NOT NULL,
+    create_request_fingerprint VARCHAR(64) NOT NULL
+        CHECK (create_request_fingerprint ~ '^[0-9a-f]{64}$'),
     revision BIGINT NOT NULL DEFAULT 1 CHECK (revision >= 1),
     parsing_status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
         CHECK (parsing_status IN ('PENDING','PROCESSING','PARSED','FAILED')),
@@ -136,6 +138,8 @@ CREATE TABLE job_descriptions (
     job_level VARCHAR(50) NOT NULL,
     location VARCHAR(150),
     raw_content TEXT NOT NULL,
+    create_request_fingerprint VARCHAR(64) NOT NULL
+        CHECK (create_request_fingerprint ~ '^[0-9a-f]{64}$'),
     revision BIGINT NOT NULL DEFAULT 1 CHECK (revision >= 1),
     min_experience_years NUMERIC(4,1) NOT NULL DEFAULT 0.0 CHECK (min_experience_years >= 0),
     education_requirement VARCHAR(255),
@@ -247,4 +251,5 @@ CREATE INDEX idx_match_job_leaderboard
 CREATE INDEX idx_match_resume ON match_results(resume_id, created_at DESC);
 
 -- Cross-table readiness/ownership/revision equality are service/transaction invariants.
+-- create_request_fingerprint binds each deterministic create resource to its original logical payload.
 -- updated_at is maintained by application/ORM in MVP.
