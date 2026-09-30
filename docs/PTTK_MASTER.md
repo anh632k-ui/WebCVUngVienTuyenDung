@@ -67,30 +67,80 @@ MVP chỉ bắt buộc Access Token JWT.
 - BM25 chỉ diagnostic/retrieval/experiment ở v1.
 - LLM/XAI chỉ explanation/recommendation.
 
-## 8. Concurrency / stale-worker guard
+## 8. Revision, generation và exclusive CAS
 Đây là invariant bắt buộc.
 
-### Resource revision
-Mỗi thay đổi làm input scoring thay đổi phải tăng revision:
-- CV parsed/manual-edit/re-embedding -> `resumes.revision += 1`.
-- JD raw content/criteria/weights/re-embedding -> `job_descriptions.revision += 1`.
+### 8.1 Nghĩa canonical của resource revision
+`revision` là **phiên bản input/computation request** của Resume/JD.
 
-Parse task nhận `expected_revision`. Worker chỉ commit kết quả nếu resource vẫn ở revision đó; task cũ bị discard.
+Quy tắc:
+- resource mới bắt đầu `revision=1`; parse ban đầu dùng `expected_revision=1`;
+- trước khi yêu cầu một computation/reparse mới do input thay đổi, service tăng revision **trước khi enqueue**;
+- manual mutation trực tiếp làm scoring input đổi cũng tăng revision trong transaction mutation;
+- worker xử lý đúng `expected_revision` **không tăng revision thêm lần nữa khi commit kết quả**;
+- retry/re-dispatch cùng computation giữ nguyên revision.
 
-### Match generation
-Mỗi trigger/invalidate Match tăng `match_results.generation` và **refresh hai snapshot** `resume_revision`, `job_revision` về revision hiện tại của hai resource.
-Task matching nhận:
+Ví dụ JD raw content đổi revision 5 -> 6, service commit input mới ở revision 6 rồi enqueue parser `expected_revision=6`; parser thành công vẫn để JD ở revision 6.
+
+### 8.2 Parse worker exclusive CAS
+Duplicate queue delivery phải an toàn. Chỉ một worker được claim một revision:
+
+```text
+CLAIM:
+UPDATE Resume/JD ... SET parsing_status='PROCESSING', updated_at=NOW()
+WHERE id=? AND revision=expected_revision AND parsing_status='PENDING'
+```
+
+Chỉ worker có `rowcount=1` được tiếp tục. Worker khác `rowcount=0` phải discard.
+
+Terminal write phải bắt buộc từ đúng PROCESSING của cùng revision:
+
+```text
+TERMINAL SUCCESS/FAILED:
+WHERE id=? AND revision=expected_revision AND parsing_status='PROCESSING'
+```
+
+Với success nhiều bảng, worker mở transaction, lock/check resource vẫn `PROCESSING + expected_revision`, ghi aggregate rồi terminal update. Nếu check/CAS fail thì rollback toàn bộ và discard. Nhờ vậy duplicate delivery không thể race FAILED/COMPLETED.
+
+### 8.3 Match worker exclusive CAS
+Mỗi trigger/invalidate Match tăng `match_results.generation` và refresh snapshot `resume_revision`, `job_revision` về revision hiện tại.
+
+Task nhận:
 `match_id, expected_generation, expected_resume_revision, expected_job_revision, algorithm_version`.
 
-Worker chỉ ghi PROCESSING/COMPLETED/FAILED nếu:
-- Match generation khớp;
-- Match snapshot revisions khớp expected;
-- linked Resume/JD revisions vẫn khớp expected.
-Trước terminal write phải re-check toàn bộ. Nếu mismatch hoặc conditional UPDATE ảnh hưởng 0 row, task stale và **không được overwrite** row mới.
+Claim chỉ hợp lệ khi row còn `PENDING`, generation/snapshots khớp và linked Resume/JD revisions vẫn khớp expected. Chỉ một worker được chuyển `PENDING -> PROCESSING`.
 
-## 9. Canonical invalidation
+Terminal COMPLETED/FAILED chỉ hợp lệ từ `PROCESSING` với cùng generation/snapshots và linked revisions vẫn khớp. `rowcount=0` => stale/duplicate task discard, không overwrite generation mới.
+
+## 9. Idempotent creation và parse dispatch recovery
+### 9.1 Idempotent POST create
+`POST /resumes/upload` và `POST /jobs` bắt buộc header `Idempotency-Key` dạng UUID cho mỗi logical create.
+
+Server tạo resource UUID deterministic bằng UUIDv5 từ `(application namespace, actor_id, route, Idempotency-Key)`.
+- retry cùng actor+route+key -> cùng resource id, không tạo duplicate;
+- key chỉ được tái sử dụng cho cùng logical request;
+- client tạo key mới khi thực sự muốn tạo resource mới.
+
+### 9.2 Dispatch sau commit
+DB/resource creation commit trước, dispatch parse sau. Nếu immediate dispatcher lỗi:
+- resource vẫn ở `PENDING`;
+- server log lỗi dispatch;
+- endpoint vẫn trả resource đã tạo (`202` Resume, `201` Job) vì persistence đã thành công;
+- client **không cần POST tạo lại chỉ để cứu queue**.
+
+Nếu response mạng bị mất và client retry POST, cùng `Idempotency-Key` trả cùng resource, không duplicate.
+
+### 9.3 Parse Recovery Sweeper
+MVP có recovery/re-dispatch nội bộ cho Resume/JD `PENDING` chưa được claim:
+- periodic/startup sweep chọn resource `PENDING`, chưa xóa, `updated_at` cũ hơn grace window cấu hình;
+- enqueue lại `(resource_id, current_revision)` mà **không tăng revision** và không đổi payload;
+- duplicate re-dispatch an toàn vì exclusive CAS chỉ cho một worker claim `PENDING -> PROCESSING`.
+
+Recovery này xử lý failure **trước khi worker claim** (dispatcher/broker/transient delivery). Recovery stuck `PROCESSING` sau worker crash cần lease/attempt token riêng và thuộc hardening sau MVP; không được reset mù PROCESSING về PENDING vì có thể gây race worker cũ.
+
+## 10. Canonical invalidation
 Khi score stale, trong cùng transaction:
-- tăng resource revision tương ứng nếu mutation đó thay input resource;
+- tăng resource revision tương ứng **trước computation mới** nếu mutation đó thay input resource;
 - tăng Match generation;
 - refresh `match_results.resume_revision = resumes.revision` và `match_results.job_revision = job_descriptions.revision`;
 - `status=PENDING`;
@@ -102,16 +152,14 @@ Khi score stale, trong cùng transaction:
 - `calculated_at=NULL`;
 - `updated_at=NOW()`.
 
-Nhờ refresh snapshot, `recalculate=true` có thể dispatch ngay bằng chính generation/revisions vừa ghi. Nếu không dispatch, row PENDING vẫn mô tả đúng phiên bản input hiện tại.
-
-## 10. Batch matching
+## 11. Batch matching
 - Validate **toàn bộ** `resume_ids` trước khi mutate.
 - Nếu một item fail ownership/readiness -> cả request fail, không sửa Match nào.
 - Chuẩn bị/upsert toàn batch trong **một transaction**; mỗi row generation++ và snapshot revision hiện tại.
 - Sau commit mới dispatch task.
 - Nếu dispatcher lỗi, endpoint trả `503 TASK_DISPATCH_FAILED`; rows đã chuẩn bị có thể còn PENDING và request có thể retry an toàn. Lần retry tăng generation nên task cũ không overwrite task mới.
 
-## 11. Nguồn chuẩn khi code
+## 12. Nguồn chuẩn khi code
 1. `PTTK_MASTER.md` + requirements/business rules.
 2. `05_database/schema.sql` + `skill_taxonomy_seed.sql`.
 3. `07_api/api_contract.md` + `openapi.yaml`.
@@ -120,12 +168,12 @@ Nhờ refresh snapshot, `recalculate=true` có thể dispatch ngay bằng chính
 
 Muốn đổi API/database/enum/concurrency rule phải sửa PTTK trước.
 
-## 12. Gate trước code
+## 13. Gate trước code
 - CI OpenAPI/PlantUML/schema/design PASS.
 - PR review/merge.
 - reset DB cũ.
 - chạy `schema.sql`.
 - chạy `skill_taxonomy_seed.sql`.
 - verify 10 tables, constraints, HNSW, taxonomy seed.
-- smoke-test revision/generation/error-state constraints.
+- smoke-test duplicate delivery CAS, stale revision/generation, parse recovery re-dispatch và idempotent create.
 - sau đó mới ORM/Auth/API/AI.
