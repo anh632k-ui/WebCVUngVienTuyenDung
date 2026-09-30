@@ -1,8 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-
-title SEQUENCE - HYBRID MATCHING CV <-> JD
+title SEQUENCE - HYBRID MATCHING WITH GENERATION/REVISION GUARD
 
 actor "Candidate/HR/Admin" as User
 participant "Next.js" as FE
@@ -12,67 +11,54 @@ database "PostgreSQL + pgvector" as DB
 participant "Task Dispatcher" as Dispatcher
 queue "Redis/Celery" as Queue
 participant "Matching Worker" as Worker
-participant "Hybrid Matching Engine" as Engine
+participant "Hybrid Engine" as Engine
 
 User -> FE : chọn JD + CV(s)
-FE -> API : POST /matching/calculate\n{job_id,resume_ids[]}
+FE -> API : POST /matching/calculate
 API -> Service : calculate(current_user,payload)
-Service -> DB : load JD/CVs + role/ownership/status/criteria
-DB --> Service : resources
-alt unauthorized/not owned
-  Service --> API : forbidden/not found
-  API --> FE : 403/404
-else not ready
-  note right of Service
-    CV PARSED + embedding
-    JD PARSED + embedding
-    is_criteria_verified=true
-    >=1 job_skill
-    Candidate requires JD ACTIVE
-    HR requires JD owned by HR
-    and CVs owned by same HR
-  end note
-  Service --> API : precondition error
-  API --> FE : 422
-else valid
-  loop each resume_id
-    Service -> DB : UPSERT match_results(PENDING)\nclear scores/evidence/error/calculated_at\nupdated_at=NOW()
-    DB --> Service : match_id
-    Service -> Dispatcher : enqueue_match(match_id)
+Service -> DB : load JD + ALL CVs
+Service -> Service : validate full batch ownership/readiness\nmodel+preprocessing versions
+alt any invalid
+  Service --> API : 403/404/422
+  API --> FE : error, no Match mutation
+else all valid
+  Service -> DB : BEGIN
+  loop each resume
+    Service -> DB : UPSERT current pair\ngeneration++, snapshot resume/job revision\nPENDING + clear stale payload
+    DB --> Service : match_id + generation
+  end
+  Service -> DB : COMMIT
+  loop each match
+    Service -> Dispatcher : enqueue(match_id,generation,resume_revision,job_revision,algorithm)
     Dispatcher -> Queue : task
   end
-  Service --> API : {job_id, match_ids[], total_matches, status=PENDING}
-  API --> FE : 202 Accepted
+  alt any dispatch failure
+    Service --> API : 503 TASK_DISPATCH_FAILED
+    API --> FE : retry-safe error
+  else all accepted
+    Service --> API : 202 match_ids,total_matches,status=PENDING
+    API --> FE : accepted
+  end
 end
 
-Queue -> Worker : match_id
-Worker -> DB : UPDATE status=PROCESSING, updated_at=NOW()
-Worker -> DB : load verified JD criteria + job skills\n+ CV skills + embeddings + experience
-DB --> Worker : matching input
-Worker -> Engine : compute hybrid-v1(input)
-Engine -> Engine : weighted skill coverage
-Engine -> Engine : cosine semantic score
-Engine -> Engine : experience score
-Engine -> Engine : weighted overall + gaps
-Engine --> Worker : scores + evidence
-alt success
-  Worker -> DB : UPDATE scores/evidence/status=COMPLETED\nalgorithm_version=hybrid-v1, calculated_at, updated_at
-else failure
-  Worker -> DB : UPDATE status=FAILED/error_message/updated_at
+Queue -> Worker : expected generation/revisions
+Worker -> DB : conditional UPDATE PROCESSING\nWHERE id + generation match expected
+alt rowcount=0
+  Worker -> Worker : stale task -> discard
+else claimed
+  Worker -> DB : load Match + Resume + JD + criteria
+  Worker -> Worker : compare linked revisions/model/preprocessing
+  alt mismatch
+    Worker -> Worker : stale task -> discard
+  else current
+    Worker -> Engine : compute hybrid-v1
+    Engine --> Worker : scores/evidence
+    Worker -> DB : conditional terminal UPDATE COMPLETED\nFROM linked Resume/JD WHERE generation+revisions still match
+    alt rowcount=0
+      Worker -> Worker : stale result -> discard
+    else committed
+      Worker -> Worker : done
+    end
+  end
 end
-
-FE -> API : GET /matching/{match_id}
-API -> Service : authorize result
-Service -> DB : SELECT match + resume + job ownership
-DB --> Service : result/status/ownership
-alt Candidate
-  Service -> Service : require resume.owner_user_id=current_user.id
-else HR
-  Service -> Service : require job.recruiter_id=current_user.id\nand resume.owner_user_id=current_user.id
-else Admin
-  Service -> Service : allow
-end
-Service --> API : result DTO
-API --> FE : 200
-
 @enduml
