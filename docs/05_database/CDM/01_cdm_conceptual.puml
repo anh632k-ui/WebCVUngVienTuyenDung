@@ -2,7 +2,6 @@
 skinparam monochrome true
 skinparam shadowing false
 skinparam linetype ortho
-
 title CDM - MÔ HÌNH DỮ LIỆU KHÁI NIỆM
 
 entity "Người dùng" as User
@@ -14,19 +13,18 @@ entity "Học vấn" as Education
 entity "Tin tuyển dụng (JD)" as Job
 entity "Kết quả so khớp" as Match
 
-User ||--o{ Resume : "sở hữu / tải lên"
-User ||--o{ Job : "đăng tuyển"
-Resume ||--|| CandidateProfile : "được bóc tách thành"
-Resume ||--o{ Experience : "có"
-Resume ||--o{ Education : "có"
-Resume }o--o{ Skill : "thể hiện"
-Job }o--o{ Skill : "yêu cầu"
-Resume ||--o{ Match : "được đánh giá"
-Job ||--o{ Match : "làm tiêu chí"
+User ||--o{ Resume : sở hữu
+User ||--o{ Job : đăng tuyển
+Resume ||--o| CandidateProfile : có thể có snapshot
+Resume ||--o{ Experience
+Resume ||--o{ Education
+Resume }o--o{ Skill
+Job }o--o{ Skill
+Resume ||--o{ Match
+Job ||--o{ Match
 
-note bottom of Skill
-Quan hệ N:N với Resume/JD
-được triển khai thành bảng liên kết ở LDM/PDM.
+note bottom of CandidateProfile
+0..1 profile cho mỗi Resume.
+PENDING/FAILED có thể chưa có profile.
 end note
-
 @enduml
