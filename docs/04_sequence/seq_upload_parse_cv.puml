@@ -1,43 +1,73 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-title SEQUENCE - UPLOAD & PARSE CV WITH REVISION GUARD
+title SEQUENCE - UPLOAD & PARSE CV - IDEMPOTENT CREATE + EXCLUSIVE CAS
 
 actor "Candidate/HR" as User
 participant "Next.js" as FE
 participant "Resume API" as API
 participant "Resume Service" as Service
+participant "Idempotency/UUIDv5" as Idem
 participant "File Storage" as Storage
 database "PostgreSQL" as DB
 participant "Task Dispatcher" as Dispatcher
+participant "Parse Recovery Sweeper" as Recovery
 queue "Redis/Celery" as Queue
 participant "CV Worker" as Worker
 participant "NLP/Embedding" as NLP
 
 User -> FE : chọn file
-FE -> API : POST /resumes/upload
-API -> Service : upload(current_user,file)
+FE -> FE : generate Idempotency-Key UUID
+FE -> API : POST /resumes/upload + Idempotency-Key
+API -> Service : upload(current_user,key,file)
 Service -> Service : validate size/MIME/magic
-Service -> Storage : save safe storage_key
-Service -> DB : INSERT Resume(PENDING, revision=1)
-DB --> Service : resume_id
-Service -> Dispatcher : enqueue(resume_id, expected_revision=1)
-Dispatcher -> Queue : task
-Service --> API : 202 PENDING
+Service -> Idem : derive UUIDv5(actor,route,key)
+Idem --> Service : deterministic resume_id
+Service -> Storage : save safe storage_key idempotently
+Service -> DB : INSERT Resume(PENDING, revision=1,id=resume_id)\nON CONFLICT id -> load existing owned Resume
+DB --> Service : same resume_id/current revision
+Service -> DB : COMMIT persistence
+Service -> Dispatcher : best-effort enqueue(resume_id,current_revision)
+alt dispatcher accepted
+  Dispatcher -> Queue : task
+else dispatcher failed
+  Service -> Service : log failure, keep PENDING
+end
+Service --> API : 202 ResumeUploadResponse
+API --> FE : same resource on retry with same key
 
+== Recovery for post-commit dispatch failure ==
+Recovery -> DB : SELECT PENDING active Resume older than grace window
+DB --> Recovery : resume_id,current_revision
+Recovery -> Dispatcher : re-dispatch(resume_id,current_revision)
+Dispatcher -> Queue : task
+note over Recovery,Queue
+Recovery không tăng revision và không đổi state.
+Duplicate delivery an toàn nhờ exclusive CAS claim.
+end note
+
+== Worker ==
 Queue -> Worker : resume_id, expected_revision
-Worker -> DB : UPDATE PROCESSING\nWHERE id=? AND revision=expected_revision
+Worker -> DB : CAS UPDATE PROCESSING\nWHERE id=? AND revision=? AND parsing_status='PENDING'
 alt rowcount=0
-  Worker -> Worker : stale task -> discard
-else claimed
+  Worker -> Worker : stale/duplicate -> discard
+else exclusive claim acquired
   Worker -> Storage : read file
   Worker -> NLP : extract + normalize + embed
   alt processing error
-    Worker -> DB : UPDATE FAILED,error\nWHERE id=? AND revision=expected_revision
+    Worker -> DB : CAS FAILED,error\nWHERE revision=? AND parsing_status='PROCESSING'
   else success
-    Worker -> DB : transaction save aggregate + embedding/model/preprocessing\nUPDATE PARSED WHERE id=? AND revision=expected_revision
-    alt terminal rowcount=0
-      Worker -> Worker : stale task -> discard result
+    Worker -> DB : BEGIN + lock/check revision=? AND PROCESSING
+    alt check failed
+      Worker -> DB : ROLLBACK
+      Worker -> Worker : stale/duplicate -> discard
+    else current claim
+      Worker -> DB : save aggregate + embedding/model/preprocessing
+      Worker -> DB : CAS PARSED\nWHERE revision=? AND parsing_status='PROCESSING'
+      Worker -> DB : COMMIT
+      note right of Worker
+      Worker không tăng revision.
+      end note
     end
   end
 end
