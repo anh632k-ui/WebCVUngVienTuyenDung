@@ -6,13 +6,14 @@ skinparam linetype ortho
 title COMPONENT ARCHITECTURE - BACKEND & AI PIPELINE
 
 package "FastAPI API Layer" {
-  [auth.py] as AuthAPI
-  [users.py] as UsersAPI
-  [skills.py] as SkillsAPI
-  [resumes.py] as ResumeAPI
-  [jobs.py] as JobsAPI
-  [matching.py] as MatchAPI
-  [router.py] as Router
+  component "auth.py" as AuthAPI
+  component "users.py" as UsersAPI
+  component "skills.py" as SkillsAPI
+  component "resumes.py" as ResumeAPI
+  component "jobs.py" as JobsAPI
+  component "matching.py" as MatchAPI
+  component "router.py" as Router
+
   Router --> AuthAPI
   Router --> UsersAPI
   Router --> SkillsAPI
@@ -22,40 +23,40 @@ package "FastAPI API Layer" {
 }
 
 package "Core" {
-  [config.py] as Config
-  [database.py] as Database
-  [security.py] as Security
+  component "config.py" as Config
+  component "database.py" as Database
+  component "security.py" as Security
 }
 
 package "Service Layer" {
-  [auth/user service] as UserService
-  [skill_service.py] as SkillService
-  [resume_service.py] as ResumeService
-  [job_service.py] as JobService
-  [match_service.py] as MatchService
+  component "Auth/User Service" as UserService
+  component "skill_service.py" as SkillService
+  component "resume_service.py" as ResumeService
+  component "job_service.py" as JobService
+  component "match_service.py" as MatchService
 }
 
 package "AI Pipeline" {
-  [pdf/docx_extractor.py] as Extractor
-  [entity_recognizer.py] as Entity
-  [skill_normalizer.py] as Normalizer
-  [vector_embedding.py] as Vector
-  [matching_engine.py] as Engine
-  [xai_adapter.py\noptional] as XAI
+  component "pdf/docx_extractor.py" as Extractor
+  component "entity_recognizer.py" as Entity
+  component "skill_normalizer.py" as Normalizer
+  component "vector_embedding.py" as Vector
+  component "matching_engine.py" as Engine
+  component "xai_adapter.py (optional)" as XAI
 }
 
-package "ORM / Schema" {
-  [SQLAlchemy Models] as ORM
-  [Pydantic Schemas] as DTO
+package "ORM and DTO" {
+  component "SQLAlchemy Models" as ORM
+  component "Pydantic Schemas" as DTO
 }
 
-package "Tasks" {
-  [task_dispatcher] as Dispatcher
-  [celery_tasks.py] as Tasks
+package "Background Tasks" {
+  component "task_dispatcher" as Dispatcher
+  component "celery_tasks.py" as Tasks
 }
 
 database "PostgreSQL + pgvector" as DB
-queue "Redis/Celery [when enabled]" as Queue
+component "Redis/Celery (when enabled)" as Queue
 
 AuthAPI --> UserService
 UsersAPI --> UserService
