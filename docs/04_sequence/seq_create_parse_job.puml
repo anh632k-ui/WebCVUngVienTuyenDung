@@ -1,27 +1,38 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-title SEQUENCE - CREATE/UPDATE & PARSE JD WITH REVISION GUARD
+title SEQUENCE - CREATE/UPDATE & PARSE JD - IDEMPOTENT CREATE + EXCLUSIVE CAS
 
 actor HR
 participant "Next.js" as FE
 participant "Jobs API" as API
 participant "Job Service" as Service
+participant "Idempotency/UUIDv5" as Idem
 database "PostgreSQL" as DB
 participant "Task Dispatcher" as Dispatcher
+participant "Parse Recovery Sweeper" as Recovery
 queue "Redis/Celery" as Queue
 participant "JD Worker" as Worker
 participant "JD NLP/Embedding" as NLP
 
 == Create ==
 HR -> FE : nhập JD
-FE -> API : POST /api/v1/jobs
-API -> Service : create_job(HR,payload)
-Service -> DB : INSERT DRAFT/PENDING, revision=1, recruiter_id=HR.id
-DB --> Service : job_id
-Service -> Dispatcher : enqueue(job_id, expected_revision=1)
-Dispatcher -> Queue : task
+FE -> FE : generate Idempotency-Key UUID
+FE -> API : POST /api/v1/jobs + Idempotency-Key
+API -> Service : create_job(HR,key,payload)
+Service -> Idem : derive UUIDv5(HR.id,route,key)
+Idem --> Service : deterministic job_id
+Service -> DB : INSERT DRAFT/PENDING revision=1,id=job_id\nON CONFLICT id -> load same owned JD
+DB --> Service : same job_id/current revision
+Service -> DB : COMMIT persistence
+Service -> Dispatcher : best-effort enqueue(job_id,current_revision)
+alt dispatcher accepted
+  Dispatcher -> Queue : task
+else dispatcher failed
+  Service -> Service : log failure; keep PENDING
+end
 Service --> API : 201 JobResponse
+API --> FE : same JD on retry with same key
 
 == Update raw content ==
 HR -> FE : sửa raw_content
@@ -29,26 +40,46 @@ FE -> API : PUT /jobs/{id}
 API -> Service : update_job(...)
 Service -> DB : verify HR owner/Admin existing JD
 Service -> DB : BEGIN
-Service -> DB : revision++, DRAFT/PENDING, verified=false\nclear embedding/model/preprocessing/parsed_at
-Service -> DB : invalidate Matches: generation++, PENDING, clear stale payload
+Service -> DB : revision++ BEFORE new computation\nDRAFT/PENDING, verified=false\nclear embedding/model/preprocessing/parsed_at
+Service -> DB : invalidate Matches: generation++, refresh snapshots,\nPENDING, clear stale payload
 Service -> DB : COMMIT
-Service -> Dispatcher : enqueue(job_id,new_revision)
-Dispatcher -> Queue : task
+Service -> Dispatcher : best-effort enqueue(job_id,new_revision)
+alt dispatcher failed
+  Service -> Service : log; recovery will re-dispatch PENDING
+end
 Service --> API : 200
+
+== Recovery ==
+Recovery -> DB : SELECT active JD PENDING older than grace window
+DB --> Recovery : job_id,current_revision
+Recovery -> Dispatcher : re-dispatch(job_id,current_revision)
+Dispatcher -> Queue : task
+note over Recovery,Queue
+No revision increment on recovery.
+Duplicate dispatch safe via PENDING->PROCESSING CAS.
+end note
 
 == Parse ==
 Queue -> Worker : job_id, expected_revision
-Worker -> DB : conditional UPDATE PROCESSING WHERE revision=expected_revision
+Worker -> DB : CAS UPDATE PROCESSING\nWHERE revision=? AND parsing_status='PENDING'
 alt rowcount=0
-  Worker -> Worker : stale -> discard
-else claimed
+  Worker -> Worker : stale/duplicate -> discard
+else exclusive claim acquired
   Worker -> NLP : parse criteria + embedding
   alt error
-    Worker -> DB : conditional FAILED + parsing_error_message
+    Worker -> DB : CAS FAILED + parsing_error_message\nWHERE revision=? AND parsing_status='PROCESSING'
   else success
-    Worker -> DB : transaction replace job_skills + parsed fields\nPARSED + model/preprocessing WHERE revision=expected_revision
-    alt terminal rowcount=0
-      Worker -> Worker : stale result -> discard
+    Worker -> DB : BEGIN + lock/check revision=? AND PROCESSING
+    alt check failed
+      Worker -> DB : ROLLBACK
+      Worker -> Worker : stale/duplicate -> discard
+    else current claim
+      Worker -> DB : replace job_skills + parsed fields + model/preprocessing
+      Worker -> DB : CAS PARSED\nWHERE revision=? AND parsing_status='PROCESSING'
+      Worker -> DB : COMMIT
+      note right of Worker
+      Worker không tăng revision.
+      end note
     end
   end
 end
