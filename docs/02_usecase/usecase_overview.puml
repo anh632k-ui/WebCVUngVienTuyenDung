@@ -20,7 +20,7 @@ AuthUser <|-- Admin
 rectangle "WebCVUngVienTuyenDung" {
   usecase "UC01 Đăng ký" as UC01
   usecase "UC02 Đăng nhập" as UC02
-  usecase "UC03 Quản lý phiên\nRefresh/Logout" as UC03
+  usecase "UC03 Refresh/Logout\n[Advanced]" as UC03
   usecase "UC04 Quản lý profile" as UC04
   usecase "UC05 Đổi mật khẩu" as UC05
   usecase "UC06 Quản trị user" as UC06
@@ -44,7 +44,6 @@ rectangle "WebCVUngVienTuyenDung" {
 
 Guest --> UC01
 Guest --> UC02
-AuthUser --> UC03
 AuthUser --> UC04
 AuthUser --> UC05
 Admin --> UC06
@@ -62,9 +61,9 @@ UC07 ..> UC08 : <<include>>
 HR --> UC11
 HR --> UC13
 Candidate --> UC14
-Admin --> UC11
+Admin --> UC11 : quản trị JD hiện có
 Admin --> UC13
-UC12 ..> UC11 : <<extend>>\n[khi tạo hoặc đổi raw_content]
+UC12 ..> UC11 : <<extend>>\n[khi tạo/đổi raw_content]
 
 Candidate --> UC15
 HR --> UC15
@@ -79,9 +78,18 @@ Admin --> UC18
 HR --> UC19
 Admin --> UC19
 
-note bottom of UC16
-Candidate chỉ xem Match của CV mình.
-HR chỉ xem Match khi JD và CV đều thuộc HR.
+note right of UC03
+Không thuộc OpenAPI MVP.
+Khi bật: backend quản lý HttpOnly refresh cookie.
 end note
 
+note bottom of UC11
+Chỉ HR tạo JD mới.
+Admin chỉ override quản trị JD đã tồn tại.
+end note
+
+note bottom of UC16
+Candidate chỉ Match của CV mình.
+HR cần JD và CV đều thuộc HR.
+end note
 @enduml
