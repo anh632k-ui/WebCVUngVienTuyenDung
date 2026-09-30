@@ -1,7 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-title SEQUENCE - HYBRID MATCHING WITH GENERATION/REVISION GUARD
+title SEQUENCE - HYBRID MATCHING WITH EXCLUSIVE GENERATION/REVISION CAS
 
 actor "Candidate/HR/Admin" as User
 participant "Next.js" as FE
@@ -24,8 +24,8 @@ alt any invalid
 else all valid
   Service -> DB : BEGIN
   loop each resume
-    Service -> DB : UPSERT current pair\ngeneration++, snapshot resume/job revision\nPENDING + clear stale payload
-    DB --> Service : match_id + generation
+    Service -> DB : UPSERT current pair\ngeneration++, snapshot current resume/job revision\nPENDING + clear stale payload
+    DB --> Service : match_id + generation + snapshots
   end
   Service -> DB : COMMIT
   loop each match
@@ -42,23 +42,32 @@ else all valid
 end
 
 Queue -> Worker : expected generation/revisions
-Worker -> DB : conditional UPDATE PROCESSING\nWHERE id + generation match expected
+Worker -> DB : exclusive CAS PENDING->PROCESSING\nWHERE id + generation + snapshots match expected\nAND linked Resume/JD revisions match expected
 alt rowcount=0
-  Worker -> Worker : stale task -> discard
-else claimed
+  Worker -> Worker : stale/duplicate task -> discard
+else exclusive claim acquired
   Worker -> DB : load Match + Resume + JD + criteria
-  Worker -> Worker : compare linked revisions/model/preprocessing
-  alt mismatch
-    Worker -> Worker : stale task -> discard
+  Worker -> Worker : verify model/preprocessing
+  alt mismatch/error
+    Worker -> DB : CAS FAILED,error\nWHERE status='PROCESSING'\nAND generation/snapshots/linked revisions still expected
+    alt rowcount=0
+      Worker -> Worker : stale/duplicate terminal -> discard
+    end
   else current
     Worker -> Engine : compute hybrid-v1
     Engine --> Worker : scores/evidence
-    Worker -> DB : conditional terminal UPDATE COMPLETED\nFROM linked Resume/JD WHERE generation+revisions still match
+    Worker -> DB : terminal CAS COMPLETED\nWHERE status='PROCESSING'\nAND generation/snapshots/linked revisions still expected
     alt rowcount=0
-      Worker -> Worker : stale result -> discard
+      Worker -> Worker : stale/duplicate result -> discard
     else committed
       Worker -> Worker : done
     end
   end
 end
+
+note over Queue,Worker
+At-least-once/duplicate delivery is expected-safe:
+only one worker can claim a PENDING generation.
+FAILED and COMPLETED both require the same exclusive PROCESSING claim.
+end note
 @enduml
