@@ -38,6 +38,14 @@ if (User chỉnh dữ liệu đã bóc tách?) then (Có)
   :UPDATE resumes is_manually_edited=true,
   updated_at=NOW();
   :Rebuild resume_embedding nếu dữ liệu dùng cho embedding thay đổi;
+  :Invalidate mọi match_results của resume:
+  status=PENDING,
+  scores=NULL,
+  matched_skills=[], missing_skills=[],
+  gap_analysis_summary=NULL,
+  error_message=NULL,
+  calculated_at=NULL,
+  updated_at=NOW();
   :COMMIT;
   :200 OK;
 endif
