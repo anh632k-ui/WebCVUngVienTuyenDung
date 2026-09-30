@@ -38,13 +38,19 @@ state "Match Lifecycle" as Matching {
   M_PROCESSING --> M_COMPLETED : tính điểm thành công
   M_PROCESSING --> M_FAILED : lỗi
   M_FAILED --> M_PENDING : retry/recalculate
-  M_COMPLETED --> M_PENDING : criteria/weights/CV/model/algorithm thay đổi
+  M_COMPLETED --> M_PENDING : criteria/weights/raw JD/CV/model/algorithm thay đổi
 }
 
 note bottom of JobBusiness
 Mọi thay đổi raw_content làm criteria/embedding cũ stale,
 vì vậy business status bị đưa về DRAFT trước khi Job Parsing về PENDING.
 ACTIVE/matching còn được service kiểm tra có ít nhất một job_skill hợp lệ.
+end note
+
+note bottom of Matching
+Bất kỳ transition -> M_PENDING do invalidate/recalculate đều phải clear:
+4 scores, matched/missing evidence, gap summary, error_message và calculated_at.
+QUEUED không phải MatchStatus.
 end note
 
 @enduml
