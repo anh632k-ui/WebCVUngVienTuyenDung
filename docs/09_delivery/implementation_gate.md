@@ -12,6 +12,7 @@
 - [x] 10 bảng canonical.
 - [x] Resume/JD có `revision`.
 - [x] Match có `generation`, `resume_revision`, `job_revision`.
+- [x] Invalidation refresh revision snapshots theo resource hiện tại.
 - [x] Embedding lưu `embedding_model` + `embedding_preprocessing_version`.
 - [x] COMPLETED/non-COMPLETED payload constraints.
 - [x] FAILED/non-FAILED error-state constraints cho Resume/JD/Match.
@@ -24,7 +25,7 @@
 - [x] CV/JD parse task mang `expected_revision`.
 - [x] Match task mang expected generation + resource revisions.
 - [x] Worker stale task phải discard, không overwrite.
-- [x] Terminal Match write bắt buộc conditional/re-check linked revisions.
+- [x] Terminal Match write compare cả Match snapshots và linked resource revisions.
 - [x] Batch validate all-or-nothing trước mutation.
 - [x] Batch prepare Match trong một transaction.
 - [x] Dispatch sau commit; failure trả 503 và retry-safe.
@@ -45,11 +46,14 @@
 - [x] BM25 không blend v1.
 - [x] LLM/XAI Advanced/explanation only.
 
-## UML / Traceability
+## UML / Traceability / CI
 - [x] Use Case/Activity/Sequence cập nhật revision/generation.
+- [x] System/Component Architecture biểu diễn version guard.
 - [x] CDM/LDM/PDM/ERD dùng 0..1 CandidateProfile.
 - [x] Traceability có seed, concurrency, batch, role transition, auth Advanced.
-- [ ] GitHub Actions PASS trên HEAD cuối cùng vòng 3.
+- [x] Workflow `Validate PTTK` đã PASS OpenAPI + PlantUML + schema/seed/semantic round-3 checks trên baseline vòng 3 trước commit đánh dấu gate này.
+
+> Mọi commit mới sau gate vẫn phải chờ chính workflow này PASS lại trên HEAD mới nhất trước khi merge.
 
 ## Deployment gate
 - [ ] User review/merge PR.
