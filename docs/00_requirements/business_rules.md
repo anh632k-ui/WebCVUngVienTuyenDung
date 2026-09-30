@@ -38,11 +38,11 @@ Các quy tắc dưới đây là chuẩn nghiệp vụ dùng để kiểm tra Us
 - **BR-JOB-05**: Skill của JD có importance `MANDATORY` hoặc `OPTIONAL`.
 - **BR-JOB-06**: Khi `raw_content` thay đổi, kết quả bóc tách cũ không còn được coi là đã xác minh. Hệ thống bắt buộc đưa JD về `status=DRAFT`, đặt `parsing_status=PENDING`, `is_criteria_verified=false`, vô hiệu embedding/parsed timestamp cũ rồi mới phân tích lại. Quy tắc này tránh để một JD đang `ACTIVE` tồn tại với criteria/embedding đã lỗi thời.
 - **BR-JOB-07**: `w_skill + w_semantic + w_experience = 1.00`; mỗi trọng số nằm trong [0,1].
-- **BR-JOB-08**: JD chỉ được chuyển sang `ACTIVE` khi `parsing_status=PARSED`, `is_criteria_verified=true`, chưa bị xóa mềm và có embedding hợp lệ.
+- **BR-JOB-08**: JD chỉ được chuyển sang `ACTIVE` hoặc dùng để matching khi `parsing_status=PARSED`, `is_criteria_verified=true`, chưa bị xóa mềm, có embedding hợp lệ và có ít nhất một `job_skill` hợp lệ.
 
 ## Matching
 
-- **BR-MATCH-01**: Match chỉ được tạo khi CV `PARSED`, JD `PARSED`, tài nguyên chưa xóa và caller có quyền.
+- **BR-MATCH-01**: Match chỉ được tạo khi CV `PARSED`, JD `PARSED`, criteria JD đã được xác minh, JD có ít nhất một `job_skill`, tài nguyên chưa xóa, embedding CV/JD hợp lệ và caller có quyền.
 - **BR-MATCH-02**: Trạng thái Match: `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`.
 - **BR-MATCH-03**: Điểm thành phần và điểm tổng được phép NULL khi task chưa hoàn tất; khi `COMPLETED` thì tất cả điểm bắt buộc có giá trị 0–100.
 - **BR-MATCH-04**: Mỗi cặp `(job_id, resume_id)` chỉ có một kết quả hiện hành trong phạm vi thiết kế MVP; chạy lại cập nhật/recalculate kết quả đó.
