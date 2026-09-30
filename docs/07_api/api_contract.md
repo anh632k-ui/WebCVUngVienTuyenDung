@@ -1,4 +1,4 @@
-# API CONTRACT SPECIFICATION — MVP v1 (Round-3 Locked)
+# API CONTRACT SPECIFICATION — MVP v1 (Post-Round-3 Reliability Lock)
 
 Base URL `/api/v1`. JSON UTF-8. JWT Bearer Access Token. Refresh session là Advanced và không nằm trong OpenAPI MVP.
 
@@ -8,6 +8,15 @@ Error: `{ "success": false, "error": {"code":"...","message":"...","details":nul
 `204` không body.
 
 Status chuẩn: 200/201/202/204, 400, 401, 403, 404, 409, 413, 415, 422, 503.
+
+## Idempotency-Key cho create endpoint
+`POST /resumes/upload` và `POST /jobs` bắt buộc header:
+
+```http
+Idempotency-Key: <UUID>
+```
+
+Một key đại diện cho **một logical create request**. Server derive resource UUID deterministic bằng UUIDv5 từ application namespace + actor id + route + key. Retry cùng actor/route/key trả cùng resource, không tạo duplicate. Muốn tạo resource mới phải dùng key mới.
 
 # A. Auth & Account
 
@@ -44,9 +53,15 @@ Môi trường mới phải seed `skill_taxonomy_seed.sql`; pipeline không tự
 # C. Resume
 
 ## POST `/resumes/upload`
-Candidate/HR. PDF/DOCX <=5MB. Backend kiểm MIME/magic bytes, safe storage key.
-Tạo Resume `PENDING`, `revision=1`; enqueue parse `(resume_id,expected_revision=1)`.
-`202 ResumeUploadResponse`.
+Candidate/HR. **Required `Idempotency-Key` UUID**. PDF/DOCX <=5MB. Backend kiểm MIME/magic bytes, safe storage key.
+
+Persistence flow:
+1. derive deterministic `resume_id` từ actor+route+Idempotency-Key;
+2. create Resume `PENDING`, `revision=1` nếu chưa tồn tại; retry cùng key load cùng Resume;
+3. commit persistence;
+4. best-effort dispatch parse `(resume_id,current_revision)`.
+
+Nếu dispatcher lỗi sau commit, **không rollback Resume và không tạo Resume khác**. Server log lỗi, Resume giữ `PENDING`; internal Parse Recovery Sweeper sẽ re-dispatch current revision. Endpoint vẫn trả `202 ResumeUploadResponse` của resource đã persist.
 
 ## GET `/resumes`
 Candidate/HR chỉ owner; Admin all. Filter pagination/status/skills.
@@ -62,9 +77,9 @@ Owner/Admin; Resume PARSED.
 Transaction:
 1. validate aggregate/taxonomy/date;
 2. regenerate embedding;
-3. increment `resume.revision`;
+3. increment `resume.revision` **trong mutation trước khi coi đây là input version mới**;
 4. persist `embedding_model` + `embedding_preprocessing_version`;
-5. invalidate all related Match: generation++, PENDING, clear scores/evidence/error/embedding provenance/calculated_at.
+5. invalidate all related Match: generation++, refresh revision snapshots, PENDING, clear scores/evidence/error/embedding provenance/calculated_at.
 
 ## GET `/resumes/{id}/download`
 Owner/Admin, binary.
@@ -72,12 +87,33 @@ Owner/Admin, binary.
 ## DELETE `/resumes/{id}`
 Owner/Admin, soft delete, 204.
 
+### Resume parse worker contract
+`revision` là version của input/computation request. Initial create dùng revision 1; reparse input mới tăng revision **trước enqueue**. Worker của chính `expected_revision` không tăng revision khi commit.
+
+Exclusive claim:
+```text
+UPDATE resumes
+SET parsing_status='PROCESSING', updated_at=NOW()
+WHERE id=:id
+  AND revision=:expected_revision
+  AND parsing_status='PENDING'
+```
+Chỉ `rowcount=1` được tiếp tục.
+
+Terminal success/failure chỉ từ cùng claim:
+```text
+WHERE id=:id
+  AND revision=:expected_revision
+  AND parsing_status='PROCESSING'
+```
+Success nhiều bảng phải transaction + lock/check state/revision trước khi persist aggregate. `rowcount=0` => stale/duplicate discard.
+
 # D. Job
 
 ## POST `/jobs`
-**HR only**. Admin không tạo JD mới dưới identity Admin.
-Server set `recruiter_id=current_user.id`, DRAFT/PENDING/revision=1; enqueue parse expected_revision=1.
-`201 JobResponse`.
+**HR only**. Admin không tạo JD mới dưới identity Admin. **Required `Idempotency-Key` UUID**.
+
+Server derive deterministic `job_id` từ HR+route+key, create `DRAFT/PENDING/revision=1` nếu chưa tồn tại; retry cùng key trả cùng JD. Commit DB trước dispatch. Dispatcher lỗi => JD vẫn PENDING, log lỗi và Parse Recovery Sweeper re-dispatch; response vẫn `201 JobResponse` của resource đã persist.
 
 ## GET `/jobs`
 Candidate chỉ ACTIVE; HR chỉ own; Admin all.
@@ -88,11 +124,12 @@ Candidate ACTIVE; HR own; Admin all.
 ## PUT `/jobs/{id}`
 HR owner/Admin existing JD.
 Nếu `raw_content` đổi, transaction:
-- revision++;
+- revision++ **trước computation/reparse mới**;
 - DRAFT/PENDING, verified=false;
 - clear embedding/model/preprocessing/parsed_at;
-- invalidate Match generation++;
-- commit rồi enqueue parse(new revision).
+- invalidate Match generation++ + refresh snapshots;
+- commit rồi best-effort enqueue parse(new revision).
+Dispatcher lỗi không rollback update; recovery sẽ re-dispatch JD PENDING.
 
 ## PATCH `/jobs/{id}/status`
 HR owner/Admin.
@@ -109,14 +146,34 @@ Soft delete, 204.
 
 ## GET/PUT `/jobs/{id}/criteria`
 HR owner/Admin. PUT requires PARSED, >=1 skill, valid taxonomy, no duplicates.
-Transaction: save criteria, verified=true, revision++, invalidate Match generation++.
+Transaction: save criteria, verified=true, revision++, invalidate Match generation++ + refresh snapshots.
 
 ## PUT `/jobs/{id}/weights`
 HR owner/Admin. Each [0,1], sum=1.
-Transaction: weights, revision++, invalidate Match generation++.
+Transaction: weights, revision++, invalidate Match generation++ + refresh snapshots.
 `recalculate=true` dispatches tasks after commit.
 
-# E. Matching
+### JD parse worker contract
+Exclusive claim chỉ:
+```text
+revision=expected_revision AND parsing_status='PENDING'
+```
+Terminal PARSED/FAILED chỉ:
+```text
+revision=expected_revision AND parsing_status='PROCESSING'
+```
+Worker commit parsed output không tăng revision. Duplicate delivery chỉ một worker claim được.
+
+# E. Parse Recovery Sweeper
+Internal component, không expose route MVP.
+
+- startup/periodic scan Resume/JD `PENDING`, `is_deleted=false`, `updated_at` cũ hơn configurable grace window;
+- re-dispatch `(resource_id,current_revision)`;
+- không tăng revision, không đổi status trước enqueue;
+- duplicate re-dispatch an toàn vì exclusive claim yêu cầu `PENDING`;
+- MVP **không** tự reset stale `PROCESSING` về PENDING; worker-crash recovery muốn làm phải bổ sung lease/attempt token để không resurrect race.
+
+# F. Matching
 
 ## POST `/matching/calculate`
 Candidate/HR/Admin. Request:
@@ -149,8 +206,16 @@ Success `202 MatchTriggerResponse`:
 {"success":true,"data":{"job_id":"uuid","match_ids":["uuid"],"total_matches":1,"status":"PENDING"}}
 ```
 
-### Worker terminal-write rule
-Worker may set PROCESSING/COMPLETED/FAILED only by conditional update on expected generation. Before terminal write, re-check linked Resume/JD revisions. Mismatch/rowcount=0 => stale task discard.
+### Matching worker exclusive CAS
+Claim chỉ được `PENDING -> PROCESSING` khi:
+- `generation=expected_generation`;
+- stored `resume_revision/job_revision` snapshots khớp expected;
+- linked Resume/JD current revisions khớp expected.
+
+Chỉ worker có `rowcount=1` được tính.
+
+Terminal `PROCESSING -> COMPLETED|FAILED` cũng phải kiểm lại cùng generation/snapshots/linked revisions và current status `PROCESSING`. Duplicate delivery/stale task `rowcount=0` => discard. Vì chỉ một worker claim PENDING, FAILED và COMPLETED không được race trên cùng generation.
+
 FAILED requires error_message. Non-FAILED error_message must be null.
 
 ## GET `/matching`
@@ -165,7 +230,7 @@ Same scope, Match COMPLETED.
 ## GET `/jobs/{id}/leaderboard`
 HR owner/Admin. Only COMPLETED. HR only CV in own pool. Candidate denied.
 
-# F. Advanced
+# G. Advanced
 - `/jobs/{id}/export` PDF/Excel — not OpenAPI MVP.
 - Refresh Token Rotation endpoints — not OpenAPI MVP.
 - LLM/XAI explanation optional.
@@ -177,4 +242,4 @@ HR owner/Admin. Only COMPLETED. HR only CV in own pool. Candidate denied.
 - Overall: JD weights.
 
 # Đồng bộ code
-ORM maps schema; no `create_all()`; no new endpoint/table/enum unless PTTK updated first.
+ORM maps schema; no `create_all()`; no new endpoint/table/enum/concurrency semantic unless PTTK updated first.
