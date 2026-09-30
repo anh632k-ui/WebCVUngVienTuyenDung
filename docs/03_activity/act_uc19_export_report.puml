@@ -2,15 +2,23 @@
 skinparam monochrome true
 skinparam shadowing false
 
-title ACTIVITY - UC19 XUẤT BÁO CÁO [ADVANCED]
+title ACTIVITY - UC19 XUẤT BÁO CÁO [ADVANCED - CHƯA THUỘC OPENAPI MVP]
 
 start
-:HR chọn JD và định dạng PDF/Excel;
+:HR/Admin chọn JD và định dạng PDF/Excel;
 :GET /api/v1/jobs/{id}/export?format=...;
+note right
+  Route dự kiến cho phase Advanced.
+  Không expose trong OpenAPI MVP cho tới khi
+  feature được triển khai và kiểm thử thật.
+end note
 :Backend kiểm HR sở hữu JD hoặc Admin;
 if (Có quyền?) then (Có)
-  :Load leaderboard COMPLETED
-  + component scores + skill gaps;
+  :Load leaderboard COMPLETED;
+  if (Caller là HR?) then (Có)
+    :Chỉ lấy Match có CV thuộc kho HR;
+  endif
+  :Load component scores + skill gaps;
   if (format=excel?) then (Có)
     :Sinh workbook bằng openpyxl;
   else (PDF)
