@@ -25,10 +25,12 @@ Bộ PTTK rebuild từ đề cương `dc.docx`, mục tiêu thật của đề t
 - CandidateProfile là 0..1/Resume.
 - CV/JD embedding phải cùng model + preprocessing version.
 - `revision` là input/computation version: tăng trước computation mới; worker của đúng expected revision không tăng khi commit output.
-- CV/JD parse worker phải exclusive CAS: claim chỉ `PENDING -> PROCESSING`, terminal chỉ từ `PROCESSING` cùng expected revision.
-- Match worker phải exclusive CAS: claim chỉ từ PENDING với expected generation/revisions; COMPLETED/FAILED chỉ từ PROCESSING cùng expected values.
+- CV/JD parse worker phải exclusive CAS: claim chỉ `PENDING -> PROCESSING`, terminal chỉ từ `PROCESSING` cùng expected revision; cả hai yêu cầu `is_deleted=false`.
+- Match worker phải exclusive CAS: claim chỉ từ PENDING với expected generation/revisions + linked not-deleted; COMPLETED/FAILED chỉ từ PROCESSING cùng expected values + linked not-deleted.
+- Concurrent soft-delete phải làm async terminal write fail/rollback; current Match/Gap/Leaderboard không trả linked resource đã xóa.
 - `POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID; retry cùng logical request không tạo duplicate resource.
-- Resume/JD persistence commit trước parse dispatch. Dispatcher lỗi để resource PENDING và Parse Recovery Sweeper re-dispatch current revision.
+- CV retry existing key không overwrite storage; storage create dùng put-if-absent/no-overwrite.
+- Resume/JD persistence commit trước parse dispatch. Dispatcher lỗi để resource PENDING và Parse Recovery Sweeper re-dispatch current revision nếu resource chưa xóa.
 - Recovery không tăng revision và không blind-reset PROCESSING trong MVP nếu chưa có lease/attempt token.
 - Batch matching validate toàn bộ trước mutation; atomic prepare; dispatch sau commit; dispatch failure retry-safe.
 - FAILED phải có error; non-FAILED không giữ stale error.
@@ -41,6 +43,6 @@ Chỉ chuyển `IMPLEMENTATION_READY` sau:
 3. reset `webcv_ungvien`;
 4. chạy schema + taxonomy seed;
 5. smoke-test constraints/indexes/seed;
-6. integration/concurrency test duplicate delivery, stale revision/generation, parse recovery, idempotent create, ownership và role transition PASS.
+6. integration/concurrency test duplicate delivery, stale revision/generation, soft-delete race, parse recovery, idempotent create, ownership và role transition PASS.
 
 Mục tiêu: web application vẫn hoàn chỉnh nếu các module Advanced chưa triển khai, trong khi lõi CV/JD/NLP/embedding/matching/Skill Gap bám đúng tên đề tài.
