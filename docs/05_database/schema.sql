@@ -12,7 +12,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- =============================================================
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email VARCHAR(255) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(100) NOT NULL,
     phone_number VARCHAR(20),
@@ -24,6 +24,9 @@ CREATE TABLE users (
 );
 
 -- Application layer MUST normalize email to lowercase before persistence.
+-- Database still enforces case-insensitive uniqueness as a second line of defense.
+CREATE UNIQUE INDEX uq_users_email_ci
+    ON users ((LOWER(email)));
 
 -- =============================================================
 -- 2. SKILLS - Skill Taxonomy
@@ -275,7 +278,8 @@ CREATE INDEX idx_job_skills_skill
 
 -- =============================================================
 -- 10. MATCH_RESULTS
--- Scores are NULL while a task is pending/processing/failed.
+-- MVP keeps ONE current result per (job_id, resume_id), not attempt history.
+-- Scores/evidence must be cleared whenever status is not COMPLETED.
 -- =============================================================
 CREATE TABLE match_results (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -313,6 +317,19 @@ CREATE TABLE match_results (
             AND experience_score IS NOT NULL
             AND calculated_at IS NOT NULL
         )
+    ),
+    CONSTRAINT chk_noncompleted_match_cleared CHECK (
+        status = 'COMPLETED'
+        OR (
+            overall_score IS NULL
+            AND skill_score IS NULL
+            AND semantic_score IS NULL
+            AND experience_score IS NULL
+            AND matched_skills = '[]'::jsonb
+            AND missing_skills = '[]'::jsonb
+            AND gap_analysis_summary IS NULL
+            AND calculated_at IS NULL
+        )
     )
 );
 
@@ -331,3 +348,6 @@ CREATE INDEX idx_match_resume
 -- 3. Redis session data is intentionally NOT modeled as a PostgreSQL table.
 -- 4. LLM/XAI output is not persisted as a required table in MVP; it may be
 --    generated on demand from deterministic matching evidence.
+-- 5. HR result/leaderboard privacy requires service-level join checks against
+--    job_descriptions.recruiter_id AND resumes.owner_user_id; SQL CHECK cannot
+--    enforce this cross-table authorization rule.
