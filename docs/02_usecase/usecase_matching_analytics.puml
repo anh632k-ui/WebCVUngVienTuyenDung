@@ -14,11 +14,11 @@ actor Admin
 rectangle "Matching & Analytics" {
   usecase "UC15 Tính mức độ tương thích" as UC15
   usecase "Skill Matching" as M1
-  usecase "Semantic/Text Matching" as M2
+  usecase "Semantic Matching" as M2
   usecase "Experience Matching" as M3
   usecase "Tổng hợp Overall Score" as M4
-  usecase "UC16 Xem lịch sử, kết quả\n& Skill Gap" as UC16
-  usecase "UC17 Xem leaderboard" as UC17
+  usecase "UC16 Xem kết quả hiện hành\n& Skill Gap" as UC16
+  usecase "UC17 Xem leaderboard\n(kho CV của HR)" as UC17
   usecase "UC18 Cấu hình trọng số" as UC18
   usecase "UC19 Xuất báo cáo [Advanced]" as UC19
   usecase "LLM/XAI giải thích [Advanced]" as M5
@@ -43,5 +43,11 @@ UC15 ..> M3 : <<include>>
 UC15 ..> M4 : <<include>>
 M5 ..> UC16 : <<extend>>
 UC19 ..> UC17 : <<extend>>
+
+note bottom of UC16
+Candidate: chỉ Match của CV mình.
+HR: chỉ Match khi JD + CV đều thuộc HR.
+Admin: toàn quyền.
+end note
 
 @enduml
