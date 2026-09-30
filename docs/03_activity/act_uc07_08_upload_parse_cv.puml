@@ -1,24 +1,39 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-title ACTIVITY - UC07/08 UPLOAD & PARSE CV WITH REVISION GUARD
+title ACTIVITY - UC07/08 UPLOAD & PARSE CV - IDEMPOTENT + EXCLUSIVE CAS
 
 start
 :Candidate/HR chọn PDF/DOCX;
+:Client tạo Idempotency-Key UUID cho logical upload;
+:POST /api/v1/resumes/upload + Idempotency-Key;
 :Backend kiểm <=5MB + MIME/magic bytes;
 if (file invalid?) then (Có)
   :413/415;
   stop
 endif
+:Derive resume_id deterministic UUIDv5(actor,route,key);
 :Lưu safe storage_key;
-:Tạo Resume PENDING, revision=1, owner=current_user;
-:Enqueue parse(resume_id, expected_revision=1);
-:202 Accepted;
+:INSERT Resume PENDING revision=1 nếu chưa tồn tại;
+if (same idempotency key đã tồn tại?) then (Có)
+  :Dùng lại cùng Resume, không tạo duplicate;
+endif
+:COMMIT persistence;
+:Best-effort enqueue parse(resume_id,current_revision);
+if (dispatcher lỗi?) then (Có)
+  :Log dispatch failure;
+  :Giữ Resume PENDING;
+  :Recovery sweeper sẽ re-dispatch current_revision;
+endif
+:202 ResumeUploadResponse;
 
-:Worker conditional claim PROCESSING
-WHERE revision=expected_revision;
-if (rowcount=0?) then (Có)
-  :Stale task -> discard;
+:Worker nhận resume_id, expected_revision;
+:Exclusive CAS claim:
+UPDATE -> PROCESSING
+WHERE revision=expected_revision
+AND parsing_status=PENDING;
+if (claim rowcount=0?) then (Có)
+  :Stale/duplicate task -> discard;
   stop
 endif
 :Extract text;
@@ -26,20 +41,32 @@ if (không có text?) then (Có)
   if (OCR Advanced bật?) then (Có)
     :OCR fallback;
   else (Không)
-    :Conditional UPDATE FAILED + error
-WHERE revision=expected_revision;
+    :CAS FAILED + error
+WHERE revision=expected_revision
+AND parsing_status=PROCESSING;
     stop
   endif
 endif
 :Parse entities/sections/skills;
 :Map Skill Taxonomy seed;
 :Generate embedding + model + preprocessing version;
-:Conditional transaction persist aggregate + PARSED
-WHERE revision=expected_revision;
-if (terminal rowcount=0?) then (Có)
-  :Stale result -> discard;
-else (Không)
-  :PARSED;
+:BEGIN terminal transaction;
+:Lock/check Resume vẫn PROCESSING
+và revision=expected_revision;
+if (check fail?) then (Có)
+  :ROLLBACK + stale/duplicate discard;
+  stop
 endif
+:Persist candidate_profile/skills/exp/edu + embedding;
+:CAS PARSED
+WHERE revision=expected_revision
+AND parsing_status=PROCESSING;
+:COMMIT;
+:Worker không tăng revision khi commit;
 stop
+
+legend bottom
+Recovery sweeper chỉ scan PENDING quá grace window và re-dispatch current revision.
+Không reset PROCESSING timeout trong MVP nếu chưa có lease/attempt token.
+endlegend
 @enduml
