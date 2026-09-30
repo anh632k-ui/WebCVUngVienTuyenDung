@@ -74,7 +74,7 @@
 - [x] System/Component Architecture có Idempotency Guard + Parse Recovery Sweeper + delete-aware CAS Guard.
 - [x] CDM/LDM/PDM/ERD dùng 0..1 CandidateProfile.
 - [x] Traceability có seed, concurrency, batch, role transition, auth Advanced, idempotency, recovery và FR-46 soft-delete race guard.
-- [ ] GitHub Actions PASS trên HEAD cuối cùng reliability lock.
+- [x] GitHub Actions PASS trên reliability-lock baseline; mọi commit docs tiếp theo phải làm CI chạy lại và PASS trên HEAD mới trước merge.
 
 ## Runtime validation bắt buộc trước code nghiệp vụ
 - [ ] Duplicate CV parse task cùng expected_revision: đúng 1 claim success.
