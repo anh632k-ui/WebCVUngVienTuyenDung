@@ -17,7 +17,7 @@
 - **FR-12** Human-in-the-loop: tăng resume revision trong direct mutation, regenerate embedding, invalidate Match.
 - **FR-13** Quản lý kho CV theo ownership.
 - **FR-14** Xem parse status.
-- **FR-15** Parse/reparse worker dùng `expected_revision`; claim độc quyền chỉ từ PENDING và terminal write chỉ từ PROCESSING của cùng revision. Worker commit kết quả không tăng revision thêm.
+- **FR-15** Parse/reparse worker dùng `expected_revision`; claim độc quyền chỉ từ PENDING và terminal write chỉ từ PROCESSING của cùng revision; cả claim/terminal yêu cầu Resume chưa soft-delete. Worker commit kết quả không tăng revision thêm.
 
 ## C. JD/NLP
 - **FR-16** Chỉ HR tạo JD mới; recruiter_id=current HR.
@@ -28,7 +28,7 @@
 - **FR-21** Review criteria; direct mutation tăng revision trước input version mới + invalidate Match.
 - **FR-22** Update weights; mutation tăng revision + invalidate Match.
 - **FR-23** Enforce status transition matrix và readiness trước ACTIVE.
-- **FR-24** JD parse worker dùng `expected_revision`; claim độc quyền PENDING->PROCESSING, terminal chỉ từ PROCESSING cùng revision; worker terminal commit không tăng revision.
+- **FR-24** JD parse worker dùng `expected_revision`; claim độc quyền PENDING->PROCESSING, terminal chỉ từ PROCESSING cùng revision; cả claim/terminal yêu cầu JD chưa soft-delete; worker terminal commit không tăng revision.
 
 ## D. Matching
 - **FR-25** Candidate self-match private.
@@ -41,9 +41,9 @@
 - **FR-32** Match visibility strict ownership.
 - **FR-33** Leaderboard HR chỉ CV kho HR.
 - **FR-34** Invalidation tăng generation + clear stale payload + refresh revision snapshots.
-- **FR-35** Match worker claim độc quyền PENDING->PROCESSING bằng expected generation + snapshot revisions + linked resource revisions; terminal COMPLETED/FAILED chỉ từ PROCESSING với cùng expected values.
+- **FR-35** Match worker claim độc quyền PENDING->PROCESSING bằng expected generation + snapshot revisions + linked resource revisions; terminal COMPLETED/FAILED chỉ từ PROCESSING với cùng expected values; linked Resume/JD phải vẫn chưa soft-delete.
 - **FR-36** Batch validation all-or-nothing + atomic prepare transaction; dispatch failure trả 503 và retry-safe.
-- **FR-37** Danh sách current matches theo ownership.
+- **FR-37** Danh sách current matches theo ownership và chỉ resource chưa soft-delete.
 
 ## E. Supporting / Advanced
 - **FR-38** `GET /skills` taxonomy lookup.
@@ -56,3 +56,4 @@
 - **FR-43** `POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID; retry cùng logical request không tạo duplicate resource.
 - **FR-44** DB/resource persistence commit trước parse dispatch; dispatcher lỗi sau commit để resource PENDING và không rollback resource đã tạo.
 - **FR-45** Parse Recovery Sweeper startup/periodic re-dispatch Resume/JD PENDING quá grace window bằng current revision; không tăng revision và không tự reset PROCESSING trong MVP.
+- **FR-46** Concurrent soft-delete phải làm parse/match worker claim hoặc terminal CAS thất bại; không worker nào được ghi output mới vào Resume/JD đã soft-delete, và current matching/leaderboard phải loại resource đã xóa.
