@@ -19,8 +19,8 @@ alt invalid
   Service --> API : 422
 else valid
   Service -> DB : BEGIN
-  Service -> DB : save criteria + verified=true + revision++
-  Service -> DB : invalidate Match generation++ + clear stale payload
+  Service -> DB : save criteria + verified=true + job.revision++
+  Service -> DB : invalidate Matches:\ngeneration++; refresh resume_revision/job_revision snapshots;\nPENDING + clear stale payload
   Service -> DB : COMMIT
   Service --> API : 200 JobCriteriaResponse
 end
@@ -34,11 +34,11 @@ alt invalid
   Service --> API : 422
 else valid
   Service -> DB : BEGIN
-  Service -> DB : update weights + revision++
-  Service -> DB : invalidate Match generation++ + clear stale payload
+  Service -> DB : update weights + job.revision++
+  Service -> DB : invalidate Matches:\ngeneration++; refresh resume_revision/job_revision snapshots;\nPENDING + clear stale payload
   Service -> DB : COMMIT
   opt recalculate=true
-    Service -> Dispatcher : dispatch tasks with new generation/revisions
+    Service -> Dispatcher : dispatch tasks with committed generation/revisions
   end
   Service --> API : 200 JobResponse
 end
