@@ -11,6 +11,10 @@ start
 hoặc Admin;
 if (Có quyền?) then (Có)
   :Query match_results status=COMPLETED;
+  if (Caller là HR?) then (Có)
+    :JOIN resumes và filter
+    owner_user_id=current_user.id;
+  endif
   :Filter min_score nếu có;
   :ORDER BY overall_score DESC;
   :Trả rank + scores + candidate summary;
@@ -24,10 +28,22 @@ if (HR chỉnh trọng số?) then (Có)
   :PUT /api/v1/jobs/{id}/weights;
   if (Mỗi weight trong [0,1]
 và tổng=1.00?) then (Có)
+    :BEGIN TRANSACTION;
     :UPDATE job_descriptions weights;
-    if (Chọn tính lại?) then (Có)
-      :Đưa match hiện có về PENDING;
+    :Invalidate mọi match_results của JD:
+    status=PENDING,
+    scores=NULL,
+    matched_skills=[], missing_skills=[],
+    gap_analysis_summary=NULL,
+    error_message=NULL,
+    calculated_at=NULL,
+    updated_at=NOW();
+    :COMMIT;
+    if (recalculate=true?) then (Có)
       :Queue recalculate;
+    else (Không)
+      :Giữ PENDING, không xuất hiện trên leaderboard
+      cho tới lần tính lại tiếp theo;
     endif
     :200 OK;
   else (Không)
