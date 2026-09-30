@@ -51,9 +51,9 @@
 - **BR-MATCH-08** Overall = weighted Skill/Semantic/Experience.
 - **BR-MATCH-09** Candidate đọc Match CV mình; HR chỉ đọc khi cả JD+CV thuộc HR; Admin override.
 - **BR-MATCH-10** Leaderboard HR chỉ CV kho HR.
-- **BR-MATCH-11** Invalidate: tăng generation, PENDING, clear scores/evidence/error/provenance/calculated_at.
+- **BR-MATCH-11** Invalidate trong cùng transaction: tăng generation, refresh `resume_revision/job_revision` snapshot theo resource hiện tại, PENDING, clear scores/evidence/error/embedding provenance/calculated_at.
 - **BR-MATCH-12** Trigger success trả PENDING; QUEUED không phải domain status.
-- **BR-MATCH-13** Match có `generation>=1`, snapshot `resume_revision`, `job_revision`. Worker phải compare generation+revisions trước PROCESSING và trước terminal write; stale task discard.
+- **BR-MATCH-13** Match có `generation>=1`, snapshot `resume_revision`, `job_revision`. Worker phải compare **cả row snapshot và linked resource revisions** với expected values trước PROCESSING và terminal write; stale task discard.
 - **BR-MATCH-14** Batch validate all-or-nothing trước mutation; upsert rows trong một DB transaction.
 - **BR-MATCH-15** Dispatch xảy ra sau DB commit. Dispatcher failure -> `503 TASK_DISPATCH_FAILED`; prepared PENDING rows retry-safe nhờ generation.
 - **BR-MATCH-16** Error-state: FAILED bắt buộc có `error_message`; PENDING/PROCESSING/COMPLETED bắt buộc `error_message=NULL`.
