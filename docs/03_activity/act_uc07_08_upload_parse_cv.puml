@@ -16,7 +16,9 @@ endif
 :Lookup deterministic Resume id;
 if (đã tồn tại?) then (Có)
   :Không ghi đè file/storage;
-  :Best-effort re-dispatch nếu vẫn PENDING;
+  if (existing vẫn PENDING và chưa xóa?) then (Có)
+    :Best-effort re-dispatch current_revision;
+  endif
   :202 cùng Resume hiện hữu;
   stop
 endif
@@ -32,12 +34,12 @@ endif
 :202 ResumeUploadResponse;
 
 :Worker nhận resume_id, expected_revision;
-:Exclusive CAS claim:
-UPDATE -> PROCESSING
+:Exclusive CAS claim PROCESSING
 WHERE revision=expected_revision
-AND parsing_status=PENDING;
+AND parsing_status=PENDING
+AND is_deleted=FALSE;
 if (claim rowcount=0?) then (Có)
-  :Stale/duplicate task -> discard;
+  :Stale/duplicate/deleted task -> discard;
   stop
 endif
 :Extract text;
@@ -47,7 +49,8 @@ if (không có text?) then (Có)
   else (Không)
     :CAS FAILED + error
 WHERE revision=expected_revision
-AND parsing_status=PROCESSING;
+AND parsing_status=PROCESSING
+AND is_deleted=FALSE;
     stop
   endif
 endif
@@ -55,22 +58,25 @@ endif
 :Map Skill Taxonomy seed;
 :Generate embedding + model + preprocessing version;
 :BEGIN terminal transaction;
-:Lock/check Resume vẫn PROCESSING
-và revision=expected_revision;
+:Lock/check Resume vẫn PROCESSING,
+revision=expected_revision,
+is_deleted=FALSE;
 if (check fail?) then (Có)
-  :ROLLBACK + stale/duplicate discard;
+  :ROLLBACK + stale/duplicate/deleted discard;
   stop
 endif
 :Persist candidate_profile/skills/exp/edu + embedding;
 :CAS PARSED
 WHERE revision=expected_revision
-AND parsing_status=PROCESSING;
+AND parsing_status=PROCESSING
+AND is_deleted=FALSE;
 :COMMIT;
 :Worker không tăng revision khi commit;
 stop
 
 legend bottom
-Recovery sweeper chỉ scan PENDING quá grace window và re-dispatch current revision.
+Recovery sweeper chỉ scan PENDING + is_deleted=FALSE quá grace window và re-dispatch current revision.
 Không reset PROCESSING timeout trong MVP nếu chưa có lease/attempt token.
+Concurrent soft-delete làm terminal CAS fail/rollback.
 endlegend
 @enduml
