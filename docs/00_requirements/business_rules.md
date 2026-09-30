@@ -20,8 +20,10 @@
 - **BR-CV-08** Soft delete mặc định; query nghiệp vụ bỏ `is_deleted=true`. Soft-delete phải chặn claim/terminal parse write mới.
 - **BR-CV-09** Candidate/HR chỉ thấy CV kho mình.
 - **BR-CV-10** Khi revision CV đổi, mọi Match liên quan phải invalidate và tăng generation.
-- **BR-CV-11** `POST /resumes/upload` bắt buộc `Idempotency-Key` UUID. Resource id được derive deterministic từ actor+route+key; retry cùng key không tạo Resume thứ hai. Existing resource phải được trả trước create side-effect mới; storage retry dùng no-overwrite/put-if-absent.
-- **BR-CV-12** Sau DB commit mới dispatch parse. Nếu dispatcher lỗi, Resume vẫn PENDING và recovery sweeper re-dispatch `(resume_id,current_revision)` mà không tăng revision. Duplicate delivery an toàn nhờ BR-CV-07.
+- **BR-CV-11** `POST /resumes/upload` bắt buộc `Idempotency-Key` UUID. Resource id derive bằng UUIDv5 với application namespace cố định `bd7b1f30-b2de-549c-a8dd-8d742ee5bc12`, actor id, canonical route và key.
+- **BR-CV-12** Resume create fingerprint là SHA-256 lowercase hex của raw file bytes. `resumes.create_request_fingerprint` persist fingerprint. Existing deterministic id + cùng fingerprint => return existing; fingerprint khác => `409 IDEMPOTENCY_KEY_REUSED`.
+- **BR-CV-13** Storage create key phải deterministic theo resume id (`resumes/{resume_id}/source`) và put-if-absent. Nếu object tồn tại nhưng DB row chưa có, server phải hash object: cùng fingerprint => reuse/retry DB insert; khác => 409 và không overwrite. DB insert race phải re-read row rồi compare fingerprint.
+- **BR-CV-14** Sau DB commit mới dispatch parse. Nếu dispatcher lỗi, Resume vẫn PENDING và recovery sweeper re-dispatch `(resume_id,current_revision)` mà không tăng revision. Duplicate delivery an toàn nhờ BR-CV-07.
 
 ## Skill Taxonomy
 - **BR-SKILL-01** `normalized_name` unique; `skill_kind=HARD|SOFT`.
@@ -41,8 +43,9 @@
 - **BR-JOB-09** Criteria/weights/direct re-embedding mutation làm scoring input đổi phải tăng JD revision và invalidate Match.
 - **BR-JOB-10** Status transitions qua API: DRAFT->ACTIVE; ACTIVE->DRAFT|CLOSED; CLOSED->DRAFT|ACTIVE; same-state idempotent. DRAFT->CLOSED invalid (`422`).
 - **BR-JOB-11** Parse task mang `expected_revision`. Claim độc quyền chỉ khi `revision=expected_revision AND parsing_status='PENDING' AND is_deleted=false`; terminal SUCCESS/FAILED chỉ từ `PROCESSING` của cùng revision và vẫn `is_deleted=false`. `rowcount=0` => stale/duplicate/deleted task discard.
-- **BR-JOB-12** `POST /jobs` bắt buộc `Idempotency-Key` UUID; server derive deterministic JD id từ actor+route+key để retry không tạo JD thứ hai.
-- **BR-JOB-13** Sau DB commit mới dispatch parse. Dispatcher lỗi không rollback resource; JD giữ PENDING và recovery sweeper re-dispatch current revision, không tăng revision.
+- **BR-JOB-12** `POST /jobs` bắt buộc `Idempotency-Key` UUID và cùng stable UUIDv5 namespace như Resume. `job_descriptions.create_request_fingerprint` persist SHA-256 của canonical validated create payload sau defaults.
+- **BR-JOB-13** Job canonicalization v1: Unicode NFC; trim outer whitespace title/job_level/location; empty location -> null; raw_content normalize CRLF/CR -> LF; weights serialize fixed 3 decimals; canonical UTF-8 JSON với key order cố định, không whitespace thừa. Same deterministic id + cùng fingerprint => return existing; khác => `409 IDEMPOTENCY_KEY_REUSED`. Concurrent PK conflict phải re-read rồi compare fingerprint.
+- **BR-JOB-14** Sau DB commit mới dispatch parse. Dispatcher lỗi không rollback resource; JD giữ PENDING và recovery sweeper re-dispatch current revision, không tăng revision.
 
 ## Matching
 - **BR-MATCH-01** Precondition: Resume/JD PARSED, cùng embedding model + preprocessing version, criteria verified, >=1 job_skill, quyền hợp lệ và cả Resume/JD chưa soft-delete.
@@ -69,11 +72,14 @@
 - **BR-AI-04** Thay model/preprocessing tạo computation/input version mới: service tăng resource revision trước enqueue/re-embedding; worker đúng expected revision không tăng revision khi terminal commit.
 
 ## Reliability / Recovery
-- **BR-REL-01** `POST /resumes/upload` và `POST /jobs` dùng `Idempotency-Key` để network/client retry không tạo duplicate resource.
-- **BR-REL-02** Parse dispatcher failure sau commit không biến persistence thành failure; resource giữ PENDING và được internal recovery re-dispatch.
-- **BR-REL-03** Recovery sweeper chỉ re-dispatch resource `PENDING`, `is_deleted=false`, quá grace window; không mutate revision/state trước enqueue.
-- **BR-REL-04** Không tự reset stale `PROCESSING` về PENDING trong MVP; worker-crash lease recovery cần attempt/lease token riêng để tránh resurrect worker race.
-- **BR-REL-05** Concurrent soft-delete phải làm worker claim/terminal CAS thất bại; async worker không được ghi parsed/match output mới vào resource đã xóa.
+- **BR-REL-01** UUIDv5 application namespace cho create idempotency là constant `bd7b1f30-b2de-549c-a8dd-8d742ee5bc12`; không generate per deployment/startup.
+- **BR-REL-02** `POST /resumes/upload` và `POST /jobs` dùng `Idempotency-Key` + persisted SHA-256 fingerprint để network/client retry không tạo duplicate hoặc nhận nhầm payload.
+- **BR-REL-03** Reuse cùng key nhưng fingerprint khác phải trả `409 IDEMPOTENCY_KEY_REUSED`; không được silently trả resource cũ cho payload khác.
+- **BR-REL-04** Parse dispatcher failure sau commit không biến persistence thành failure; resource giữ PENDING và được internal recovery re-dispatch.
+- **BR-REL-05** Recovery sweeper chỉ re-dispatch resource `PENDING`, `is_deleted=false`, quá grace window; không mutate revision/state trước enqueue.
+- **BR-REL-06** Không tự reset stale `PROCESSING` về PENDING trong MVP; worker-crash lease recovery cần attempt/lease token riêng để tránh resurrect worker race.
+- **BR-REL-07** Concurrent soft-delete phải làm worker claim/terminal CAS thất bại; async worker không được ghi parsed/match output mới vào resource đã xóa.
+- **BR-REL-08** Resume storage orphan reconciliation phải verify SHA-256 bytes trước reuse; mismatch trả 409 và không overwrite. Concurrent deterministic-PK create loser phải re-read persisted row và compare fingerprint.
 
 ## Data
 - **BR-DATA-01** TIMESTAMPTZ.
