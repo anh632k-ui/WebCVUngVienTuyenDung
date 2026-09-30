@@ -25,6 +25,7 @@ Nguồn vật lý cuối cùng là `schema.sql`. Tài liệu này giải thích 
 | `skill_kind` | `HARD` hoặc `SOFT` |
 | `category` | Nhóm chi tiết: Language/Framework/Database/DevOps/Communication... |
 | `description` | Mô tả/tri thức ngắn phục vụ recommendation |
+| `created_at`,`updated_at` | Audit timestamp |
 
 ## 3. `resumes`
 
@@ -102,19 +103,19 @@ Unique `(resume_id, skill_id)`.
 | `job_level` | Intern/Fresher/Junior/Middle/Senior/Lead hoặc text hợp lệ |
 | `location` | Địa điểm |
 | `raw_content` | JD nguyên bản |
-| `min_experience_years` | Kinh nghiệm tối thiểu |
-| `education_requirement` | Yêu cầu học vấn dạng text chuẩn hóa |
+| `min_experience_years` | Kinh nghiệm tối thiểu sau parse/review criteria |
+| `education_requirement` | Yêu cầu học vấn dạng text sau parse/review |
 | `job_embedding` | vector(1024) |
 | `embedding_model` | Model/version embedding |
 | `parsing_status` | PENDING/PROCESSING/PARSED/FAILED |
 | `parsing_error_message` | Lỗi NLP JD |
-| `is_criteria_verified` | HR đã Human-in-the-loop criteria |
+| `is_criteria_verified` | HR/Admin đã Human-in-the-loop criteria |
 | `w_skill`,`w_semantic`,`w_experience` | Trọng số tổng = 1 |
 | `status` | DRAFT/ACTIVE/CLOSED |
 | `is_deleted`,`deleted_at` | Soft delete |
 | `parsed_at` | Thời điểm parse thành công |
 
-Business status và parsing status là hai state độc lập. Khi `parsing_status=PARSED`, schema yêu cầu `job_embedding`, `embedding_model`, `parsed_at`. JD chỉ được `ACTIVE` khi đã `PARSED` **và** `is_criteria_verified=true`. Khi soft-delete phải có `deleted_at`.
+Business status và parsing status là hai state độc lập. Khi `parsing_status=PARSED`, schema yêu cầu `job_embedding`, `embedding_model`, `parsed_at`. JD chỉ được `ACTIVE` khi đã `PARSED` và `is_criteria_verified=true`; service/API còn bắt buộc JD có ít nhất một `job_skill` hợp lệ trước khi ACTIVE hoặc matching. Khi soft-delete phải có `deleted_at`.
 
 ## 9. `job_skills`
 
@@ -125,7 +126,7 @@ Business status và parsing status là hai state độc lập. Khi `parsing_stat
 | `importance` | MANDATORY/OPTIONAL |
 | `min_years_required` | Số năm yêu cầu riêng cho skill nếu xác định được |
 
-Unique `(job_id, skill_id)`.
+Unique `(job_id, skill_id)`. Child-count `>=1` trước ACTIVE/matching là invariant nghiệp vụ do service/API kiểm tra; PostgreSQL CHECK trên bảng cha không thể kiểm trực tiếp số dòng con một cách an toàn.
 
 ## 10. `match_results`
 
