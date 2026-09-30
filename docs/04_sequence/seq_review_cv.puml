@@ -10,6 +10,7 @@ participant "Resume API" as API
 participant "Resume Service" as Service
 database "PostgreSQL" as DB
 participant "Embedding Service" as Embedding
+participant "Task Dispatcher" as Dispatcher
 
 User -> FE : mở CV đã PARSED
 FE -> API : GET /resumes/{id}
@@ -27,9 +28,14 @@ Service -> Service : validate taxonomy IDs/dates/duplicates
 Service -> DB : BEGIN; update profile; replace child rows
 Service -> Embedding : rebuild canonical CV embedding
 Embedding --> Service : vector + model id
-Service -> DB : update embedding + is_manually_edited=true; COMMIT
+Service -> DB : update embedding + is_manually_edited=true
+Service -> DB : invalidate match_results of resume\nstatus=PENDING; clear scores/evidence/error/calculated_at
+Service -> DB : COMMIT
 DB --> Service : committed
-Service --> API : updated detail/version
+opt policy enqueues immediate recalculation
+  Service -> Dispatcher : enqueue affected match_ids
+end
+Service --> API : updated detail
 API --> FE : 200
 FE --> User : hiển thị dữ liệu mới
 
