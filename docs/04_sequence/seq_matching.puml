@@ -29,22 +29,24 @@ else not ready
     is_criteria_verified=true
     >=1 job_skill
     Candidate requires JD ACTIVE
+    HR requires JD owned by HR
+    and CVs owned by same HR
   end note
   Service --> API : precondition error
   API --> FE : 422
 else valid
   loop each resume_id
-    Service -> DB : UPSERT match_results(PENDING), reset stale scores/error
+    Service -> DB : UPSERT match_results(PENDING)\nclear scores/evidence/error/calculated_at\nupdated_at=NOW()
     DB --> Service : match_id
     Service -> Dispatcher : enqueue_match(match_id)
     Dispatcher -> Queue : task
   end
-  Service --> API : match_ids[]
-  API --> FE : 202 QUEUED
+  Service --> API : {job_id, match_ids[], total_matches, status=PENDING}
+  API --> FE : 202 Accepted
 end
 
 Queue -> Worker : match_id
-Worker -> DB : UPDATE status=PROCESSING
+Worker -> DB : UPDATE status=PROCESSING, updated_at=NOW()
 Worker -> DB : load verified JD criteria + job skills\n+ CV skills + embeddings + experience
 DB --> Worker : matching input
 Worker -> Engine : compute hybrid-v1(input)
@@ -54,15 +56,22 @@ Engine -> Engine : experience score
 Engine -> Engine : weighted overall + gaps
 Engine --> Worker : scores + evidence
 alt success
-  Worker -> DB : UPDATE scores/evidence/status=COMPLETED\nalgorithm_version=hybrid-v1, calculated_at
+  Worker -> DB : UPDATE scores/evidence/status=COMPLETED\nalgorithm_version=hybrid-v1, calculated_at, updated_at
 else failure
-  Worker -> DB : UPDATE status=FAILED/error_message
+  Worker -> DB : UPDATE status=FAILED/error_message/updated_at
 end
 
 FE -> API : GET /matching/{match_id}
 API -> Service : authorize result
-Service -> DB : SELECT match
-DB --> Service : result/status
+Service -> DB : SELECT match + resume + job ownership
+DB --> Service : result/status/ownership
+alt Candidate
+  Service -> Service : require resume.owner_user_id=current_user.id
+else HR
+  Service -> Service : require job.recruiter_id=current_user.id\nand resume.owner_user_id=current_user.id
+else Admin
+  Service -> Service : allow
+end
 Service --> API : result DTO
 API --> FE : 200
 
