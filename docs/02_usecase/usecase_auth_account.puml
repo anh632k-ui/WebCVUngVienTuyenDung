@@ -13,8 +13,8 @@ actor Admin
 
 rectangle "Phân hệ Auth & Account" {
   usecase "UC01 Đăng ký" as UC01
-  usecase "UC02 Đăng nhập" as UC02
-  usecase "UC03 Quản lý phiên\nRefresh / Logout" as UC03
+  usecase "UC02 Đăng nhập\nAccess Token JWT" as UC02
+  usecase "UC03 Refresh / Logout\n[Advanced]" as UC03
   usecase "UC04 Quản lý profile" as UC04
   usecase "UC05 Đổi mật khẩu" as UC05
   usecase "UC06 Quản trị user" as UC06
@@ -23,14 +23,16 @@ rectangle "Phân hệ Auth & Account" {
 
 Guest --> UC01
 Guest --> UC02
-User --> UC03
 User --> UC04
 User --> UC05
 Admin --> UC06
 
-UC03 ..> AUTHZ : <<include>>
 UC04 ..> AUTHZ : <<include>>
 UC05 ..> AUTHZ : <<include>>
 UC06 ..> AUTHZ : <<include>>
 
+note right of UC03
+Advanced, không nằm trong OpenAPI MVP.
+Khi bật mới dùng HttpOnly refresh cookie.
+end note
 @enduml
