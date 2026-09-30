@@ -6,7 +6,8 @@ title ACTIVITY - UC15 MATCHING SINGLE/BATCH - EXCLUSIVE CAS
 start
 :POST /api/v1/matching/calculate;
 :Load JD + toàn bộ Resume IDs;
-:Validate ownership/readiness/model+preprocessing cho toàn batch;
+:Validate ownership/readiness/model+preprocessing
++ Resume/JD is_deleted=FALSE cho toàn batch;
 if (có bất kỳ item invalid?) then (Có)
   :403/404/422;
   :Không mutate Match nào;
@@ -32,25 +33,28 @@ endif
 :Worker nhận expected generation/revisions;
 :Exclusive CAS claim PENDING -> PROCESSING
 chỉ khi generation + snapshot revisions
-+ linked Resume/JD revisions đều khớp expected;
++ linked Resume/JD revisions đều khớp expected
++ linked resources is_deleted=FALSE;
 if (claim rowcount=0?) then (Có)
-  :Stale/duplicate task -> discard;
+  :Stale/duplicate/deleted task -> discard;
   stop
 endif
 :Load Resume/JD + criteria;
-:Re-check model/preprocessing;
-if (version mismatch?) then (Có)
+:Re-check model/preprocessing + is_deleted=FALSE;
+if (version/deleted mismatch?) then (Có)
   :CAS FAILED chỉ khi status=PROCESSING
-và expected generation/revisions vẫn khớp;
+và expected generation/revisions vẫn khớp
+và linked resources chưa xóa;
   stop
 endif
 :Compute Skill/Semantic/Experience/Overall;
 :Conditional terminal CAS COMPLETED
 WHERE status=PROCESSING
 AND generation/snapshots/linked revisions
-vẫn khớp expected;
+vẫn khớp expected
+AND linked resources is_deleted=FALSE;
 if (rowcount=0?) then (Có)
-  :Stale/duplicate result -> discard;
+  :Stale/duplicate/deleted result -> discard;
 else (Không)
   :Persist scores/evidence/provenance/calculated_at;
 endif
@@ -58,6 +62,7 @@ stop
 
 legend bottom
 Duplicate queue delivery cùng generation chỉ một worker claim được.
-FAILED/COMPLETED đều yêu cầu current status PROCESSING, tránh race terminal state.
+FAILED/COMPLETED đều yêu cầu current status PROCESSING.
+Concurrent soft-delete làm terminal CAS thất bại, không ghi output mới vào resource đã xóa.
 endlegend
 @enduml
