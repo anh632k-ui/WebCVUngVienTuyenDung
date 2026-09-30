@@ -35,6 +35,9 @@ Không đoán số năm từ title/description khi không có date đủ tin c�
 ## Gap
 Missing MANDATORY=CRITICAL; OPTIONAL=MINOR. Skill có nhưng thiếu years có thể PARTIAL evidence.
 
+## Revision semantics
+Resume/JD `revision` là version của input/computation request. Service tăng revision **trước** computation mới khi input đổi. Worker của chính `expected_revision` không tăng revision khi commit output.
+
 ## Provenance
 COMPLETED Match lưu:
 - `algorithm_version`;
@@ -50,15 +53,24 @@ Trong transaction invalidation phải **refresh cả hai snapshot** của Match:
 - `job_revision = job_descriptions.revision` hiện tại.
 Non-COMPLETED không giữ score/evidence/embedding provenance/calculated_at.
 
-## Stale-worker protection
-Mỗi enqueue dùng generation và revision snapshots đang lưu trên Match. Worker chỉ commit nếu đồng thời:
-- `match.generation==expected_generation`;
-- `match.resume_revision==expected_resume_revision`;
-- `match.job_revision==expected_job_revision`;
-- linked `resume.revision==expected_resume_revision`;
-- linked `job.revision==expected_job_revision`.
+## Exclusive stale/duplicate-worker protection
+Queue được phép delivery cùng task nhiều lần. Safety không dựa vào giả định exactly-once.
 
-Phải re-check ngay lúc terminal DB write. Nếu conditional UPDATE rowcount=0, task stale và kết quả bị bỏ.
+### Claim CAS
+Chỉ một worker được claim current generation:
+- `status = PENDING`;
+- `generation = expected_generation`;
+- stored `resume_revision/job_revision` = expected snapshots;
+- linked Resume/JD current revisions = expected snapshots.
+
+Worker phải atomic conditional update `PENDING -> PROCESSING`. Chỉ `rowcount=1` được tính score. Duplicate/stale delivery `rowcount=0` phải discard.
+
+### Terminal CAS
+COMPLETED hoặc FAILED chỉ được ghi khi:
+- `status = PROCESSING`;
+- generation + stored snapshots + linked resource revisions vẫn khớp expected.
+
+Phải re-check ngay tại terminal DB write. Nếu `rowcount=0`, result bị discard. Vì chỉ một worker claim PENDING và cả FAILED/COMPLETED đều yêu cầu PROCESSING của generation đó, hai duplicate worker không được race terminal state.
 
 ## Batch semantics
 1. validate toàn bộ resume_ids;
