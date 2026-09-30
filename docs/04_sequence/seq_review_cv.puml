@@ -27,11 +27,11 @@ Service -> Embedding : rebuild canonical text
 Embedding --> Service : vector + model + preprocessing_version
 Service -> DB : BEGIN
 Service -> DB : update aggregate + embedding + is_manually_edited\nresume.revision++
-Service -> DB : invalidate Matches\ngeneration++, PENDING, clear stale payload/provenance
+Service -> DB : invalidate Matches:\ngeneration++; refresh resume_revision/job_revision snapshots;\nPENDING + clear stale payload/provenance
 Service -> DB : COMMIT
-DB --> Service : new revision + affected match ids
+DB --> Service : new revision + affected match ids + committed generations
 opt recalculate policy
-  Service -> Dispatcher : dispatch with new generation/revisions
+  Service -> Dispatcher : dispatch with committed generation/revisions
 end
 Service --> API : ResumeDetailResponse
 API --> FE : 200
