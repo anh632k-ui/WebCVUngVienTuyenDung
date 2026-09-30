@@ -1,55 +1,53 @@
-# 04. YÊU CẦU CHỨC NĂNG
+# YÊU CẦU CHỨC NĂNG
 
-## Nhóm A — Xác thực & tài khoản
+## A. Account
+- **FR-01** Guest đăng ký Candidate/HR.
+- **FR-02** Login nhận JWT Access Token.
+- **FR-03 [Advanced]** Refresh Token Rotation/HttpOnly session + server-side logout khi module được bật; không thuộc OpenAPI MVP.
+- **FR-04** Xem/cập nhật `/users/me`.
+- **FR-05** Đổi mật khẩu.
+- **FR-06** Admin list/lock/unlock/change role; role change bị 409 nếu user còn resource nghiệp vụ chưa xóa.
 
-- **FR-01**: Guest đăng ký tài khoản Candidate hoặc HR bằng email, mật khẩu, họ tên, số điện thoại tùy chọn.
-- **FR-02**: Người dùng đăng nhập bằng email/mật khẩu và nhận Access Token.
-- **FR-03**: Hệ thống hỗ trợ refresh/logout session nếu cơ chế Refresh Token được bật.
-- **FR-04**: Người dùng xem/cập nhật profile tài khoản của chính mình.
-- **FR-05**: Người dùng đổi mật khẩu.
-- **FR-06**: Admin xem/lọc danh sách user, khóa/mở khóa và thay đổi role với ràng buộc chống tự khóa/tự hạ quyền.
+## B. CV/NLP
+- **FR-07** Upload PDF/DOCX <=5MB.
+- **FR-08** Lưu file an toàn + Resume PENDING revision=1.
+- **FR-09** Extract text/entities/skills/experience/education.
+- **FR-10** Normalize taxonomy + embedding lưu model/preprocessing version.
+- **FR-11** Xem detail; candidate_profile có thể null trước PARSED.
+- **FR-12** Human-in-the-loop: tăng resume revision, regenerate embedding, invalidate Match.
+- **FR-13** Quản lý kho CV theo ownership.
+- **FR-14** Xem parse status.
+- **FR-15** Parse/reparse worker phải dùng expected_revision để chống stale commit.
 
-## Nhóm B — CV & NLP
+## C. JD/NLP
+- **FR-16** Chỉ HR tạo JD mới; recruiter_id=current HR.
+- **FR-17** HR/Admin quản lý JD theo quyền.
+- **FR-18** Candidate xem JD ACTIVE.
+- **FR-19** Parse JD: experience/education/skill + MANDATORY/OPTIONAL.
+- **FR-20** Sinh embedding model + preprocessing version.
+- **FR-21** Review criteria; mutation tăng revision + invalidate Match.
+- **FR-22** Update weights; mutation tăng revision + invalidate Match.
+- **FR-23** Enforce status transition matrix và readiness trước ACTIVE.
+- **FR-24** JD parse worker dùng expected_revision.
 
-- **FR-07**: Candidate/HR upload CV PDF hoặc DOCX.
-- **FR-08**: Hệ thống kiểm tra file, lưu file và tạo record Resume.
-- **FR-09**: Hệ thống bóc text, phân đoạn, trích xuất thông tin cá nhân nghề nghiệp, kỹ năng, kinh nghiệm và học vấn.
-- **FR-10**: Hệ thống chuẩn hóa skill theo taxonomy và sinh embedding CV.
-- **FR-11**: Người có quyền xem chi tiết dữ liệu đã bóc tách.
-- **FR-12**: Người có quyền chỉnh sửa dữ liệu AI bóc sai/thiếu; nếu thay đổi ảnh hưởng matching thì các Match hiện hành liên quan phải được invalidate trước khi dùng lại.
-- **FR-13**: Candidate/HR quản lý danh sách CV thuộc kho của chính mình: tìm kiếm, lọc, tải file gốc, xóa mềm.
-- **FR-14**: Người dùng xem trạng thái phân tích CV.
+## D. Matching
+- **FR-25** Candidate self-match private.
+- **FR-26** HR batch match JD mình + CV kho mình.
+- **FR-27** Skill Score.
+- **FR-28** Semantic Score cosine; BM25 diagnostic v1.
+- **FR-29** Experience Score theo interval định lượng, không đoán missing dates.
+- **FR-30** Overall Score.
+- **FR-31** Lưu matched/missing/gap evidence.
+- **FR-32** Match visibility strict ownership.
+- **FR-33** Leaderboard HR chỉ CV kho HR.
+- **FR-34** Invalidation tăng generation + clear stale payload.
+- **FR-35** Worker dùng generation + resource revision guard; stale worker không được terminal write.
+- **FR-36** Batch validation all-or-nothing + atomic prepare transaction; dispatch failure trả 503 và retry-safe.
+- **FR-37** Danh sách current matches theo ownership.
 
-## Nhóm C — JD & NLP
-
-- **FR-15**: HR tạo JD với tiêu đề, cấp bậc, địa điểm, nội dung và trọng số matching.
-- **FR-16**: HR xem/cập nhật/xóa mềm/đóng-mở JD của mình.
-- **FR-17**: Candidate xem danh sách/chi tiết JD đang ACTIVE.
-- **FR-18**: Hệ thống phân tích JD, trích kinh nghiệm/học vấn/kỹ năng và phân loại MANDATORY/OPTIONAL.
-- **FR-19**: Hệ thống sinh embedding JD.
-- **FR-20**: HR rà soát, thêm/xóa/chuyển loại skill criteria đã bóc tách và xác nhận criteria trước khi công bố/matching; thay đổi criteria phải invalidate Match hiện hành của JD.
-- **FR-21**: HR cấu hình `w_skill`, `w_semantic`, `w_experience` sao cho tổng bằng 1; thay đổi trọng số phải invalidate Match hiện hành trước khi leaderboard tiếp tục sử dụng.
-
-## Nhóm D — Matching & Analytics
-
-- **FR-22**: Candidate yêu cầu matching CV của mình với một JD ACTIVE; kết quả self-match là private đối với Candidate trong MVP.
-- **FR-23**: HR yêu cầu matching một hoặc nhiều CV trong kho của mình với JD của mình.
-- **FR-24**: Hệ thống tính Skill Score.
-- **FR-25**: Hệ thống tính Semantic Score bằng embedding/cosine; BM25 trong `hybrid-v1` chỉ dùng cho diagnostic/retrieval/experiment, không blend vào Final Score.
-- **FR-26**: Hệ thống tính Experience Score.
-- **FR-27**: Hệ thống tính Overall Score 0–100 theo trọng số JD.
-- **FR-28**: Hệ thống lưu matched skills, missing skills và dữ liệu giải thích cơ bản.
-- **FR-29**: Candidate xem Match/Skill Gap có CV thuộc mình; HR chỉ xem Match/Skill Gap khi JD thuộc HR và CV cũng thuộc kho HR; Admin toàn quyền.
-- **FR-30**: HR xem leaderboard ứng viên cho JD của mình nhưng chỉ gồm CV thuộc kho HR trong MVP.
-- **FR-31**: Khi dữ liệu ảnh hưởng scoring thay đổi, hệ thống invalidate kết quả liên quan; tùy thao tác có thể enqueue recalculate ngay hoặc để `PENDING` chờ tính lại.
-- **FR-32**: Hệ thống có thể xuất leaderboard/chi tiết ra PDF/Excel nếu module nâng cao được triển khai; chức năng này không thuộc OpenAPI MVP cho tới khi thực sự bật.
-
-## Nhóm E — AI Explainability & thực nghiệm
-
-- **FR-33**: Nếu tích hợp LLM/XAI, hệ thống tạo tóm tắt/gợi ý dựa trên score + matched/missing skills; output này không sửa score cốt lõi.
-- **FR-34**: Hệ thống hỗ trợ thu thập kết quả thực nghiệm trên tập CV/JD mẫu để đánh giá MAE, Pearson, NDCG@K, Precision@K khi có ground truth phù hợp.
-
-## Nhóm F — Chức năng hỗ trợ xuyên suốt
-
-- **FR-35**: Người dùng đã xác thực tra cứu Skill Taxonomy để autocomplete/tìm kỹ năng chuẩn khi rà soát CV hoặc criteria JD.
-- **FR-36**: Candidate/HR/Admin xem **danh sách kết quả matching hiện hành** theo đúng ownership/scope, có phân trang và lọc theo JD/CV/trạng thái. MVP không lưu lịch sử nhiều lần chạy cho cùng một cặp `(job_id, resume_id)`.
+## E. Supporting / Advanced
+- **FR-38** `GET /skills` taxonomy lookup.
+- **FR-39 [Advanced]** Export PDF/Excel.
+- **FR-40 [Advanced]** LLM/XAI explanation.
+- **FR-41** Benchmark MAE/Pearson/NDCG@K/Precision@K khi có ground truth.
+- **FR-42** Environment bootstrap seed Skill Taxonomy trước khi chạy NLP.
