@@ -80,7 +80,7 @@ Database canonical có **10 bảng**:
 - Job business: `DRAFT|ACTIVE|CLOSED`.
 - Match: `PENDING|PROCESSING|COMPLETED|FAILED`.
 
-JD chỉ được `ACTIVE` khi đã `PARSED` **và** `is_criteria_verified=true`.
+JD chỉ được `ACTIVE` khi đã `PARSED`, `is_criteria_verified=true` và có ít nhất một `job_skill` hợp lệ.
 
 ## 7. API decision được khóa
 
@@ -106,10 +106,12 @@ Overall = w_skill * SkillScore
 
 Mặc định `0.50 / 0.30 / 0.20`, tổng = 1.
 
+Matching chỉ chạy khi CV/JD đã `PARSED`, embedding hợp lệ, criteria JD đã verified và JD có ít nhất một `job_skill`; Candidate còn yêu cầu JD phải `ACTIVE`.
+
 - Skill Score: taxonomy/rule matching, MANDATORY nặng hơn OPTIONAL.
 - Semantic Score: cosine similarity của embedding cùng model.
 - Experience Score: tỷ lệ đáp ứng kinh nghiệm tối thiểu, cap 100%.
-- `rank_bm25`: lexical/retrieval/experiment signal trong v1, chưa cộng thẳng vào Final Score vì raw BM25 không có thang cố định giữa corpus.
+- `rank_bm25`: lexical/retrieval/experiment signal trong `hybrid-v1`, **không** cộng thẳng vào Semantic/Final Score. Muốn blend BM25 phải cập nhật công thức + đổi `algorithm_version`.
 - LLM/XAI: explanation/recommendation only; không sửa deterministic scores.
 
 ## 9. Thứ tự nguồn chuẩn khi triển khai
