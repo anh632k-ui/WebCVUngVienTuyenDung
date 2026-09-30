@@ -1,54 +1,24 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-
-title ACTIVITY - UC13 RÀ SOÁT TIÊU CHÍ JD
+title ACTIVITY - UC13 REVIEW CRITERIA JD
 
 start
-:HR/Admin mở trang Criteria của JD;
-:GET /api/v1/jobs/{id}/criteria;
-:Backend kiểm HR sở hữu JD hoặc Admin;
-if (Có quyền?) then (Có)
-  :Trả min experience, education,
-  danh sách job_skills;
-else (Không)
-  :404/403;
+:HR owner/Admin mở criteria;
+:GET /jobs/{id}/criteria;
+:Chỉnh min experience/education/skills;
+:Tra cứu GET /skills;
+:Validate >=1 skill, taxonomy IDs, no duplicate;
+if (invalid?) then (Có)
+  :422;
   stop
 endif
-
-:HR/Admin có thể GET /api/v1/skills
-để tra cứu Skill Taxonomy;
-:Chỉnh min experience/education;
-:Thêm/xóa skill;
-:Chuyển MANDATORY <-> OPTIONAL;
-:Chỉnh min_years_required;
-:PUT /api/v1/jobs/{id}/criteria;
-:Backend validate skill IDs,
-không duplicate và có >=1 skill;
-if (Criteria hợp lệ?) then (Có)
-  :BEGIN TRANSACTION;
-  :Update JD criteria fields;
-  :Replace/upsert job_skills;
-  :SET is_criteria_verified=true;
-  :Invalidate mọi match_results của JD:
-  status=PENDING,
-  scores=NULL,
-  matched_skills=[], missing_skills=[],
-  gap_analysis_summary=NULL,
-  error_message=NULL,
-  calculated_at=NULL,
-  updated_at=NOW();
-  :COMMIT;
-  :200 OK;
-else (Không)
-  :422 Validation error;
-  stop
-endif
-
-note right
-  Invalidate là bắt buộc.
-  Enqueue recalculate ngay hay không
-  là policy riêng của service/UI.
-end note
+:BEGIN TRANSACTION;
+:Replace/update criteria + is_criteria_verified=true;
+:job.revision++;
+:Invalidate Match liên quan:
+generation++, PENDING, clear scores/evidence/error/provenance/calculated_at;
+:COMMIT;
+:200 JobCriteriaResponse;
 stop
 @enduml
