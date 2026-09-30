@@ -2,55 +2,54 @@
 skinparam monochrome true
 skinparam shadowing false
 skinparam linetype ortho
-
 title STATE MODELS - CV / JD / MATCHING
 
 state "Resume Parsing" as Resume {
   [*] --> PENDING
-  PENDING --> PROCESSING : worker nhận task
-  PROCESSING --> PARSED : parse + embedding thành công
-  PROCESSING --> FAILED : parse lỗi
-  FAILED --> PENDING : retry
-  PARSED --> PENDING : re-parse thủ công/nâng cấp pipeline
+  PENDING --> PROCESSING : task(expected_revision)
+  PROCESSING --> PARSED : success + revision still matches
+  PROCESSING --> FAILED : error + revision still matches
+  FAILED --> PENDING : retry/reparse
+  PARSED --> PENDING : explicit reparse / pipeline upgrade
 }
 
 state "Job Parsing" as JobParsing {
   [*] --> J_PENDING
-  J_PENDING --> J_PROCESSING : worker nhận task
-  J_PROCESSING --> J_PARSED : parse + embedding thành công
-  J_PROCESSING --> J_FAILED : parse lỗi
+  J_PENDING --> J_PROCESSING : task(expected_revision)
+  J_PROCESSING --> J_PARSED : success + revision still matches
+  J_PROCESSING --> J_FAILED : error + revision still matches
   J_FAILED --> J_PENDING : retry
-  J_PARSED --> J_PENDING : raw_content thay đổi
+  J_PARSED --> J_PENDING : raw_content/model/preprocessing change
 }
 
 state "Job Business Status" as JobBusiness {
   [*] --> DRAFT
-  DRAFT --> ACTIVE : publish [PARSED + verified + có job_skill]
-  ACTIVE --> CLOSED : HR/Admin đóng tuyển
-  CLOSED --> ACTIVE : mở lại [vẫn đủ điều kiện publish]
-  ACTIVE --> DRAFT : raw_content thay đổi / unpublish
-  CLOSED --> DRAFT : raw_content thay đổi
+  DRAFT --> ACTIVE : ready
+  ACTIVE --> DRAFT : unpublish/edit
+  ACTIVE --> CLOSED : close
+  CLOSED --> DRAFT : prepare/edit
+  CLOSED --> ACTIVE : reopen [ready]
 }
 
 state "Match Lifecycle" as Matching {
   [*] --> M_PENDING
-  M_PENDING --> M_PROCESSING : worker nhận task
-  M_PROCESSING --> M_COMPLETED : tính điểm thành công
-  M_PROCESSING --> M_FAILED : lỗi
-  M_FAILED --> M_PENDING : retry/recalculate
-  M_COMPLETED --> M_PENDING : criteria/weights/raw JD/CV/model/algorithm thay đổi
+  M_PENDING --> M_PROCESSING : task(generation,revisions)
+  M_PROCESSING --> M_COMPLETED : conditional terminal write
+  M_PROCESSING --> M_FAILED : conditional terminal write
+  M_FAILED --> M_PENDING : retry => generation++
+  M_COMPLETED --> M_PENDING : invalidate => generation++
 }
 
 note bottom of JobBusiness
-Mọi thay đổi raw_content làm criteria/embedding cũ stale,
-vì vậy business status bị đưa về DRAFT trước khi Job Parsing về PENDING.
-ACTIVE/matching còn được service kiểm tra có ít nhất một job_skill hợp lệ.
+same-state PATCH idempotent.
+DRAFT -> CLOSED is invalid.
+ACTIVE requires PARSED + verified + embedding/model/preprocessing
++ >=1 job_skill.
 end note
 
 note bottom of Matching
-Bất kỳ transition -> M_PENDING do invalidate/recalculate đều phải clear:
-4 scores, matched/missing evidence, gap summary, error_message và calculated_at.
-QUEUED không phải MatchStatus.
+Worker must re-check generation + Resume revision + JD revision.
+If any expected value differs, task is stale and must not overwrite.
+FAILED requires error_message; other states require error_message=NULL.
 end note
-
 @enduml
