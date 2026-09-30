@@ -24,7 +24,7 @@ package "Application Layer - FastAPI" {
   [Resume Service] as ResumeService
   [Job Service] as JobService
   [Matching Service] as MatchService
-  [Idempotency / UUIDv5 Guard] as IdemGuard
+  [Idempotency / UUIDv5 / SHA-256 Guard] as IdemGuard
   [Revision / Generation / Delete-state CAS Guard] as VersionGuard
   [Task Dispatcher] as Dispatcher
   [Parse Recovery Sweeper] as Recovery
@@ -67,9 +67,9 @@ package "AI / NLP & Background Processing" {
 }
 
 package "Persistence / Infrastructure" {
-  database "PostgreSQL 18 + pgvector\nrevision/generation/delete state" as DB
+  database "PostgreSQL 18 + pgvector\nrevision/generation/delete state\ncreate_request_fingerprint" as DB
   database "Redis\nTask broker [when enabled]" as Redis
-  folder "CV File Storage\nput-if-absent on create" as Storage
+  folder "CV File Storage\ndeterministic key + put-if-absent" as Storage
 }
 
 Candidate --> Frontend : HTTPS
@@ -81,7 +81,8 @@ UserService --> DB
 ResumeService --> DB
 JobService --> DB
 MatchService --> DB
-IdemGuard --> DB : deterministic resource id / existing row
+IdemGuard --> DB : deterministic id / fingerprint compare
+IdemGuard --> Storage : orphan fingerprint reconciliation
 VersionGuard --> DB : exclusive status/version/delete-aware CAS
 Recovery --> DB : scan PENDING + not deleted only
 ResumeService --> Storage
@@ -91,10 +92,13 @@ Dispatcher --> Redis : queue when enabled
 Redis --> Worker
 
 note bottom of IdemGuard
-POST /resumes/upload và POST /jobs:
-UUIDv5(actor + route + Idempotency-Key).
-Retry same logical request -> same resource id.
-CV storage retry never overwrites existing object.
+Fixed UUIDv5 namespace:
+bd7b1f30-b2de-549c-a8dd-8d742ee5bc12
+Resume fingerprint = SHA-256(raw file bytes).
+Job fingerprint = SHA-256(canonical validated create JSON).
+Same key + same fingerprint -> existing resource.
+Same key + different fingerprint -> 409 IDEMPOTENCY_KEY_REUSED.
+Resume orphan object is reused only after SHA-256 verification.
 end note
 
 note bottom of VersionGuard
