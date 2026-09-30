@@ -25,7 +25,7 @@ package "Core" {
   component "config.py" as Config
   component "database.py" as Database
   component "security.py" as Security
-  component "idempotency.py\nUUIDv5 create guard" as Idem
+  component "idempotency.py\nfixed UUIDv5 namespace + SHA-256 fingerprint" as Idem
   component "version_guard.py\nexclusive version/state/delete CAS" as Guard
 }
 
@@ -59,6 +59,7 @@ package "Background Tasks" {
 
 database "PostgreSQL 18 + pgvector" as DB
 component "Redis/Celery [when enabled]" as Queue
+folder "CV Storage\ndeterministic resume key" as Storage
 
 AuthAPI --> UserService
 UsersAPI --> UserService
@@ -78,15 +79,17 @@ SkillService --> ORM
 ResumeService --> ORM
 JobService --> ORM
 MatchService --> ORM
-ResumeService --> Idem : POST create
-JobService --> Idem : POST create
-Idem --> ORM : deterministic id / load existing
+ResumeService --> Idem : POST create + file SHA-256
+JobService --> Idem : POST create + canonical JSON SHA-256
+Idem --> ORM : deterministic id / fingerprint compare
+Idem --> Storage : put-if-absent + orphan hash verify
 ResumeService --> Guard
 JobService --> Guard
 MatchService --> Guard
 Guard --> ORM : status + expected-version + delete-state CAS
 ORM --> Database
 Database --> DB
+ResumeService --> Storage
 
 ResumeService --> Dispatcher
 JobService --> Dispatcher
@@ -104,6 +107,14 @@ Tasks --> Engine
 Engine --> XAI
 Tasks --> ORM
 
+note bottom of Idem
+Namespace literal:
+bd7b1f30-b2de-549c-a8dd-8d742ee5bc12
+Persist create_request_fingerprint on Resume/JD.
+Same key + different fingerprint => 409 IDEMPOTENCY_KEY_REUSED.
+Concurrent PK loser re-reads row and compares fingerprint.
+end note
+
 note bottom of Guard
 Parse: claim requires PENDING, terminal requires PROCESSING,
 both require expected revision + is_deleted=false.
@@ -120,4 +131,5 @@ end note
 Security --> UserService
 Config --> Database
 Config --> Security
+Config --> Idem : fixed namespace constant
 @enduml
