@@ -1,8 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-
-title SEQUENCE - UPLOAD & PARSE CV
+title SEQUENCE - UPLOAD & PARSE CV WITH REVISION GUARD
 
 actor "Candidate/HR" as User
 participant "Next.js" as FE
@@ -13,50 +12,40 @@ database "PostgreSQL" as DB
 participant "Task Dispatcher" as Dispatcher
 queue "Redis/Celery" as Queue
 participant "CV Worker" as Worker
-participant "Text Extractor" as Extractor
-participant "Entity/Skill Pipeline" as NLP
-participant "Embedding Service" as Embedding
+participant "NLP/Embedding" as NLP
 
-User -> FE : chọn CV
-FE -> API : POST /resumes/upload multipart
-API -> Service : validate + create upload
-Service -> Service : check size/MIME/magic bytes
-Service -> Storage : save bytes with safe storage_key
-Storage --> Service : stored
-Service -> DB : INSERT resumes(PENDING, owner_user_id)
+User -> FE : chọn file
+FE -> API : POST /resumes/upload
+API -> Service : upload(current_user,file)
+Service -> Service : validate size/MIME/magic
+Service -> Storage : save safe storage_key
+Service -> DB : INSERT Resume(PENDING, revision=1)
 DB --> Service : resume_id
-Service -> Dispatcher : enqueue parse(resume_id)
-Dispatcher -> Queue : task message
-Service --> API : accepted
-API --> FE : 202 + resume_id + PENDING
+Service -> Dispatcher : enqueue(resume_id, expected_revision=1)
+Dispatcher -> Queue : task
+Service --> API : 202 PENDING
 
-Queue -> Worker : parse task
-Worker -> DB : UPDATE PROCESSING
-Worker -> DB : SELECT resume metadata
-DB --> Worker : storage_key/mime
-Worker -> Storage : read file
-Storage --> Worker : bytes/path
-Worker -> Extractor : extract text
-alt PDF scan / no text layer
-  Extractor -> Extractor : OCR fallback if enabled
-end
-Extractor --> Worker : raw text / failure
-alt extraction failed
-  Worker -> DB : UPDATE FAILED + error_message
-else extracted
-  Worker -> NLP : parse entities/sections/skills
-  NLP --> Worker : structured CV
-  Worker -> Embedding : encode canonical CV text
-  Embedding --> Worker : vector(1024) + model id
-  Worker -> DB : transaction upsert profile/skills/exp/edu\nupdate resume raw_text+embedding+PARSED
-  DB --> Worker : commit
+Queue -> Worker : resume_id, expected_revision
+Worker -> DB : UPDATE PROCESSING\nWHERE id=? AND revision=expected_revision
+alt rowcount=0
+  Worker -> Worker : stale task -> discard
+else claimed
+  Worker -> Storage : read file
+  Worker -> NLP : extract + normalize + embed
+  alt processing error
+    Worker -> DB : UPDATE FAILED,error\nWHERE id=? AND revision=expected_revision
+  else success
+    Worker -> DB : transaction save aggregate + embedding/model/preprocessing\nUPDATE PARSED WHERE id=? AND revision=expected_revision
+    alt terminal rowcount=0
+      Worker -> Worker : stale task -> discard result
+    end
+  end
 end
 
 FE -> API : GET /resumes/{id}/status
-API -> Service : authorize owner
-Service -> DB : SELECT parsing_status
+API -> Service : authorize owner/Admin
+Service -> DB : SELECT status
 DB --> Service : status
-Service --> API : status
-API --> FE : 200
-
+Service --> API : 200
+API --> FE : status
 @enduml
