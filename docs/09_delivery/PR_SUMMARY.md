@@ -1,4 +1,4 @@
-# PTTK REVIEW SUMMARY — ROUND 3
+# PTTK REVIEW SUMMARY — POST ROUND 3 RELIABILITY LOCK
 
 Branch `pttk-sync-v2` thay toàn bộ PTTK legacy bằng baseline thống nhất trước khi code.
 
@@ -14,10 +14,17 @@ Branch `pttk-sync-v2` thay toàn bộ PTTK legacy bằng baseline thống nhất
 - Traceability Matrix.
 - Reset Database Plan, Implementation Gate, Audit Report.
 
-## Các quyết định canonical sau semantic review vòng 3
+## Quyết định canonical hiện tại
 - PostgreSQL 18 + pgvector, đúng 10 bảng.
-- Resume/JD có `revision`; Match có `generation`, `resume_revision`, `job_revision` để chống stale worker.
-- Parse task dùng `expected_revision`; matching task dùng generation + resource revisions; conditional terminal write.
+- Resume/JD có `revision`; Match có `generation`, `resume_revision`, `job_revision`.
+- `revision` = version của input/computation request; tăng trước computation mới, worker của chính expected revision không tăng lúc commit.
+- CV/JD parse claim exclusive CAS: chỉ `PENDING -> PROCESSING` khi expected revision còn đúng; terminal chỉ từ PROCESSING cùng revision.
+- Match claim exclusive CAS: PENDING + expected generation/snapshots/linked revisions; terminal COMPLETED/FAILED chỉ từ PROCESSING với cùng expected values.
+- Duplicate queue delivery cùng revision/generation chỉ một worker claim được.
+- `POST /resumes/upload` và `POST /jobs` bắt buộc `Idempotency-Key` UUID; server derive deterministic UUIDv5 để retry cùng logical create không tạo duplicate resource.
+- Resume/JD persistence commit trước parse dispatch. Dispatcher lỗi sau commit giữ resource PENDING.
+- Parse Recovery Sweeper startup/periodic re-dispatch PENDING quá grace window bằng current revision; không tăng revision.
+- Không blind-reset PROCESSING trong MVP nếu chưa có lease/attempt token.
 - Embedding identity gồm cả `embedding_model` và `embedding_preprocessing_version`.
 - Skill Taxonomy phải seed sau schema; parser không tự insert skill lạ.
 - CandidateProfile cardinality 0..1/Resume.
@@ -35,14 +42,17 @@ Branch `pttk-sync-v2` thay toàn bộ PTTK legacy bằng baseline thống nhất
 `Validate PTTK` kiểm:
 1. OpenAPI bằng `openapi-spec-validator`.
 2. Advanced route không bị expose trong MVP.
-3. Response schema cho success JSON.
-4. Role conflict 409 + dispatcher 503.
-5. Revision/generation/provenance fields.
-6. CandidateProfile nullable.
+3. Required `Idempotency-Key` trên Resume/JD create endpoints.
+4. Response schema cho success JSON.
+5. Role conflict 409 + matching dispatcher 503.
+6. Revision/generation/provenance + CandidateProfile nullable.
 7. PlantUML `-checkonly` toàn bộ.
 8. Đúng 10 tables, revision/generation/preprocessing/error constraints, HNSW, case-insensitive email.
 9. Seed có HARD + SOFT skill và đủ baseline entries.
-10. Round-3 business invariants tồn tại.
+10. CV/JD Sequence có PENDING claim + PROCESSING terminal guards.
+11. Matching Sequence có exclusive PENDING->PROCESSING và PROCESSING-only terminal CAS.
+12. Architecture có Idempotency Guard + Parse Recovery Sweeper + CAS Guard.
+13. Traceability có FR-43/44/45 reliability chain.
 
 Chỉ merge khi CI ở HEAD cuối cùng PASS.
 
@@ -52,6 +62,7 @@ Chỉ merge khi CI ở HEAD cuối cùng PASS.
 3. chạy `docs/05_database/schema.sql`;
 4. chạy `docs/05_database/skill_taxonomy_seed.sql`;
 5. verify extensions/tables/FK/CHECK/index/HNSW/seed;
-6. sau đó mới venv -> async DB -> ORM -> Auth MVP -> Skills -> Resume/Job -> AI/NLP -> Matching -> Frontend.
+6. smoke-test duplicate worker claim, stale revision/generation, dispatcher recovery và Idempotency-Key retry;
+7. sau đó mới venv -> async DB -> ORM -> Auth MVP -> Skills -> Resume/Job -> AI/NLP -> Matching -> Frontend.
 
 PR này vẫn chưa triển khai business code backend/frontend.
