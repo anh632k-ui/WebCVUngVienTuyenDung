@@ -29,7 +29,7 @@ Branch `pttk-sync-v2` thay thế bộ tài liệu PTTK cũ bằng baseline đư�
 - Email account unique không phân biệt hoa/thường bằng DB index `LOWER(email)`.
 - Single/batch matching dùng `POST /api/v1/matching/calculate`.
 - `GET /api/v1/skills` cho taxonomy lookup.
-- `GET /api/v1/matching` cho **danh sách current results**, không phải lịch sử nhiều attempt.
+- `GET /api/v1/matching` cho **danh sách kết quả hiện hành**, không phải lịch sử nhiều attempt.
 - Candidate self-match với JD của HR không tự động lộ cho HR.
 - HR chỉ xem Match/Skill Gap/Leaderboard khi cả JD và CV đều thuộc scope HR trong MVP.
 - JD ACTIVE/matching chỉ khi PARSED + criteria verified + embedding hợp lệ + >=1 job_skill.
