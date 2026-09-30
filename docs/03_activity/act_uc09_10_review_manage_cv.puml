@@ -1,64 +1,36 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
-
-title ACTIVITY - UC09 RÀ SOÁT CV & UC10 QUẢN LÝ KHO CV
+title ACTIVITY - UC09/10 REVIEW & QUẢN LÝ CV
 
 start
-:User mở danh sách CV;
-:GET /api/v1/resumes?page&limit&filters;
-:Backend scope theo owner_user_id
-(Candidate/HR) hoặc Admin;
-:200 danh sách CV;
-
-if (User chọn một CV?) then (Có)
-  :GET /api/v1/resumes/{id};
-  :Backend kiểm ownership/role;
-  if (Có quyền?) then (Có)
-    :Trả file metadata + candidate_profile
-    + skills + experiences + educations;
+:User mở kho CV;
+:GET /api/v1/resumes;
+:Backend scope owner/Admin;
+if (chọn CV?) then (Có)
+  :GET /resumes/{id};
+  if (PARSED?) then (Có)
+    :Hiển thị candidate_profile 0..1 + skills/exp/edu;
+    if (user sửa parsed data?) then (Có)
+      :Validate taxonomy/date ranges;
+      :Regenerate canonical embedding;
+      :BEGIN TRANSACTION;
+      :resume.revision = revision + 1;
+      :Save aggregate + embedding_model + preprocessing_version;
+      :Set is_manually_edited=true;
+      :Invalidate related Match:
+generation++, PENDING, clear stale payload;
+      :COMMIT;
+    endif
   else (Không)
-    :404/403 theo policy;
-    stop
+    :Hiển thị parsing_status/error nếu FAILED;
   endif
 endif
-
-if (User cần thêm/thay skill?) then (Có)
-  :GET /api/v1/skills?keyword&skill_kind&category;
-  :Chọn skill_id từ taxonomy chuẩn;
+if (download?) then (Có)
+  :GET /resumes/{id}/download;
 endif
-
-if (User chỉnh dữ liệu đã bóc tách?) then (Có)
-  :PUT /api/v1/resumes/{id}/parsed-data;
-  :Validate payload + skill IDs + dates;
-  :BEGIN TRANSACTION;
-  :Update candidate_profile;
-  :Replace/Upsert resume_skills;
-  :Replace resume_experiences/educations;
-  :UPDATE resumes is_manually_edited=true,
-  updated_at=NOW();
-  :Rebuild resume_embedding nếu dữ liệu dùng cho embedding thay đổi;
-  :Invalidate mọi match_results của resume:
-  status=PENDING,
-  scores=NULL,
-  matched_skills=[], missing_skills=[],
-  gap_analysis_summary=NULL,
-  error_message=NULL,
-  calculated_at=NULL,
-  updated_at=NOW();
-  :COMMIT;
-  :200 OK;
-endif
-
-if (User tải file gốc?) then (Có)
-  :GET /api/v1/resumes/{id}/download;
-  :Stream file;
-endif
-
-if (User xóa CV?) then (Có)
-  :DELETE /api/v1/resumes/{id};
-  :UPDATE is_deleted=true, deleted_at=NOW();
-  :204 No Content;
+if (soft delete?) then (Có)
+  :DELETE /resumes/{id};
 endif
 stop
 @enduml
