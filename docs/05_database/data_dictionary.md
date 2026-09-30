@@ -7,7 +7,7 @@ Nguồn vật lý cuối cùng là `schema.sql`. Tài liệu này giải thích 
 | Field | Ý nghĩa | Ghi chú |
 |---|---|---|
 | `id` | ID tài khoản | UUID |
-| `email` | Email đăng nhập | unique; app chuẩn hóa lowercase |
+| `email` | Email đăng nhập | app normalize lowercase; DB enforce unique không phân biệt hoa/thường bằng index `LOWER(email)` |
 | `password_hash` | Hash mật khẩu | không lưu plaintext |
 | `full_name` | Họ tên tài khoản | khác với tên bóc từ CV |
 | `phone_number` | SĐT tài khoản | nullable |
@@ -130,6 +130,8 @@ Unique `(job_id, skill_id)`. Child-count `>=1` trước ACTIVE/matching là inva
 
 ## 10. `match_results`
 
+MVP lưu **một kết quả hiện hành** cho mỗi cặp `(job_id,resume_id)`, không lưu lịch sử nhiều attempt. Unique `(job_id,resume_id)` là chủ ý thiết kế.
+
 | Field | Ý nghĩa |
 |---|---|
 | `job_id`,`resume_id` | Cặp được so khớp |
@@ -145,7 +147,19 @@ Unique `(job_id, skill_id)`. Child-count `>=1` trước ACTIVE/matching là inva
 | `error_message` | Lỗi tính toán nếu FAILED |
 | `calculated_at` | Chỉ có khi COMPLETED |
 
-Scores được phép NULL trước khi hoàn thành để hỗ trợ asynchronous task lifecycle. Khi `status=COMPLETED`, bốn score và `calculated_at` bắt buộc có giá trị.
+Khi `status=COMPLETED`, bốn score và `calculated_at` bắt buộc có giá trị.
+
+Khi `status!=COMPLETED`, schema bắt buộc stale payload phải được clear: bốn score NULL, `matched_skills=[]`, `missing_skills=[]`, `gap_analysis_summary=NULL`, `calculated_at=NULL`. Điều này ngăn row PENDING/FAILED giữ evidence/score từ lần tính cũ.
+
+### Quyền riêng tư Match
+
+Quyền này không thể enforce bằng CHECK constraint vì cần join nhiều bảng; service phải kiểm:
+
+- Candidate: `resumes.owner_user_id=current_user.id`.
+- HR: **đồng thời** `job_descriptions.recruiter_id=current_user.id` và `resumes.owner_user_id=current_user.id`.
+- Admin: toàn quyền.
+
+Candidate self-match với JD của HR không tự động cấp quyền đọc Match/CV cho HR trong MVP.
 
 ## Quy tắc timestamp
 
