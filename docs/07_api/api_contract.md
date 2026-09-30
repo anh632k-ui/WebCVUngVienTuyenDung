@@ -57,23 +57,24 @@ Candidate/HR. **Required `Idempotency-Key` UUID**. PDF/DOCX <=5MB. Backend kiể
 
 Persistence flow:
 1. derive deterministic `resume_id` từ actor+route+Idempotency-Key;
-2. create Resume `PENDING`, `revision=1` nếu chưa tồn tại; retry cùng key load cùng Resume;
-3. commit persistence;
-4. best-effort dispatch parse `(resume_id,current_revision)`.
+2. lookup resource trước create side-effect;
+3. nếu đã tồn tại: trả cùng Resume, không overwrite storage; nếu vẫn PENDING có thể best-effort re-dispatch current revision;
+4. nếu chưa tồn tại: storage `put-if-absent`/no-overwrite, tạo Resume `PENDING`, `revision=1`, commit persistence;
+5. best-effort dispatch parse `(resume_id,current_revision)`.
 
 Nếu dispatcher lỗi sau commit, **không rollback Resume và không tạo Resume khác**. Server log lỗi, Resume giữ `PENDING`; internal Parse Recovery Sweeper sẽ re-dispatch current revision. Endpoint vẫn trả `202 ResumeUploadResponse` của resource đã persist.
 
 ## GET `/resumes`
-Candidate/HR chỉ owner; Admin all. Filter pagination/status/skills.
+Candidate/HR chỉ owner; Admin all. Mặc định chỉ `is_deleted=false`. Filter pagination/status/skills.
 
 ## GET `/resumes/{id}`
-Owner/Admin. `candidate_profile` **nullable** vì cardinality 0..1.
+Owner/Admin, resource chưa soft-delete. `candidate_profile` **nullable** vì cardinality 0..1.
 
 ## GET `/resumes/{id}/status`
-Owner/Admin.
+Owner/Admin, resource chưa soft-delete.
 
 ## PUT `/resumes/{id}/parsed-data`
-Owner/Admin; Resume PARSED.
+Owner/Admin; Resume PARSED và chưa soft-delete.
 Transaction:
 1. validate aggregate/taxonomy/date;
 2. regenerate embedding;
@@ -82,10 +83,10 @@ Transaction:
 5. invalidate all related Match: generation++, refresh revision snapshots, PENDING, clear scores/evidence/error/embedding provenance/calculated_at.
 
 ## GET `/resumes/{id}/download`
-Owner/Admin, binary.
+Owner/Admin, resource chưa xóa, binary.
 
 ## DELETE `/resumes/{id}`
-Owner/Admin, soft delete, 204.
+Owner/Admin, soft delete, 204. Sau khi soft-delete, async parse/matching terminal write mới phải bị delete-aware CAS chặn.
 
 ### Resume parse worker contract
 `revision` là version của input/computation request. Initial create dùng revision 1; reparse input mới tăng revision **trước enqueue**. Worker của chính `expected_revision` không tăng revision khi commit.
@@ -97,6 +98,7 @@ SET parsing_status='PROCESSING', updated_at=NOW()
 WHERE id=:id
   AND revision=:expected_revision
   AND parsing_status='PENDING'
+  AND is_deleted=FALSE
 ```
 Chỉ `rowcount=1` được tiếp tục.
 
@@ -105,8 +107,9 @@ Terminal success/failure chỉ từ cùng claim:
 WHERE id=:id
   AND revision=:expected_revision
   AND parsing_status='PROCESSING'
+  AND is_deleted=FALSE
 ```
-Success nhiều bảng phải transaction + lock/check state/revision trước khi persist aggregate. `rowcount=0` => stale/duplicate discard.
+Success nhiều bảng phải transaction + lock/check state/revision/delete-state trước khi persist aggregate. `rowcount=0` => stale/duplicate/deleted-resource discard.
 
 # D. Job
 
@@ -116,13 +119,13 @@ Success nhiều bảng phải transaction + lock/check state/revision trước k
 Server derive deterministic `job_id` từ HR+route+key, create `DRAFT/PENDING/revision=1` nếu chưa tồn tại; retry cùng key trả cùng JD. Commit DB trước dispatch. Dispatcher lỗi => JD vẫn PENDING, log lỗi và Parse Recovery Sweeper re-dispatch; response vẫn `201 JobResponse` của resource đã persist.
 
 ## GET `/jobs`
-Candidate chỉ ACTIVE; HR chỉ own; Admin all.
+Candidate chỉ ACTIVE và chưa xóa; HR chỉ own chưa xóa; Admin all theo scope quản trị.
 
 ## GET `/jobs/{id}`
-Candidate ACTIVE; HR own; Admin all.
+Candidate ACTIVE chưa xóa; HR own chưa xóa; Admin theo quyền quản trị.
 
 ## PUT `/jobs/{id}`
-HR owner/Admin existing JD.
+HR owner/Admin existing JD, chưa soft-delete.
 Nếu `raw_content` đổi, transaction:
 - revision++ **trước computation/reparse mới**;
 - DRAFT/PENDING, verified=false;
@@ -132,7 +135,7 @@ Nếu `raw_content` đổi, transaction:
 Dispatcher lỗi không rollback update; recovery sẽ re-dispatch JD PENDING.
 
 ## PATCH `/jobs/{id}/status`
-HR owner/Admin.
+HR owner/Admin, JD chưa xóa.
 Allowed transitions:
 - same state: idempotent;
 - DRAFT->ACTIVE;
@@ -142,27 +145,27 @@ Allowed transitions:
 ACTIVE cần PARSED + verified + embedding/model/preprocessing + >=1 job_skill.
 
 ## DELETE `/jobs/{id}`
-Soft delete, 204.
+Soft delete, 204. Sau delete, parse/matching terminal write mới phải bị CAS chặn và current analytics phải loại JD này.
 
 ## GET/PUT `/jobs/{id}/criteria`
-HR owner/Admin. PUT requires PARSED, >=1 skill, valid taxonomy, no duplicates.
+HR owner/Admin, JD chưa xóa. PUT requires PARSED, >=1 skill, valid taxonomy, no duplicates.
 Transaction: save criteria, verified=true, revision++, invalidate Match generation++ + refresh snapshots.
 
 ## PUT `/jobs/{id}/weights`
-HR owner/Admin. Each [0,1], sum=1.
+HR owner/Admin, JD chưa xóa. Each [0,1], sum=1.
 Transaction: weights, revision++, invalidate Match generation++ + refresh snapshots.
 `recalculate=true` dispatches tasks after commit.
 
 ### JD parse worker contract
 Exclusive claim chỉ:
 ```text
-revision=expected_revision AND parsing_status='PENDING'
+revision=expected_revision AND parsing_status='PENDING' AND is_deleted=FALSE
 ```
 Terminal PARSED/FAILED chỉ:
 ```text
-revision=expected_revision AND parsing_status='PROCESSING'
+revision=expected_revision AND parsing_status='PROCESSING' AND is_deleted=FALSE
 ```
-Worker commit parsed output không tăng revision. Duplicate delivery chỉ một worker claim được.
+Worker commit parsed output không tăng revision. Duplicate delivery chỉ một worker claim được. Concurrent soft-delete làm terminal CAS fail/rollback.
 
 # E. Parse Recovery Sweeper
 Internal component, không expose route MVP.
@@ -182,14 +185,14 @@ Candidate/HR/Admin. Request:
 ```
 Preconditions:
 - entire batch ownership valid;
-- Resume/JD PARSED/not deleted;
+- Resume/JD PARSED và `is_deleted=false`;
 - JD verified + >=1 skill;
 - embeddings present;
 - same `embedding_model` and `embedding_preprocessing_version`;
 - Candidate requires JD ACTIVE.
 
 ### Atomic batch rule
-Validate **all IDs first**. One invalid item => 403/404/422, no Match mutation.
+Validate **all IDs first**, gồm deleted-state. One invalid item => 403/404/422, no Match mutation.
 Then one DB transaction upserts all pairs:
 - generation++;
 - snapshot current resume_revision/job_revision;
@@ -210,25 +213,26 @@ Success `202 MatchTriggerResponse`:
 Claim chỉ được `PENDING -> PROCESSING` khi:
 - `generation=expected_generation`;
 - stored `resume_revision/job_revision` snapshots khớp expected;
-- linked Resume/JD current revisions khớp expected.
+- linked Resume/JD current revisions khớp expected;
+- linked Resume/JD `is_deleted=false`.
 
 Chỉ worker có `rowcount=1` được tính.
 
-Terminal `PROCESSING -> COMPLETED|FAILED` cũng phải kiểm lại cùng generation/snapshots/linked revisions và current status `PROCESSING`. Duplicate delivery/stale task `rowcount=0` => discard. Vì chỉ một worker claim PENDING, FAILED và COMPLETED không được race trên cùng generation.
+Terminal `PROCESSING -> COMPLETED|FAILED` cũng phải kiểm lại cùng generation/snapshots/linked revisions, current status `PROCESSING` và linked resources vẫn chưa soft-delete. Duplicate delivery/stale/deleted task `rowcount=0` => discard. Vì chỉ một worker claim PENDING, FAILED và COMPLETED không được race trên cùng generation.
 
 FAILED requires error_message. Non-FAILED error_message must be null.
 
 ## GET `/matching`
-Current results only, not attempt history. Candidate by resume owner; HR requires both JD+CV ownership; Admin all.
+Current results only, not attempt history. Candidate by resume owner; HR requires both JD+CV ownership; Admin all. Query phải join/filter linked Resume/JD `is_deleted=false`.
 
 ## GET `/matching/{match_id}`
-Same scope. Response includes generation/revision/provenance fields for diagnostics.
+Same scope và linked resources phải chưa soft-delete. Response includes generation/revision/provenance fields for diagnostics.
 
 ## GET `/matching/{match_id}/gap-analysis`
-Same scope, Match COMPLETED.
+Same scope, Match COMPLETED, linked resources chưa xóa.
 
 ## GET `/jobs/{id}/leaderboard`
-HR owner/Admin. Only COMPLETED. HR only CV in own pool. Candidate denied.
+HR owner/Admin. Only COMPLETED. HR only CV in own pool. JD và Resume phải `is_deleted=false`. Candidate denied.
 
 # G. Advanced
 - `/jobs/{id}/export` PDF/Excel — not OpenAPI MVP.
