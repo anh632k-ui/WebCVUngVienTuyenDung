@@ -1,42 +1,41 @@
 # PHÂN TÍCH & THIẾT KẾ HỆ THỐNG — WebCVUngVienTuyenDung
 
-Đây là bộ PTTK được rebuild từ đầu dựa trên đề cương `dc.docx` và mục tiêu kỹ thuật AI/NLP của dự án.
+Bộ PTTK rebuild từ đề cương `dc.docx`, mục tiêu thật của đề tài AI/NLP và ba vòng semantic review trước khi code.
 
 ## Thứ tự đọc
+1. `PTTK_MASTER.md` — quyết định canonical.
+2. `00_requirements/` — scope, actor/ownership, FR/NFR, business rules, state.
+3. `01_bfd/`.
+4. `02_usecase/`.
+5. `03_activity/`.
+6. `04_sequence/`.
+7. `05_database/` — CDM/LDM/PDM/ERD/Data Dictionary/`schema.sql`/`skill_taxonomy_seed.sql`.
+8. `06_architecture/` — system/component/AI pipeline/matching.
+9. `07_api/` — API Contract + OpenAPI.
+10. `08_traceability/`.
+11. `09_delivery/` — audit/reset/gate.
 
-1. `PTTK_MASTER.md` — quyết định thiết kế đã khóa.
-2. `00_requirements/` — scope, functional/non-functional requirements, actor/ownership, business rules, state model.
-3. `01_bfd/` — phân rã chức năng.
-4. `02_usecase/` — Use Case overview, phân hệ và đặc tả.
-5. `03_activity/` — luồng nghiệp vụ chi tiết.
-6. `04_sequence/` — tương tác Frontend/API/Service/DB/AI worker.
-7. `05_database/` — CDM/LDM/PDM/ERD/Data Dictionary/schema.sql.
-8. `06_architecture/` — kiến trúc hệ thống, component, AI pipeline, matching algorithm.
-9. `07_api/` — API Contract + OpenAPI 3.0.3.
-10. `08_traceability/` — ma trận truy vết yêu cầu -> API -> database.
-11. `09_delivery/` — audit, kế hoạch reset DB và gate trước khi code.
+## Quy tắc implementation
+- PTTK quyết định database; DB thực nghiệm cũ không làm nguồn chuẩn.
+- Chạy `schema.sql` rồi **bắt buộc** chạy `skill_taxonomy_seed.sql` khi bootstrap môi trường mới.
+- Không dùng ORM `create_all()` để tự phát minh schema.
+- Không code endpoint/table/enum ngoài PTTK nếu chưa sửa traceability.
+- Advanced hiện gồm Refresh Token Rotation/HttpOnly session, OCR fallback, LLM/XAI và Export; không expose route Advanced trong OpenAPI MVP khi chưa bật.
+- Candidate self-match private; HR chỉ xem Match/Leaderboard khi cả JD và CV thuộc HR.
+- CandidateProfile là 0..1/Resume.
+- CV/JD embedding phải cùng model + preprocessing version.
+- Resume/JD dùng `revision`; Match dùng `generation` + revision snapshots. Worker cũ phải bị discard nếu version mismatch.
+- Batch matching validate toàn bộ trước mutation; atomic prepare; dispatch sau commit; dispatch failure retry-safe.
+- FAILED phải có error; non-FAILED không giữ stale error.
+- `GET /matching` là current results, không phải attempt history.
 
-## Nguyên tắc
+## Implementation Ready gate
+Chỉ chuyển `IMPLEMENTATION_READY` sau:
+1. GitHub Actions ở HEAD cuối PASS;
+2. PR review/merge;
+3. reset `webcv_ungvien`;
+4. chạy schema + taxonomy seed;
+5. smoke-test constraints/indexes/seed;
+6. khi backend tồn tại, integration test stale worker/batch/ownership/role transition PASS.
 
-- Không dùng database thực nghiệm cũ làm chuẩn thiết kế.
-- `docs/05_database/schema.sql` là PDM executable sau khi PTTK được review.
-- Không code route/field/table ngoài tài liệu mà không cập nhật PTTK trước.
-- Tính năng được đánh dấu `[Advanced]` có thể triển khai sau MVP; không được expose trong OpenAPI MVP hoặc báo cáo là hoàn thành khi chưa code.
-- Candidate self-match với JD của HR là private trong MVP; HR chỉ xem Match/Leaderboard khi cả JD và CV đều thuộc scope HR.
-- `GET /matching` là danh sách **kết quả hiện hành**, không phải lịch sử nhiều attempt.
-- Mọi thay đổi làm score cũ stale phải invalidate Match về `PENDING` và clear toàn bộ score/evidence/timestamp cũ trước khi dùng lại.
-- `QUEUED` không phải MatchStatus canonical.
-- Email được normalize lowercase ở application và enforce case-insensitive uniqueness trong PostgreSQL.
-
-## Mục tiêu đồ án
-
-Sản phẩm phải vẫn là một Web Application hoàn chỉnh ngay cả khi các module AI nâng cao chưa đạt mức tối đa; đồng thời thiết kế phải cho phép tích hợp NLP/embedding/skill matching/Skill Gap đúng mục tiêu nghiên cứu.
-
-## Trạng thái trước implementation
-
-PTTK chỉ được coi `IMPLEMENTATION_READY` sau khi:
-
-1. GitHub Actions `Validate PTTK` PASS ở HEAD cuối cùng;
-2. PR được user review/merge;
-3. database `webcv_ungvien` được reset;
-4. canonical `schema.sql` chạy và smoke-test thành công trên PostgreSQL 18 + pgvector.
+Mục tiêu: web application vẫn hoàn chỉnh nếu các module Advanced chưa triển khai, trong khi lõi CV/JD/NLP/embedding/matching/Skill Gap bám đúng tên đề tài.
