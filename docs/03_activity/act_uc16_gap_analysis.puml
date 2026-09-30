@@ -2,23 +2,31 @@
 skinparam monochrome true
 skinparam shadowing false
 
-title ACTIVITY - UC16 XEM KẾT QUẢ & SKILL GAP
+title ACTIVITY - UC16 XEM LỊCH SỬ, KẾT QUẢ & SKILL GAP
 
 start
-:User mở kết quả matching;
-:GET /api/v1/matching/{match_id};
-:Backend kiểm Candidate owner CV
-hoặc HR owner JD hoặc Admin;
-if (Có quyền?) then (Có)
-  if (status=COMPLETED?) then (Có)
-    :Trả overall + component scores
-    + matched/missing skills;
-  else (PROCESSING/PENDING)
-    :Trả trạng thái hiện tại;
+:User mở lịch sử matching;
+:GET /api/v1/matching?page&limit&filters;
+:Backend scope theo Candidate owner CV,
+HR owner JD hoặc Admin;
+:200 danh sách matching;
+
+if (User chọn một match?) then (Có)
+  :GET /api/v1/matching/{match_id};
+  :Backend kiểm ownership/role;
+  if (Có quyền?) then (Có)
+    if (status=COMPLETED?) then (Có)
+      :Trả overall + component scores
+      + matched/missing skills;
+    else (PROCESSING/PENDING/FAILED)
+      :Trả trạng thái hiện tại;
+      stop
+    endif
+  else (Không)
+    :404/403;
     stop
   endif
 else (Không)
-  :404/403;
   stop
 endif
 
