@@ -1,4 +1,4 @@
-# API CONTRACT SPECIFICATION — v1
+# API CONTRACT SPECIFICATION — MVP v1
 
 ## 1. Quy ước chung
 
@@ -10,6 +10,7 @@
 - `skills.id` và các bảng child dùng integer/bigint theo schema.
 - Timestamp trả ISO-8601 UTC.
 - Backend quyết định authentication/authorization/ownership; frontend không phải security boundary.
+- OpenAPI MVP chỉ expose các route thuộc MVP. Feature Advanced như export PDF/Excel chỉ thêm vào OpenAPI khi được triển khai thật.
 
 ### Success envelope
 
@@ -21,7 +22,7 @@
 }
 ```
 
-List response:
+### Paginated envelope
 
 ```json
 {
@@ -76,25 +77,15 @@ List response:
 
 **Access:** Public.
 
-Request:
-
-```json
-{
-  "email": "candidate@example.com",
-  "password": "SecurePassword123@",
-  "full_name": "Nguyen Van A",
-  "phone_number": "0912345678",
-  "role": "CANDIDATE"
-}
-```
+Request: `RegisterRequest`.
 
 Rules:
 - `role` chỉ `CANDIDATE|HR`.
-- backend normalize email lowercase trước persistence.
-- email unique.
-- password tối thiểu 8 ký tự; policy chi tiết do schema/service kiểm tra.
+- backend normalize email lowercase.
+- database enforce unique không phân biệt hoa/thường bằng index `LOWER(email)`.
+- password tối thiểu 8 ký tự; hash trước persistence.
 
-Response `201`: `id,email,full_name,phone_number,role,is_active,created_at`.
+Response `201`: `UserResponse`.
 
 Errors: `409`, `422`.
 
@@ -102,33 +93,9 @@ Errors: `409`, `422`.
 
 **Access:** Public.
 
-Request:
+Request: `LoginRequest`.
 
-```json
-{
-  "email": "candidate@example.com",
-  "password": "SecurePassword123@"
-}
-```
-
-Response `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "access_token": "jwt",
-    "token_type": "Bearer",
-    "expires_in": 900,
-    "user": {
-      "id": "uuid",
-      "email": "candidate@example.com",
-      "full_name": "Nguyen Van A",
-      "role": "CANDIDATE"
-    }
-  }
-}
-```
+Response `200`: `LoginResponse` gồm `access_token`, `token_type`, `expires_in`, `user`.
 
 Nếu Refresh Session được bật, backend đồng thời gửi `Set-Cookie` chứa refresh token/session với `HttpOnly`; frontend không tự tạo HttpOnly Cookie.
 
@@ -139,7 +106,7 @@ Errors: `401`, `403`, `422`.
 **Access:** Refresh Cookie hợp lệ.
 
 - Backend đọc Cookie, verify, kiểm session/revoke và rotate.
-- Response `200` trả Access Token mới.
+- Response `200`: `TokenResponse`.
 - Backend gửi `Set-Cookie` refresh token mới.
 
 Errors: `401` cho expired/revoked/replay.
@@ -156,16 +123,11 @@ Errors: `401` cho expired/revoked/replay.
 
 **Access:** Authenticated.
 
-Request:
-
-```json
-{
-  "current_password": "OldPass123@",
-  "new_password": "NewPass123@"
-}
-```
+Request: `ChangePasswordRequest`.
 
 Thành công: update password hash; revoke refresh sessions cũ theo policy.
+
+Response `200`: `MessageResponse`.
 
 Errors: `400`, `401`, `422`.
 
@@ -173,22 +135,17 @@ Errors: `400`, `401`, `422`.
 
 **Access:** Authenticated.
 
-Response `200` với `id,email,full_name,phone_number,role,is_active,created_at,updated_at`.
+Response `200`: `UserResponse`.
 
 ## PUT `/users/me`
 
 **Access:** Authenticated.
 
-Request:
-
-```json
-{
-  "full_name": "Nguyen Van A",
-  "phone_number": "0987654321"
-}
-```
+Request: `UserUpdateRequest`.
 
 Không nhận `role`, `is_active`, `id` từ endpoint này.
+
+Response `200`: `UserResponse`.
 
 ## GET `/admin/users`
 
@@ -196,22 +153,17 @@ Không nhận `role`, `is_active`, `id` từ endpoint này.
 
 Query: `page`, `limit`, `role`, `is_active`, `keyword`.
 
-Response: paginated users.
+Response `200`: `PaginatedUsersResponse`.
 
 ## PATCH `/admin/users/{id}`
 
 **Access:** Admin only.
 
-Request phải có ít nhất một field:
-
-```json
-{
-  "is_active": false,
-  "role": "HR"
-}
-```
+Request: `AdminUserPatchRequest`, ít nhất một field.
 
 Rule: không cho self-lock/self-demote.
+
+Response `200`: `UserResponse`.
 
 Errors: `400`, `403`, `404`, `422`.
 
@@ -223,16 +175,11 @@ Errors: `400`, `403`, `404`, `422`.
 
 **Access:** Authenticated Candidate/HR/Admin.
 
-Mục đích: autocomplete/tra cứu skill chuẩn khi user chỉnh CV hoặc HR chỉnh criteria JD. Taxonomy được seed/quản lý nội bộ; MVP không expose CRUD skill cho user thường.
+Mục đích: autocomplete/tra cứu taxonomy chuẩn khi review CV/JD. MVP không expose CRUD skill cho user thường.
 
-Query:
-- `keyword` optional.
-- `skill_kind=HARD|SOFT` optional.
-- `category` optional.
-- `page` default 1.
-- `limit` default 20, max 100.
+Query: `keyword`, `skill_kind=HARD|SOFT`, `category`, `page`, `limit`.
 
-Response `200` paginated với `id,name,normalized_name,skill_kind,category`.
+Response `200`: `PaginatedSkillsResponse`.
 
 ---
 
@@ -242,30 +189,17 @@ Response `200` paginated với `id,name,normalized_name,skill_kind,category`.
 
 **Access:** Candidate, HR.
 
-Content-Type: `multipart/form-data`.
+Content-Type: `multipart/form-data`, field `file`.
 
-Field: `file` — PDF hoặc DOCX, <= 5 MB.
-
-Backend:
-- kiểm size + MIME/Magic Bytes;
+Rules:
+- PDF/DOCX, <= 5 MB.
+- backend kiểm size + MIME/Magic Bytes;
 - sinh `storage_key` an toàn;
-- gán `owner_user_id=current_user.id`;
+- `owner_user_id=current_user.id`;
 - tạo Resume `PENDING`;
 - kích hoạt parse task/background mechanism.
 
-Response `202`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "resume_id": "uuid",
-    "file_name": "cv.pdf",
-    "file_size": 154200,
-    "parsing_status": "PENDING"
-  }
-}
-```
+Response `202`: `ResumeUploadResponse`.
 
 Errors: `413`, `415`, `422`.
 
@@ -279,36 +213,19 @@ Scope:
 - Candidate/HR: `owner_user_id=current_user.id`, `is_deleted=false`.
 - Admin: toàn hệ thống, mặc định loại soft-deleted.
 
-Response: paginated resume summary.
+Response `200`: `PaginatedResumesResponse`.
 
 ## GET `/resumes/{id}`
 
 **Access:** Owner Candidate/HR hoặc Admin.
 
-Response `200` chứa:
-- Resume metadata;
-- `candidate_profile`;
-- `skills`;
-- `experiences`;
-- `educations`.
+Response `200`: `ResumeDetailResponse` gồm metadata + `candidate_profile` + skills + experiences + educations.
 
 ## GET `/resumes/{id}/status`
 
 **Access:** Owner/Admin.
 
-Response `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "resume_id": "uuid",
-    "parsing_status": "PROCESSING",
-    "parsed_at": null,
-    "error_message": null
-  }
-}
-```
+Response `200`: `ResumeStatusResponse`.
 
 ## PUT `/resumes/{id}/parsed-data`
 
@@ -316,39 +233,16 @@ Response `200`:
 
 **Precondition:** Resume `PARSED`.
 
-Request:
-
-```json
-{
-  "candidate_profile": {
-    "full_name": "Nguyen Van A",
-    "email": "a@example.com",
-    "phone_number": "0900000000",
-    "current_title": "Backend Developer",
-    "location": "Ho Chi Minh",
-    "linkedin_url": null,
-    "github_url": "https://github.com/example",
-    "professional_summary": "..."
-  },
-  "skills": [
-    {
-      "skill_id": 1,
-      "years_of_experience": 2.0,
-      "proficiency_level": "Intermediate"
-    }
-  ],
-  "experiences": [],
-  "educations": []
-}
-```
+Request: `ResumeParsedDataUpdate`.
 
 Rules:
-- validate taxonomy skill IDs, duplicate skill IDs, date ranges.
-- cập nhật aggregate trong transaction.
-- tái sinh `resume_embedding` bằng cùng embedding model nếu canonical structured text thay đổi.
-- set `is_manually_edited=true`.
+- validate taxonomy skill IDs, duplicate skill IDs, date ranges;
+- cập nhật aggregate trong transaction;
+- tái sinh `resume_embedding` khi canonical structured text thay đổi;
+- set `is_manually_edited=true`;
+- **invalidate mọi Match hiện hành của resume**: `status=PENDING`, clear scores/evidence/error/`calculated_at`.
 
-Response `200`.
+Response `200`: `ResumeDetailResponse`.
 
 ## GET `/resumes/{id}/download`
 
@@ -372,26 +266,14 @@ Response `204`.
 
 **Access:** HR/Admin.
 
-Request:
-
-```json
-{
-  "title": "Backend Python Developer",
-  "job_level": "Junior",
-  "location": "Ho Chi Minh",
-  "raw_content": "...",
-  "w_skill": 0.5,
-  "w_semantic": 0.3,
-  "w_experience": 0.2
-}
-```
+Request: `JobCreateRequest`.
 
 Rules:
-- mỗi weight trong `[0,1]`, tổng `1.000`.
-- server tạo `status=DRAFT`, `parsing_status=PENDING`.
+- mỗi weight trong `[0,1]`, tổng `1.000`;
+- server tạo `status=DRAFT`, `parsing_status=PENDING`;
 - pipeline trích `min_experience_years`, `education_requirement`, `job_skills` và embedding từ JD.
 
-Response `201` với `job_id`, `status`, `parsing_status`.
+Response `201`: `JobResponse`.
 
 ## GET `/jobs`
 
@@ -404,38 +286,35 @@ Scope:
 - HR: chỉ JD do mình sở hữu; có thể lọc DRAFT/ACTIVE/CLOSED.
 - Admin: toàn bộ theo filter.
 
+Response `200`: `PaginatedJobsResponse`.
+
 ## GET `/jobs/{id}`
 
 **Access:** Candidate chỉ JD ACTIVE; HR chỉ JD mình sở hữu; Admin toàn quyền.
+
+Response `200`: `JobResponse`.
 
 ## PUT `/jobs/{id}`
 
 **Access:** HR owner/Admin.
 
-Cho phép sửa metadata: `title`, `job_level`, `location`, `raw_content`.
+Request: `JobUpdateRequest`.
 
 Nếu `raw_content` đổi:
 - đưa `status=DRAFT`;
 - đặt `parsing_status=PENDING`;
 - `is_criteria_verified=false`;
 - clear `job_embedding`, `embedding_model`, `parsed_at`;
+- invalidate mọi Match hiện hành của JD;
 - enqueue parse lại.
 
-Criteria (`min_experience_years`, `education_requirement`, skill list) không chỉnh qua endpoint này; dùng `/criteria`.
-
-Response `200`.
+Response `200`: `JobResponse`.
 
 ## PATCH `/jobs/{id}/status`
 
 **Access:** HR owner/Admin.
 
-Request:
-
-```json
-{"status": "ACTIVE"}
-```
-
-Allowed: `DRAFT|ACTIVE|CLOSED`.
+Request: `JobStatusRequest`.
 
 Chỉ cho `ACTIVE` khi:
 - `parsing_status=PARSED`;
@@ -443,6 +322,8 @@ Chỉ cho `ACTIVE` khi:
 - chưa soft-delete;
 - có embedding hợp lệ;
 - có ít nhất một `job_skill` hợp lệ.
+
+Response `200`: `JobResponse`.
 
 Nếu chưa sẵn sàng: `422`.
 
@@ -456,11 +337,7 @@ Soft delete. Response `204`.
 
 **Access:** HR owner/Admin.
 
-Response gồm:
-- `min_experience_years`;
-- `education_requirement`;
-- `is_criteria_verified`;
-- `skills[]` với `skill_id,name,skill_kind,importance,min_years_required`.
+Response `200`: `JobCriteriaResponse`.
 
 ## PUT `/jobs/{id}/criteria`
 
@@ -468,52 +345,32 @@ Response gồm:
 
 **Precondition:** JD `PARSED`.
 
-Request:
-
-```json
-{
-  "min_experience_years": 1.0,
-  "education_requirement": "University or equivalent",
-  "skills": [
-    {
-      "skill_id": 1,
-      "importance": "MANDATORY",
-      "min_years_required": 1.0
-    }
-  ]
-}
-```
+Request: `JobCriteriaRequest`.
 
 Rules:
-- `skills` phải có ít nhất 1 phần tử.
-- không duplicate `skill_id`.
-- mọi `skill_id` phải tồn tại trong taxonomy.
-- `importance` chỉ `MANDATORY|OPTIONAL`.
-- transaction save và set `is_criteria_verified=true`.
+- `skills` có ít nhất 1 phần tử;
+- không duplicate `skill_id`;
+- mọi `skill_id` tồn tại trong taxonomy;
+- `importance` chỉ `MANDATORY|OPTIONAL`;
+- transaction save + `is_criteria_verified=true`;
+- **invalidate mọi Match hiện hành của JD** và clear stale payload.
 
-Response `200`.
+Response `200`: `JobCriteriaResponse`.
 
 ## PUT `/jobs/{id}/weights`
 
 **Access:** HR owner/Admin.
 
-Request:
-
-```json
-{
-  "w_skill": 0.5,
-  "w_semantic": 0.3,
-  "w_experience": 0.2,
-  "recalculate": true
-}
-```
+Request: `WeightsRequest`.
 
 Rules:
 - mỗi weight `[0,1]`;
 - tổng `1.000`;
-- nếu `recalculate=true`, các match hiện hành liên quan được đưa về lifecycle tính lại theo service policy.
+- **luôn invalidate** mọi Match hiện hành của JD;
+- nếu `recalculate=true`, enqueue tính lại ngay;
+- nếu `false`, Match vẫn `PENDING` và không xuất hiện trên leaderboard cho tới khi được tính lại.
 
-Response `200`.
+Response `200`: `JobResponse`.
 
 ---
 
@@ -523,28 +380,35 @@ Response `200`.
 
 **Access:** Candidate/HR/Admin.
 
-Request dùng chung single/batch:
-
-```json
-{
-  "job_id": "uuid",
-  "resume_ids": ["uuid"]
-}
-```
+Request: `MatchCalculateRequest` dùng chung single/batch.
 
 Rules chung:
-- `resume_ids` tối thiểu 1, không duplicate.
-- CV/JD phải chưa soft-delete.
-- CV phải `PARSED`, có `resume_embedding` + `embedding_model`.
-- JD phải `PARSED`, `is_criteria_verified=true`, có `job_embedding` + `embedding_model` và ít nhất một `job_skill`.
-- CV/JD embedding phải cùng model/dimension trong deployment hiện tại.
+- `resume_ids` tối thiểu 1, không duplicate;
+- CV/JD chưa soft-delete;
+- CV `PARSED`, có `resume_embedding` + `embedding_model`;
+- JD `PARSED`, criteria verified, có `job_embedding` + `embedding_model`, >=1 `job_skill`;
+- CV/JD embedding cùng model/dimension.
 
 Role/ownership:
-- Candidate: mọi resume ID phải thuộc Candidate; JD phải `ACTIVE`.
-- HR: JD phải thuộc HR; mọi resume ID phải thuộc kho HR trong MVP.
-- Admin: có quyền vận hành toàn hệ thống.
+- Candidate: mọi resume ID thuộc Candidate; JD `ACTIVE`.
+- HR: JD thuộc HR; mọi resume ID thuộc kho HR.
+- Admin: toàn quyền.
 
-Response `202`:
+Khi upsert pair `(job_id,resume_id)`, backend reset toàn bộ stale payload trước enqueue:
+
+```text
+status=PENDING
+all scores=NULL
+matched_skills=[]
+missing_skills=[]
+gap_analysis_summary=NULL
+error_message=NULL
+calculated_at=NULL
+```
+
+Response `202`: `MatchTriggerResponse`.
+
+Ví dụ:
 
 ```json
 {
@@ -552,11 +416,13 @@ Response `202`:
   "data": {
     "job_id": "uuid",
     "match_ids": ["uuid"],
-    "total_jobs": 1,
-    "status": "QUEUED"
+    "total_matches": 1,
+    "status": "PENDING"
   }
 }
 ```
+
+`QUEUED` không phải MatchStatus.
 
 Errors: `403`, `404`, `422`.
 
@@ -564,74 +430,75 @@ Errors: `403`, `404`, `422`.
 
 **Access:** Candidate/HR/Admin.
 
-Mục đích: lịch sử/kho kết quả matching bền vững.
+Mục đích: danh sách **kết quả matching hiện hành**. MVP chỉ có một row cho mỗi `(job_id,resume_id)`; endpoint này không phải lịch sử nhiều attempt.
 
 Query: `page`, `limit`, `job_id`, `resume_id`, `status`.
 
 Scope:
-- Candidate: chỉ match có resume thuộc Candidate.
-- HR: chỉ match có JD thuộc HR.
+- Candidate: Match có resume thuộc Candidate.
+- HR: Match chỉ khi JD thuộc HR **và** resume cũng thuộc kho HR.
 - Admin: toàn bộ.
 
-Response: paginated match summary.
+Response `200`: `PaginatedMatchesResponse`.
 
 ## GET `/matching/{match_id}`
 
-**Access:** Candidate owner CV, HR owner JD, Admin.
+**Access:**
+- Candidate: resume của Match thuộc Candidate.
+- HR: JD của Match thuộc HR **và** resume thuộc kho HR.
+- Admin: toàn quyền.
+
+Response `200`: `MatchResponse`.
 
 PENDING/PROCESSING/FAILED: scores có thể `null`.
 
-COMPLETED trả ít nhất:
-- `id`, `job_id`, `resume_id`;
-- `status`;
-- `overall_score`, `skill_score`, `semantic_score`, `experience_score`;
-- `algorithm_version`;
-- `calculated_at`.
-
 ## GET `/matching/{match_id}/gap-analysis`
 
-**Access:** như GET match.
+**Access:** giống GET Match.
 
 **Precondition:** Match `COMPLETED`.
 
-Response gồm:
-- scores;
-- matched skills;
-- missing skills với `importance`, `criticality`, `gap_type`;
-- recommendation rule-based/taxonomy;
-- explanation LLM/XAI nếu module được bật.
+Response `200`: `GapAnalysisResponse`.
 
-LLM explanation không thay đổi scores hoặc matched set.
+LLM explanation nếu bật không được thay đổi scores hoặc matched set.
 
 ## GET `/jobs/{id}/leaderboard`
 
 **Access:** HR owner/Admin. Candidate bị từ chối.
 
-Query:
-- `page` default 1;
-- `limit` default 50, max 100;
-- `min_score` optional `[0,100]`.
+Query: `page`, `limit`, `min_score`.
 
-Chỉ lấy Match `COMPLETED`, sort `overall_score DESC`.
+Rules:
+- chỉ Match `COMPLETED`;
+- HR chỉ thấy row có JD thuộc HR **và** `resume.owner_user_id=current_user.id`;
+- Candidate self-match với JD của HR không xuất hiện cho HR trong MVP;
+- sort `overall_score DESC`.
 
-## GET `/jobs/{id}/export`
+Response `200`: `LeaderboardResponse`.
 
-**Access:** HR owner/Admin.
+---
 
-Query: `format=pdf|excel`.
+# MODULE F — ADVANCED, CHƯA THUỘC OPENAPI MVP
 
-**Advanced feature.** Nếu chưa triển khai thì không expose route production và không trình bày trong báo cáo/demo như tính năng đã hoàn thành.
+## GET `/jobs/{id}/export?format=pdf|excel`
+
+Dự kiến cho HR owner/Admin khi module xuất báo cáo được triển khai.
+
+**Không expose trong `openapi.yaml` MVP và không trình bày như tính năng đã hoàn thành khi chưa code.** Khi triển khai phải bổ sung route vào OpenAPI, test authorization và cập nhật Traceability.
 
 ---
 
 # 3. Quy tắc đồng bộ với code
 
-1. Pydantic request/response schema phải dùng đúng naming tài liệu này.
-2. ORM phải map đúng `docs/05_database/schema.sql`.
-3. Matching single/batch chỉ dùng `/matching/calculate`; không tạo `/matching/single-match` hoặc `/matching/batch-match`.
-4. `skills.skill_kind` là `HARD|SOFT`; `job_skills.importance` là `MANDATORY|OPTIONAL`.
+1. Pydantic request/response schema phải dùng đúng naming tài liệu này/OpenAPI.
+2. ORM map đúng `docs/05_database/schema.sql`.
+3. Matching single/batch chỉ dùng `/matching/calculate`.
+4. `skills.skill_kind=HARD|SOFT`; `job_skills.importance=MANDATORY|OPTIONAL`.
 5. `owner_user_id` là field chuẩn của `resumes`.
-6. Autocomplete skill lấy từ `/skills` hoặc cache của cùng API, không hard-code taxonomy khác nhau ở frontend/backend.
+6. Autocomplete skill lấy từ `/skills` hoặc cache của cùng API.
 7. Criteria JD phải verified và có ít nhất một skill trước ACTIVE/matching.
-8. `hybrid-v1` dùng cosine cho Semantic Score; BM25 chỉ diagnostic/experiment cho tới khi có version thuật toán mới.
-9. Nếu thay đổi route/enum/persistence field, cập nhật PTTK + Traceability trước khi code.
+8. `hybrid-v1` dùng cosine cho Semantic Score; BM25 chỉ diagnostic/experiment.
+9. HR Match visibility bắt buộc kiểm **cả ownership JD và ownership CV** trong MVP.
+10. Mọi thay đổi làm score stale phải invalidate row trước khi leaderboard tiếp tục sử dụng.
+11. JSON endpoint chính phải có response schema thực trong OpenAPI, không chỉ `description`.
+12. Nếu thay đổi route/enum/persistence field, cập nhật PTTK + Traceability trước khi code.
