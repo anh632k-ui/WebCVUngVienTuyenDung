@@ -46,7 +46,14 @@ Pipeline phải tạo dữ liệu có thể kiểm tra và sửa thủ công. M�
 - Ghi `embedding_model` để tránh trộn vector khác model.
 
 ### Bước 8 — Human-in-the-loop
-User xem dữ liệu đã parse và chỉnh; service đánh dấu `is_manually_edited=true`. Nếu dữ liệu có ảnh hưởng embedding, service phải tái sinh embedding sau transaction thành công.
+User xem dữ liệu đã parse và chỉnh; service đánh dấu `is_manually_edited=true`. Nếu dữ liệu thay đổi phần dùng cho embedding/matching, service phải:
+
+1. tái sinh embedding canonical;
+2. trong cùng transaction invalidate mọi `match_results` của resume;
+3. clear scores/evidence/error/`calculated_at` và đặt `status=PENDING`;
+4. chỉ enqueue recalculation ngay khi policy/UI yêu cầu.
+
+Nhờ đó kết quả cũ không tiếp tục được hiển thị như một score hợp lệ sau khi CV thay đổi.
 
 ## 3. JD Pipeline
 
@@ -63,13 +70,22 @@ User xem dữ liệu đã parse và chỉnh; service đánh dấu `is_manually_e
 8. Lưu `job_skills`, parsed metadata; `parsing_status=PARSED`.
 9. HR rà soát criteria và đặt `is_criteria_verified=true`.
 
+Nếu `raw_content` JD thay đổi, service đưa JD về `DRAFT/PENDING`, clear embedding/verification cũ và invalidate mọi Match hiện hành của JD trước khi parse lại. Nếu HR thay criteria hoặc weights sau đó, Match cũng phải bị invalidate theo cùng canonical reset rule.
+
 ## 4. Background processing
 
 Interface nghiệp vụ chỉ yêu cầu một Task Dispatcher. Triển khai mục tiêu có thể là Celery + Redis. Trong giai đoạn MVP/local, có thể dùng implementation đơn giản hơn nhưng API/state machine không thay đổi.
 
-Upload/trigger endpoint trả `202 Accepted` khi công việc được nhận, trạng thái được đọc lại bằng status/result endpoint.
+Upload/trigger endpoint trả `202 Accepted` khi công việc được nhận. Với Match, trạng thái domain vừa tiếp nhận là `PENDING`; `QUEUED` không phải MatchStatus canonical.
 
-## 5. LLM/XAI
+## 5. Privacy boundary của Matching
+
+- Candidate self-match dùng CV của Candidate và JD ACTIVE, nhưng kết quả đó chỉ Candidate/Admin đọc trong MVP.
+- HR matching chỉ dùng JD do HR sở hữu và CV thuộc kho HR.
+- HR Match/Skill Gap/Leaderboard phải kiểm đồng thời ownership của cả JD và CV.
+- MVP chưa có `applications`; pipeline/worker không được tự suy ra quyền HR từ việc Candidate đã match JD của HR.
+
+## 6. LLM/XAI
 
 LLM là adapter nâng cao cho:
 - diễn giải vì sao điểm cao/thấp;
@@ -81,6 +97,6 @@ LLM nhận **evidence đã xác định** từ Matching Engine và không đư�
 - tự thêm skill vào tập matched nếu taxonomy engine không xác nhận;
 - tạo học vấn/kinh nghiệm không có trong CV.
 
-## 6. Phiên bản và tái lập
+## 7. Phiên bản và tái lập
 
-Khi thay preprocessing/model/công thức matching, tăng `algorithm_version` hoặc model version. Kết quả thực nghiệm phải ghi rõ phiên bản để có thể tái lập.
+Khi thay preprocessing/model/công thức matching, tăng `algorithm_version` hoặc model version. Thay đổi làm score cũ stale phải invalidate các Match liên quan trước khi sử dụng kết quả mới. Kết quả thực nghiệm phải ghi rõ phiên bản để có thể tái lập.
