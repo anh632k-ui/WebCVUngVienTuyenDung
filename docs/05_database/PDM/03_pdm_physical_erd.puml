@@ -17,6 +17,7 @@ entity skills {
 entity resumes {
  * id : UUID <<PK>>
  * owner_user_id : UUID <<FK>>
+ * create_request_fingerprint : VARCHAR(64) <<CHECK>>
  * revision : BIGINT <<CHECK>>
  * parsing_status : VARCHAR <<CHECK>>
  resume_embedding : vector(1024)
@@ -47,6 +48,7 @@ entity resume_educations {
 entity job_descriptions {
  * id : UUID <<PK>>
  * recruiter_id : UUID <<FK>>
+ * create_request_fingerprint : VARCHAR(64) <<CHECK>>
  * revision : BIGINT <<CHECK>>
  * parsing_status : VARCHAR <<CHECK>>
  job_embedding : vector(1024)
@@ -87,6 +89,16 @@ job_descriptions ||--o{ job_skills
 skills ||--o{ job_skills
 job_descriptions ||--o{ match_results
 resumes ||--o{ match_results
+
+note right of resumes
+create_request_fingerprint = SHA-256(raw file bytes).
+Same deterministic id + different fingerprint => 409.
+end note
+
+note right of job_descriptions
+create_request_fingerprint = SHA-256(canonical create payload).
+Same deterministic id + different fingerprint => 409.
+end note
 
 note right of match_results
 UQ(job_id,resume_id)
