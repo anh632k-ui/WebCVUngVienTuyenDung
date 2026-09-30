@@ -36,8 +36,11 @@ alt invalid
   Service --> API : validation error
   API --> FE : 422
 else valid
-  Service -> DB : transaction update JD + replace/upsert job_skills\nset is_criteria_verified=true
-  DB --> Service : commit
+  Service -> DB : BEGIN
+  Service -> DB : update JD + replace/upsert job_skills\nset is_criteria_verified=true
+  Service -> DB : invalidate related matches\nstatus=PENDING; clear scores/evidence/error/calculated_at
+  Service -> DB : COMMIT
+  DB --> Service : committed
   Service --> API : updated criteria
   API --> FE : 200
 end
@@ -51,9 +54,11 @@ alt invalid
   Service --> API : validation error
   API --> FE : 422
 else valid
+  Service -> DB : BEGIN
   Service -> DB : UPDATE job_descriptions weights
+  Service -> DB : invalidate related matches\nstatus=PENDING; clear scores/evidence/error/calculated_at
+  Service -> DB : COMMIT
   opt recalculate=true
-    Service -> DB : mark related completed matches PENDING/reset stale scores
     Service -> Dispatcher : enqueue recalculation jobs
   end
   Service --> API : success
