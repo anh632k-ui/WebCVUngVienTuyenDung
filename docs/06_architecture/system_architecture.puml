@@ -19,11 +19,12 @@ package "Presentation Layer" {
 
 package "Application Layer - FastAPI" {
   [API v1 Router] as Router
-  [Auth / RBAC / Ownership Dependencies] as Security
+  [Auth / RBAC / Ownership] as Security
   [User Service] as UserService
   [Resume Service] as ResumeService
   [Job Service] as JobService
   [Matching Service] as MatchService
+  [Revision / Generation Guard] as VersionGuard
   [Task Dispatcher] as Dispatcher
 
   Router --> Security
@@ -31,6 +32,9 @@ package "Application Layer - FastAPI" {
   Router --> ResumeService
   Router --> JobService
   Router --> MatchService
+  ResumeService --> VersionGuard
+  JobService --> VersionGuard
+  MatchService --> VersionGuard
   ResumeService --> Dispatcher
   JobService --> Dispatcher
   MatchService --> Dispatcher
@@ -39,16 +43,16 @@ package "Application Layer - FastAPI" {
 package "AI / NLP & Background Processing" {
   [Celery Worker\n(or development fallback)] as Worker
   [Text Extractor\npdfplumber/python-docx] as Extractor
-  [OCR Adapter\noptional] as OCR
+  [OCR Adapter\nAdvanced] as OCR
   [Entity / Section Extractor] as Entity
-  [Skill Normalizer] as Normalizer
-  [Embedding Service\nbge-m3 / 1024 dims] as Embedding
-  [BM25 Adapter\noptional lexical signal] as BM25
+  [Skill Normalizer\nseeded taxonomy] as Normalizer
+  [Embedding Service\nmodel + preprocessing version] as Embedding
+  [BM25 Adapter\ndiagnostic v1] as BM25
   [Hybrid Matching Engine] as Matching
-  [LLM/XAI Adapter\noptional] as LLM
+  [LLM/XAI Adapter\nAdvanced] as LLM
 
   Worker --> Extractor
-  Extractor --> OCR : fallback
+  Extractor --> OCR : fallback when enabled
   Worker --> Entity
   Worker --> Normalizer
   Worker --> Embedding
@@ -58,8 +62,8 @@ package "AI / NLP & Background Processing" {
 }
 
 package "Persistence / Infrastructure" {
-  database "PostgreSQL 18 + pgvector" as DB
-  database "Redis\nTask broker + refresh session [optional by feature]" as Redis
+  database "PostgreSQL 18 + pgvector\nrevision/generation state" as DB
+  database "Redis\nTask broker [when enabled]" as Redis
   folder "CV File Storage" as Storage
 }
 
@@ -72,11 +76,21 @@ UserService --> DB
 ResumeService --> DB
 JobService --> DB
 MatchService --> DB
+VersionGuard --> DB : conditional writes
 ResumeService --> Storage
 Worker --> Storage
-Worker --> DB
-Dispatcher --> Redis : Celery broker when enabled
+Worker --> DB : terminal write guarded by expected versions
+Dispatcher --> Redis : queue when enabled
 Redis --> Worker
-Security --> Redis : refresh session/revoke when enabled
 
+note bottom of VersionGuard
+Parse task: expected resource revision.
+Match task: expected generation + Resume/JD revisions.
+Stale task must not overwrite newer state.
+end note
+
+note bottom of Security
+MVP: JWT Access Token.
+Refresh Rotation/HttpOnly session là Advanced.
+end note
 @enduml
