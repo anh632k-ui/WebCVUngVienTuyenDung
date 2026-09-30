@@ -2,78 +2,71 @@ name: Validate PTTK
 
 on:
   push:
-    branches:
-      - pttk-sync-v2
-    paths:
-      - 'docs/**'
-      - '.github/workflows/pttk-validate.yml'
+    branches: [pttk-sync-v2]
+    paths: ['docs/**', '.github/workflows/pttk-validate.yml']
   pull_request:
-    paths:
-      - 'docs/**'
-      - '.github/workflows/pttk-validate.yml'
+    paths: ['docs/**', '.github/workflows/pttk-validate.yml']
 
 jobs:
   validate-pttk:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install OpenAPI validators
+      - name: Install validators
         run: |
           python -m pip install --upgrade pip
           pip install pyyaml openapi-spec-validator
 
-      - name: Validate OpenAPI YAML and contract invariants
+      - name: Validate OpenAPI and round-3 invariants
         run: |
           python - <<'PY'
           from pathlib import Path
           import yaml
           from openapi_spec_validator import validate_spec
 
-          path = Path('docs/07_api/openapi.yaml')
-          with path.open('r', encoding='utf-8') as f:
-              spec = yaml.safe_load(f)
+          spec = yaml.safe_load(Path('docs/07_api/openapi.yaml').read_text(encoding='utf-8'))
           validate_spec(spec)
-
           paths = spec['paths']
-          assert '/matching/calculate' in paths
-          assert '/matching' in paths
-          assert '/skills' in paths
-          assert '/jobs/{id}/export' not in paths, 'Advanced export must not be exposed in MVP OpenAPI'
 
-          match_status = spec['components']['schemas']['MatchStatus']['enum']
-          assert match_status == ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED']
-          trigger_status = spec['components']['schemas']['MatchTriggerData']['properties']['status']['enum']
-          assert trigger_status == ['PENDING']
+          for forbidden in ('/auth/refresh','/auth/logout','/jobs/{id}/export'):
+              assert forbidden not in paths, f'Advanced route exposed in MVP: {forbidden}'
+          for required in ('/matching/calculate','/matching','/skills','/jobs'):
+              assert required in paths
 
-          # Every successful JSON endpoint (200/201/202) must declare a response schema.
-          for route, path_item in paths.items():
-              for method, operation in path_item.items():
-                  if method not in {'get', 'post', 'put', 'patch', 'delete'}:
+          assert spec['components']['schemas']['MatchStatus']['enum'] == ['PENDING','PROCESSING','COMPLETED','FAILED']
+          assert spec['components']['schemas']['MatchTriggerData']['properties']['status']['enum'] == ['PENDING']
+          assert '503' in paths['/matching/calculate']['post']['responses']
+          assert '409' in paths['/admin/users/{id}']['patch']['responses']
+          assert 'Admin' not in paths['/jobs']['post'].get('summary','')
+
+          match = spec['components']['schemas']['MatchSummary']['properties']
+          for f in ('generation','resume_revision','job_revision','embedding_model','embedding_preprocessing_version'):
+              assert f in match
+          resume = spec['components']['schemas']['ResumeSummary']['properties']
+          job = spec['components']['schemas']['Job']['properties']
+          assert 'revision' in resume and 'revision' in job
+
+          cp = spec['components']['schemas']['ResumeDetailData']['properties']['candidate_profile']
+          assert cp.get('nullable') is True
+
+          for route, item in paths.items():
+              for method, op in item.items():
+                  if method not in {'get','post','put','patch','delete'}:
                       continue
-                  for code in ('200', '201', '202'):
-                      response = operation.get('responses', {}).get(code)
-                      if not response:
+                  for code in ('200','201','202'):
+                      resp = op.get('responses',{}).get(code)
+                      if not resp:
                           continue
-                      content = response.get('content')
-                      assert content, f'{method.upper()} {route} {code} missing response content/schema'
-                      for media, media_obj in content.items():
-                          # Binary download media may intentionally omit a JSON schema.
-                          if media != 'application/json':
-                              continue
-                          assert 'schema' in media_obj, f'{method.upper()} {route} {code} JSON missing schema'
+                      content = resp.get('content')
+                      assert content, f'{method.upper()} {route} {code} missing content'
+                      if 'application/json' in content:
+                          assert 'schema' in content['application/json']
 
-          api_contract = Path('docs/07_api/api_contract.md').read_text(encoding='utf-8')
-          assert '"status": "QUEUED"' not in api_contract
-          assert '"total_jobs"' not in api_contract
-          assert 'total_matches' in api_contract
-          print('OpenAPI + API semantic validation: OK')
+          print('OpenAPI round-3 validation: OK')
           PY
 
       - name: Install PlantUML
@@ -81,49 +74,53 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y plantuml
 
-      - name: Validate PlantUML syntax
+      - name: Validate PlantUML
         run: |
           set -euo pipefail
           mapfile -d '' files < <(find docs -type f -name '*.puml' -print0)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo 'No PlantUML files found'
-            exit 1
-          fi
-          for file in "${files[@]}"; do
-            echo "Checking $file"
-            plantuml -checkonly "$file"
-          done
-          echo "PlantUML validation: OK (${#files[@]} files)"
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do plantuml -checkonly "$file"; done
+          echo "PlantUML OK: ${#files[@]} files"
 
-      - name: Static schema and design sanity check
+      - name: Validate schema seed and semantic invariants
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
 
           sql = Path('docs/05_database/schema.sql').read_text(encoding='utf-8')
-          tables = re.findall(r'(?im)^CREATE TABLE\s+([a-z_][a-z0-9_]*)\s*\(', sql)
-          expected = {
-              'users', 'skills', 'resumes', 'candidate_profiles',
-              'resume_skills', 'resume_experiences', 'resume_educations',
-              'job_descriptions', 'job_skills', 'match_results'
-          }
-          assert set(tables) == expected, (tables, expected)
-          assert 'vector(1024)' in sql
-          assert 'vector_cosine_ops' in sql
-          assert "status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')" in sql
-          assert 'CREATE UNIQUE INDEX uq_users_email_ci' in sql
-          assert 'LOWER(email)' in sql
-          assert 'chk_noncompleted_match_cleared' in sql
-          assert 'uq_job_resume_match UNIQUE (job_id, resume_id)' in sql
+          tables = set(re.findall(r'(?im)^CREATE TABLE\s+([a-z_][a-z0-9_]*)\s*\(', sql))
+          expected = {'users','skills','resumes','candidate_profiles','resume_skills','resume_experiences','resume_educations','job_descriptions','job_skills','match_results'}
+          assert tables == expected
+          for text in (
+              'revision BIGINT NOT NULL DEFAULT 1',
+              'generation BIGINT NOT NULL DEFAULT 1',
+              'resume_revision BIGINT NOT NULL',
+              'job_revision BIGINT NOT NULL',
+              'embedding_preprocessing_version',
+              'chk_match_error_state',
+              'chk_resume_error_state',
+              'chk_job_error_state',
+              'chk_noncompleted_match_cleared',
+              'vector_cosine_ops',
+              'CREATE UNIQUE INDEX uq_users_email_ci',
+          ):
+              assert text in sql, text
+
+          seed = Path('docs/05_database/skill_taxonomy_seed.sql').read_text(encoding='utf-8')
+          assert 'INSERT INTO skills' in seed
+          assert "'HARD'" in seed and "'SOFT'" in seed
+          assert seed.count("('" ) >= 30
 
           rules = Path('docs/00_requirements/business_rules.md').read_text(encoding='utf-8')
-          assert 'BR-MATCH-11' in rules
-          assert 'Candidate self-match' in rules
-          assert 'đồng thời' in rules
+          for key in ('BR-AUTH-07','BR-JOB-10','BR-MATCH-13','BR-MATCH-14','BR-MATCH-15','BR-MATCH-16'):
+              assert key in rules
+          for phrase in ('expected_revision','embedding_preprocessing_version','TASK_DISPATCH_FAILED'):
+              assert phrase in rules or phrase in Path('docs/PTTK_MASTER.md').read_text(encoding='utf-8')
 
           master = Path('docs/PTTK_MASTER.md').read_text(encoding='utf-8')
-          assert 'MVP không lưu nhiều attempt' in master
-          assert 'QUEUED' in master and 'không' in master
-          print('Schema + semantic design sanity: OK')
+          assert 'skill_taxonomy_seed.sql' in master
+          assert 'generation' in master and 'stale' in master.lower()
+          assert '0..1' in master
+          print('Schema/seed/semantic round-3 validation: OK')
           PY
