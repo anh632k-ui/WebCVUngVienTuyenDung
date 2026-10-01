@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
     database_url: SecretStr | None = None
     database_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    jwt_secret_key: SecretStr | None = Field(default=None, min_length=32)
+    jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
+    access_token_expire_minutes: int = Field(default=15, gt=0, le=1440)
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -41,6 +44,14 @@ class Settings(BaseSettings):
         if database_name != "webcv_ungvien":
             raise ValueError("DATABASE_URL must target the canonical webcv_ungvien database")
         return value
+
+    @field_validator("jwt_secret_key", mode="before")
+    @classmethod
+    def normalize_jwt_secret(cls, value: str | SecretStr | None) -> str | SecretStr | None:
+        if value is None:
+            return None
+        raw_value = value.get_secret_value() if isinstance(value, SecretStr) else value
+        return value if raw_value.strip() else None
 
 
 @lru_cache
