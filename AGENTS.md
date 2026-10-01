@@ -5,7 +5,8 @@
 - `main` is the stable milestone branch.
 - `dev` is the integration branch.
 - Development must happen on `feature/*` branches.
-- Current work must stay on `feature/backend-foundation`.
+- Current work must stay on the active `feature/*` branch.
+- Never implement feature work directly on `dev` or `main`.
 - Never merge automatically into `dev`.
 - Never merge automatically into `main`.
 - Do not force push.
@@ -55,35 +56,19 @@ Backend stack:
 - asyncpg
 - Pydantic
 
-## Current feature scope
+## Feature scope
 
-Current branch:
+Follow the scope of the current feature task and the canonical design under `docs/`.
 
-`feature/backend-foundation`
+Do not expand into unrelated features unless explicitly instructed.
 
-Implement backend foundation only.
+Before implementing a feature:
+- read the relevant canonical requirements/API/database documents;
+- inspect the existing implementation;
+- preserve database and reliability invariants;
+- add relevant automated tests.
 
-Allowed scope:
-
-- Python project foundation
-- dependency management
-- configuration/settings
-- environment handling
-- async SQLAlchemy engine/session
-- PostgreSQL connectivity
-- FastAPI application entry point
-- health endpoint
-- ORM mapping for the canonical schema
-- relevant tests
-
-Do NOT implement yet:
-
-- authentication business logic
-- Resume parsing
-- JD parsing
-- matching
-- AI/NLP
-- frontend business features
+Feature-specific scope belongs in the task prompt, not permanently in this file.
 
 ## Reliability
 
