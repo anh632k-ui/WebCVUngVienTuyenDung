@@ -5,6 +5,8 @@ from fastapi import APIRouter, Query
 
 from app.api.dependencies import CurrentUser, DatabaseSession
 from app.schemas.match_schema import (
+    GapAnalysisData,
+    GapAnalysisResponse,
     MatchDetail,
     MatchResponse,
     MatchStatus,
@@ -12,7 +14,7 @@ from app.schemas.match_schema import (
     PaginatedMatchesResponse,
     PaginationMeta,
 )
-from app.services.match_service import get_match, list_matches
+from app.services.match_service import get_gap_analysis, get_match, list_matches
 
 router = APIRouter(prefix="/matching", tags=["Matching"])
 
@@ -55,3 +57,30 @@ async def read_match(
 ) -> MatchResponse:
     match = await get_match(session, current_user=current_user, match_id=match_id)
     return MatchResponse(data=MatchDetail.model_validate(match))
+
+
+@router.get("/{match_id}/gap-analysis", response_model=GapAnalysisResponse)
+async def read_gap_analysis(
+    match_id: uuid.UUID,
+    session: DatabaseSession,
+    current_user: CurrentUser,
+) -> GapAnalysisResponse:
+    match = await get_gap_analysis(session, current_user=current_user, match_id=match_id)
+    assert match.overall_score is not None
+    return GapAnalysisResponse(
+        data=GapAnalysisData(
+            match_id=match.id,
+            overall_score=float(match.overall_score),
+            skill_score=(float(match.skill_score) if match.skill_score is not None else None),
+            semantic_score=(
+                float(match.semantic_score) if match.semantic_score is not None else None
+            ),
+            experience_score=(
+                float(match.experience_score) if match.experience_score is not None else None
+            ),
+            matched_skills=match.matched_skills,
+            missing_skills=match.missing_skills,
+            recommendation=match.gap_analysis_summary,
+            explanation=None,
+        )
+    )

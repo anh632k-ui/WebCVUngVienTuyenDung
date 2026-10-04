@@ -72,3 +72,19 @@ async def get_match(
     if match is None:
         raise APIError(404, "MATCH_NOT_FOUND", "Match not found")
     return match
+
+
+async def get_gap_analysis(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    match_id: uuid.UUID,
+) -> MatchResult:
+    match = await get_match(session, current_user=current_user, match_id=match_id)
+    if match.status != MatchStatus.COMPLETED.value:
+        raise APIError(
+            422,
+            "MATCH_NOT_COMPLETED",
+            "Gap analysis is available only for COMPLETED matches",
+        )
+    return match

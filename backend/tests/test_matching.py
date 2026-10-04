@@ -200,8 +200,21 @@ async def matching_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Matchin
             raise APIError(404, "MATCH_NOT_FOUND", "Match not found")
         return match
 
+    async def fake_get_gap_analysis(
+        session: Any, *, current_user: User, match_id: uuid.UUID
+    ) -> MatchResult:
+        match = await fake_get_match(session, current_user=current_user, match_id=match_id)
+        if match.status != "COMPLETED":
+            raise APIError(
+                422,
+                "MATCH_NOT_COMPLETED",
+                "Gap analysis is available only for COMPLETED matches",
+            )
+        return match
+
     monkeypatch.setattr(matching_endpoint, "list_matches", fake_list_matches)
     monkeypatch.setattr(matching_endpoint, "get_match", fake_get_match)
+    monkeypatch.setattr(matching_endpoint, "get_gap_analysis", fake_get_gap_analysis)
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = override_settings
     transport = ASGITransport(app=app)
@@ -347,3 +360,92 @@ def test_matching_route_table_contains_only_read_endpoints() -> None:
     paths = app.openapi()["paths"]
     assert set(paths["/api/v1/matching"]) == {"get"}
     assert set(paths["/api/v1/matching/{match_id}"]) == {"get"}
+    assert set(paths["/api/v1/matching/{match_id}/gap-analysis"]) == {"get"}
+
+
+@pytest.mark.asyncio
+async def test_completed_gap_analysis_returns_only_persisted_data(
+    matching_api: MatchingAPIContext,
+) -> None:
+    target = matching_api.matches[0]
+    original = (target.status, target.generation, target.updated_at)
+    response = await matching_api.client.get(
+        f"/api/v1/matching/{target.id}/gap-analysis", headers=matching_api.headers
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "data": {
+            "match_id": str(target.id),
+            "overall_score": 80.0,
+            "skill_score": 75.0,
+            "semantic_score": 85.0,
+            "experience_score": 80.0,
+            "matched_skills": [{"skill_id": 1, "name": "Python"}],
+            "missing_skills": [{"skill_id": 2, "name": "SQL"}],
+            "recommendation": "Improve SQL",
+            "explanation": None,
+        },
+    }
+    assert (target.status, target.generation, target.updated_at) == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["PENDING", "PROCESSING", "FAILED"])
+async def test_noncompleted_gap_analysis_is_rejected(
+    matching_api: MatchingAPIContext, status: str
+) -> None:
+    target = matching_api.matches[1]
+    target.status = status
+    response = await matching_api.client.get(
+        f"/api/v1/matching/{target.id}/gap-analysis", headers=matching_api.headers
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "MATCH_NOT_COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_gap_analysis_preserves_matching_ownership_and_deleted_scope(
+    matching_api: MatchingAPIContext,
+) -> None:
+    target = matching_api.matches[0]
+    unauthenticated = await matching_api.client.get(f"/api/v1/matching/{target.id}/gap-analysis")
+    denied_candidate = await matching_api.client.get(
+        f"/api/v1/matching/{matching_api.matches[2].id}/gap-analysis",
+        headers=matching_api.headers,
+    )
+
+    matching_api.actor.id = matching_api.hr_one.id
+    matching_api.actor.role = "HR"
+    hr_target = matching_api.matches[3]
+    hr_target.status = "COMPLETED"
+    hr_target.overall_score = Decimal("80.00")
+    hr_target.skill_score = Decimal("75.00")
+    hr_target.semantic_score = Decimal("85.00")
+    hr_target.experience_score = Decimal("80.00")
+    hr_target.embedding_model = "integration-model"
+    hr_target.embedding_preprocessing_version = "v1"
+    hr_target.error_message = None
+    hr_target.calculated_at = datetime.now(UTC)
+    hr = await matching_api.client.get(
+        f"/api/v1/matching/{hr_target.id}/gap-analysis",
+        headers=matching_api.headers,
+    )
+    matching_api.actor.role = "ADMIN"
+    admin = await matching_api.client.get(
+        f"/api/v1/matching/{target.id}/gap-analysis", headers=matching_api.headers
+    )
+    deleted_resume = await matching_api.client.get(
+        f"/api/v1/matching/{matching_api.matches[6].id}/gap-analysis",
+        headers=matching_api.headers,
+    )
+    deleted_job = await matching_api.client.get(
+        f"/api/v1/matching/{matching_api.matches[7].id}/gap-analysis",
+        headers=matching_api.headers,
+    )
+    assert unauthenticated.status_code == 401
+    assert denied_candidate.status_code == 404
+    assert hr.status_code == 200
+    assert admin.status_code == 200
+    assert deleted_resume.status_code == 404
+    assert deleted_job.status_code == 404

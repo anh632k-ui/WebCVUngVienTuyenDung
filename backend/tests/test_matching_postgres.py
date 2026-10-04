@@ -321,3 +321,59 @@ async def test_real_postgres_matching_read_scope_and_filters(
         match.id: (match.status, match.generation, match.updated_at) for match in persisted
     } == initial
     assert harness.outer_transaction.is_active
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_gap_analysis_reads_persisted_result(
+    postgres_matching: PostgreSQLMatchingHarness,
+) -> None:
+    harness = postgres_matching
+    completed = harness.matches["candidate_completed"]
+    candidate_headers = harness.headers("candidate")
+    initial = (completed.status, completed.generation, completed.updated_at)
+    hr_completed = harness.matches["hr_both_failed"]
+    hr_completed.status = "COMPLETED"
+    hr_completed.overall_score = Decimal("70.00")
+    hr_completed.skill_score = Decimal("65.00")
+    hr_completed.semantic_score = Decimal("75.00")
+    hr_completed.experience_score = Decimal("70.00")
+    hr_completed.matched_skills = [{"skill_id": 1, "name": "Python"}]
+    hr_completed.missing_skills = []
+    hr_completed.gap_analysis_summary = "Persisted HR summary"
+    hr_completed.embedding_model = "integration-model"
+    hr_completed.embedding_preprocessing_version = "v1"
+    hr_completed.error_message = None
+    hr_completed.calculated_at = datetime.now(UTC)
+    await harness.session.commit()
+    hr_initial = (hr_completed.status, hr_completed.generation, hr_completed.updated_at)
+    response = await harness.client.get(
+        f"/api/v1/matching/{completed.id}/gap-analysis",
+        headers=candidate_headers,
+    )
+    pending = await harness.client.get(
+        f"/api/v1/matching/{harness.matches['candidate_pending'].id}/gap-analysis",
+        headers=candidate_headers,
+    )
+    deleted = await harness.client.get(
+        f"/api/v1/matching/{harness.matches['deleted_resume'].id}/gap-analysis",
+        headers=harness.headers("admin"),
+    )
+    hr_response = await harness.client.get(
+        f"/api/v1/matching/{hr_completed.id}/gap-analysis",
+        headers=harness.headers("hr_one"),
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["match_id"] == str(completed.id)
+    assert response.json()["data"]["matched_skills"][0]["source"] == ("candidate-completed")
+    assert response.json()["data"]["recommendation"] == "Improve SQL"
+    assert response.json()["data"]["explanation"] is None
+    assert pending.status_code == 422
+    assert pending.json()["error"]["code"] == "MATCH_NOT_COMPLETED"
+    assert deleted.status_code == 404
+    assert hr_response.status_code == 200
+    assert hr_response.json()["data"]["recommendation"] == "Persisted HR summary"
+    await harness.session.refresh(completed)
+    await harness.session.refresh(hr_completed)
+    assert (completed.status, completed.generation, completed.updated_at) == initial
+    assert (hr_completed.status, hr_completed.generation, hr_completed.updated_at) == hr_initial
+    assert harness.outer_transaction.is_active

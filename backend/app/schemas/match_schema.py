@@ -60,3 +60,20 @@ class PaginatedMatchesResponse(BaseModel):
 class MatchResponse(BaseModel):
     success: Literal[True] = True
     data: MatchDetail
+
+
+class GapAnalysisData(BaseModel):
+    match_id: uuid.UUID
+    overall_score: float
+    skill_score: float | None = None
+    semantic_score: float | None = None
+    experience_score: float | None = None
+    matched_skills: list[dict[str, Any]]
+    missing_skills: list[dict[str, Any]]
+    recommendation: str | None = None
+    explanation: str | None = None
+
+
+class GapAnalysisResponse(BaseModel):
+    success: Literal[True] = True
+    data: GapAnalysisData
