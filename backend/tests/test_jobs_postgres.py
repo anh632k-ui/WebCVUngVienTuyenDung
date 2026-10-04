@@ -259,3 +259,44 @@ async def test_real_postgres_job_read_endpoints(postgres_jobs: PostgreSQLJobHarn
     )
     assert {job.id: (job.status, job.updated_at) for job in persisted} == initial_state
     assert harness.outer_transaction.is_active
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_job_soft_delete(
+    postgres_jobs: PostgreSQLJobHarness,
+) -> None:
+    harness = postgres_jobs
+    target = harness.jobs["active_one"]
+    target_id = target.id
+    hr_headers = harness.headers("hr_one")
+    original = (
+        target.revision,
+        target.raw_content,
+        target.parsing_status,
+        target.is_criteria_verified,
+        target.updated_at,
+    )
+
+    response = await harness.client.delete(f"/api/v1/jobs/{target_id}", headers=hr_headers)
+    assert response.status_code == 204 and response.content == b""
+
+    harness.session.expire_all()
+    persisted = await harness.session.scalar(
+        select(JobDescription).where(JobDescription.id == target_id)
+    )
+    assert persisted is not None
+    assert persisted.is_deleted is True
+    assert persisted.deleted_at is not None
+    assert persisted.updated_at >= original[4]
+    assert (
+        persisted.revision,
+        persisted.raw_content,
+        persisted.parsing_status,
+        persisted.is_criteria_verified,
+    ) == original[:4]
+
+    listing = await harness.client.get("/api/v1/jobs", headers=hr_headers)
+    detail = await harness.client.get(f"/api/v1/jobs/{target_id}", headers=hr_headers)
+    assert str(target_id) not in listing.text
+    assert detail.status_code == 404
+    assert harness.outer_transaction.is_active

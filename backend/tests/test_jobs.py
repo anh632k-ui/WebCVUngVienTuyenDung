@@ -173,8 +173,16 @@ async def job_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[JobAPIContex
             raise APIError(404, "JOB_NOT_FOUND", "Job not found")
         return job
 
+    async def fake_soft_delete_job(_: Any, *, current_user: User, job_id: uuid.UUID) -> None:
+        job = await fake_get_job(session, current_user=current_user, job_id=job_id)
+        now = datetime.now(UTC)
+        job.is_deleted = True
+        job.deleted_at = now
+        job.updated_at = now
+
     monkeypatch.setattr(job_endpoint, "list_jobs", fake_list_jobs)
     monkeypatch.setattr(job_endpoint, "get_job", fake_get_job)
+    monkeypatch.setattr(job_endpoint, "soft_delete_job", fake_soft_delete_job)
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = override_settings
     transport = ASGITransport(app=app)
@@ -304,7 +312,59 @@ async def test_admin_can_read_existing_job_and_missing_is_canonical_404(
     }
 
 
+@pytest.mark.asyncio
+async def test_hr_owner_soft_delete_hides_job_without_unrelated_mutation(
+    job_api: JobAPIContext,
+) -> None:
+    job_api.actor.id = job_api.hr_one.id
+    job_api.actor.role = "HR"
+    target = job_api.jobs[1]
+    original = (target.revision, target.raw_content, target.parsing_status)
+    response = await job_api.client.delete(f"/api/v1/jobs/{target.id}", headers=job_api.headers)
+    listing = await job_api.client.get("/api/v1/jobs", headers=job_api.headers)
+    detail = await job_api.client.get(f"/api/v1/jobs/{target.id}", headers=job_api.headers)
+    assert response.status_code == 204 and response.content == b""
+    assert target.is_deleted is True and target.deleted_at is not None
+    assert (target.revision, target.raw_content, target.parsing_status) == original
+    assert str(target.id) not in listing.text
+    assert detail.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_job_delete_authorization_ownership_and_not_found(
+    job_api: JobAPIContext,
+) -> None:
+    target = job_api.jobs[0]
+    unauthenticated = await job_api.client.delete(f"/api/v1/jobs/{target.id}")
+    candidate = await job_api.client.delete(f"/api/v1/jobs/{target.id}", headers=job_api.headers)
+
+    job_api.actor.id = job_api.hr_two.id
+    job_api.actor.role = "HR"
+    non_owner = await job_api.client.delete(f"/api/v1/jobs/{target.id}", headers=job_api.headers)
+    already_deleted = await job_api.client.delete(
+        f"/api/v1/jobs/{job_api.jobs[4].id}", headers=job_api.headers
+    )
+    nonexistent = await job_api.client.delete(
+        f"/api/v1/jobs/{uuid.uuid4()}", headers=job_api.headers
+    )
+    assert unauthenticated.status_code == 401
+    assert candidate.status_code == 403
+    assert candidate.json()["error"]["code"] == "INSUFFICIENT_PERMISSIONS"
+    for response in (non_owner, already_deleted, nonexistent):
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "JOB_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_admin_can_soft_delete_job(job_api: JobAPIContext) -> None:
+    job_api.actor.role = "ADMIN"
+    target = job_api.jobs[0]
+    response = await job_api.client.delete(f"/api/v1/jobs/{target.id}", headers=job_api.headers)
+    assert response.status_code == 204
+    assert target.is_deleted is True and target.deleted_at is not None
+
+
 def test_job_route_table_contains_only_requested_read_methods() -> None:
     paths = app.openapi()["paths"]
     assert set(paths["/api/v1/jobs"]) == {"get"}
-    assert set(paths["/api/v1/jobs/{id}"]) == {"get"}
+    assert set(paths["/api/v1/jobs/{id}"]) == {"get", "delete"}

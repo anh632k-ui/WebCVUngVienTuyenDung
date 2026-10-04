@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,3 +79,27 @@ async def get_job(
     if job is None:
         raise APIError(404, "JOB_NOT_FOUND", "Job not found")
     return job
+
+
+async def soft_delete_job(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    job_id: uuid.UUID,
+) -> None:
+    filters: list[ColumnElement[bool]] = [
+        JobDescription.id == job_id,
+        JobDescription.is_deleted.is_(False),
+    ]
+    if current_user.role == UserRole.HR.value:
+        filters.append(JobDescription.recruiter_id == current_user.id)
+
+    job = await session.scalar(select(JobDescription).where(*filters).with_for_update())
+    if job is None:
+        raise APIError(404, "JOB_NOT_FOUND", "Job not found")
+
+    now = datetime.now(UTC)
+    job.is_deleted = True
+    job.deleted_at = now
+    job.updated_at = now
+    await session.commit()
