@@ -21,6 +21,12 @@ class JobStatus(StrEnum):
     CLOSED = "CLOSED"
 
 
+class JobStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: JobStatus
+
+
 class JobData(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

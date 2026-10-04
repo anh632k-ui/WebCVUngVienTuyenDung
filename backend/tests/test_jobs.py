@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -101,6 +101,7 @@ class JobAPIContext:
     jobs: list[JobDescription]
     hr_one: User
     hr_two: User
+    jobs_with_skills: set[uuid.UUID] = field(default_factory=set)
 
     @property
     def headers(self) -> dict[str, str]:
@@ -180,9 +181,44 @@ async def job_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[JobAPIContex
         job.deleted_at = now
         job.updated_at = now
 
+    async def fake_change_job_status(
+        _: Any,
+        *,
+        current_user: User,
+        job_id: uuid.UUID,
+        target_status: JobStatus,
+    ) -> JobDescription:
+        assert context is not None
+        job = await fake_get_job(session, current_user=current_user, job_id=job_id)
+        if job.status == target_status.value:
+            return job
+        if job.status == "DRAFT" and target_status is JobStatus.CLOSED:
+            raise APIError(
+                422,
+                "INVALID_STATUS_TRANSITION",
+                "DRAFT jobs cannot transition directly to CLOSED",
+            )
+        if target_status is JobStatus.ACTIVE and not (
+            job.parsing_status == "PARSED"
+            and job.is_criteria_verified
+            and job.job_embedding is not None
+            and bool(job.embedding_model)
+            and bool(job.embedding_preprocessing_version)
+            and job.id in context.jobs_with_skills
+        ):
+            raise APIError(
+                422,
+                "JOB_NOT_READY",
+                "Job does not satisfy ACTIVE readiness requirements",
+            )
+        job.status = target_status.value
+        job.updated_at = datetime.now(UTC)
+        return job
+
     monkeypatch.setattr(job_endpoint, "list_jobs", fake_list_jobs)
     monkeypatch.setattr(job_endpoint, "get_job", fake_get_job)
     monkeypatch.setattr(job_endpoint, "soft_delete_job", fake_soft_delete_job)
+    monkeypatch.setattr(job_endpoint, "change_job_status", fake_change_job_status)
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = override_settings
     transport = ASGITransport(app=app)
@@ -368,3 +404,170 @@ def test_job_route_table_contains_only_requested_read_methods() -> None:
     paths = app.openapi()["paths"]
     assert set(paths["/api/v1/jobs"]) == {"get"}
     assert set(paths["/api/v1/jobs/{id}"]) == {"get", "delete"}
+    assert set(paths["/api/v1/jobs/{id}/status"]) == {"patch"}
+
+
+def make_job_ready(context: JobAPIContext, job: JobDescription) -> None:
+    job.parsing_status = "PARSED"
+    job.is_criteria_verified = True
+    job.job_embedding = [0.0] * 1024
+    job.embedding_model = "integration-model"
+    job.embedding_preprocessing_version = "v1"
+    context.jobs_with_skills.add(job.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current_status", list(JobStatus))
+async def test_same_job_status_is_idempotent(
+    job_api: JobAPIContext, current_status: JobStatus
+) -> None:
+    job_api.actor.id = job_api.hr_one.id
+    job_api.actor.role = "HR"
+    target = job_api.jobs[0]
+    target.status = current_status.value
+    original_updated_at = target.updated_at
+    original_revision = target.revision
+    response = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status",
+        json={"status": current_status.value},
+        headers=job_api.headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == current_status.value
+    assert target.updated_at == original_updated_at
+    assert target.revision == original_revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_status", [JobStatus.DRAFT, JobStatus.CLOSED])
+async def test_ready_job_can_transition_to_active(
+    job_api: JobAPIContext, initial_status: JobStatus
+) -> None:
+    job_api.actor.id = job_api.hr_one.id
+    job_api.actor.role = "HR"
+    target = job_api.jobs[0]
+    target.status = initial_status.value
+    original_revision = target.revision
+    make_job_ready(job_api, target)
+    response = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status",
+        json={"status": "ACTIVE"},
+        headers=job_api.headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "ACTIVE"
+    assert target.revision == original_revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing_condition",
+    ["parsing", "verified", "embedding", "model", "preprocessing", "skill"],
+)
+async def test_each_active_readiness_failure_returns_422(
+    job_api: JobAPIContext, missing_condition: str
+) -> None:
+    job_api.actor.id = job_api.hr_one.id
+    job_api.actor.role = "HR"
+    target = job_api.jobs[0]
+    target.status = "DRAFT"
+    make_job_ready(job_api, target)
+    if missing_condition == "parsing":
+        target.parsing_status = "PENDING"
+    elif missing_condition == "verified":
+        target.is_criteria_verified = False
+    elif missing_condition == "embedding":
+        target.job_embedding = None
+    elif missing_condition == "model":
+        target.embedding_model = None
+    elif missing_condition == "preprocessing":
+        target.embedding_preprocessing_version = None
+    else:
+        job_api.jobs_with_skills.remove(target.id)
+
+    response = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status",
+        json={"status": "ACTIVE"},
+        headers=job_api.headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "JOB_NOT_READY"
+    assert target.status == "DRAFT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("initial_status", "target_status"),
+    [("ACTIVE", "DRAFT"), ("ACTIVE", "CLOSED"), ("CLOSED", "DRAFT")],
+)
+async def test_non_active_allowed_status_transitions(
+    job_api: JobAPIContext, initial_status: str, target_status: str
+) -> None:
+    job_api.actor.id = job_api.hr_one.id
+    job_api.actor.role = "HR"
+    target = job_api.jobs[0]
+    target.status = initial_status
+    original_revision = target.revision
+    response = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status",
+        json={"status": target_status},
+        headers=job_api.headers,
+    )
+    assert response.status_code == 200
+    assert target.status == target_status
+    assert target.revision == original_revision
+
+
+@pytest.mark.asyncio
+async def test_draft_to_closed_is_invalid(job_api: JobAPIContext) -> None:
+    job_api.actor.id = job_api.hr_one.id
+    job_api.actor.role = "HR"
+    target = job_api.jobs[0]
+    target.status = "DRAFT"
+    response = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status",
+        json={"status": "CLOSED"},
+        headers=job_api.headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_STATUS_TRANSITION"
+    assert target.status == "DRAFT"
+
+
+@pytest.mark.asyncio
+async def test_job_status_authorization_ownership_deleted_and_admin_paths(
+    job_api: JobAPIContext,
+) -> None:
+    target = job_api.jobs[0]
+    unauthenticated = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status", json={"status": "DRAFT"}
+    )
+    candidate = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status",
+        json={"status": "DRAFT"},
+        headers=job_api.headers,
+    )
+    job_api.actor.id = job_api.hr_two.id
+    job_api.actor.role = "HR"
+    non_owner = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status",
+        json={"status": "DRAFT"},
+        headers=job_api.headers,
+    )
+    job_api.actor.id = job_api.hr_one.id
+    deleted = await job_api.client.patch(
+        f"/api/v1/jobs/{job_api.jobs[4].id}/status",
+        json={"status": "ACTIVE"},
+        headers=job_api.headers,
+    )
+    job_api.actor.role = "ADMIN"
+    admin = await job_api.client.patch(
+        f"/api/v1/jobs/{target.id}/status",
+        json={"status": "DRAFT"},
+        headers=job_api.headers,
+    )
+    assert unauthenticated.status_code == 401
+    assert candidate.status_code == 403
+    assert non_owner.status_code == 404
+    assert deleted.status_code == 404
+    assert admin.status_code == 200

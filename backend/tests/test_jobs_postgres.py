@@ -16,6 +16,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import create_engine, get_db_session
 from app.core.security import create_access_token
 from app.models.job import JobDescription
+from app.models.skill import JobSkill, Skill
 from app.models.user import User
 from main import app
 
@@ -299,4 +300,75 @@ async def test_real_postgres_job_soft_delete(
     detail = await harness.client.get(f"/api/v1/jobs/{target_id}", headers=hr_headers)
     assert str(target_id) not in listing.text
     assert detail.status_code == 404
+    assert harness.outer_transaction.is_active
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_job_status_transitions(
+    postgres_jobs: PostgreSQLJobHarness,
+) -> None:
+    harness = postgres_jobs
+    target = harness.jobs["draft"]
+    target_id = target.id
+    headers = harness.headers("hr_one")
+    original_revision = target.revision
+
+    invalid = await harness.client.patch(
+        f"/api/v1/jobs/{target_id}/status",
+        json={"status": "CLOSED"},
+        headers=headers,
+    )
+    not_ready = await harness.client.patch(
+        f"/api/v1/jobs/{target_id}/status",
+        json={"status": "ACTIVE"},
+        headers=headers,
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "INVALID_STATUS_TRANSITION"
+    assert not_ready.status_code == 422
+    assert not_ready.json()["error"]["code"] == "JOB_NOT_READY"
+
+    skill_id = await harness.session.scalar(select(Skill.id).order_by(Skill.id).limit(1))
+    assert skill_id is not None
+    target.parsing_status = "PARSED"
+    target.is_criteria_verified = True
+    target.job_embedding = [0.0] * 1024
+    target.embedding_model = "integration-model"
+    target.embedding_preprocessing_version = "v1"
+    target.parsed_at = datetime.now(UTC)
+    harness.session.add(
+        JobSkill(
+            job_id=target_id,
+            skill_id=skill_id,
+            importance="MANDATORY",
+            min_years_required=Decimal("1.0"),
+        )
+    )
+    await harness.session.commit()
+
+    for expected_status in ("ACTIVE", "CLOSED", "ACTIVE", "DRAFT"):
+        response = await harness.client.patch(
+            f"/api/v1/jobs/{target_id}/status",
+            json={"status": expected_status},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["status"] == expected_status
+        assert response.json()["data"]["revision"] == original_revision
+
+    persisted = await harness.session.scalar(
+        select(JobDescription).where(JobDescription.id == target_id)
+    )
+    assert persisted is not None
+    same_state_updated_at = persisted.updated_at
+    idempotent = await harness.client.patch(
+        f"/api/v1/jobs/{target_id}/status",
+        json={"status": "DRAFT"},
+        headers=headers,
+    )
+    assert idempotent.status_code == 200
+    await harness.session.refresh(persisted)
+    assert persisted.status == "DRAFT"
+    assert persisted.updated_at == same_state_updated_at
+    assert persisted.revision == original_revision
     assert harness.outer_transaction.is_active

@@ -10,11 +10,12 @@ from app.schemas.job_schema import (
     JobData,
     JobResponse,
     JobStatus,
+    JobStatusRequest,
     PaginatedJobsResponse,
     PaginationMeta,
     ParsingStatus,
 )
-from app.services.job_service import get_job, list_jobs, soft_delete_job
+from app.services.job_service import change_job_status, get_job, list_jobs, soft_delete_job
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 JobManager = Annotated[User, Depends(require_roles(UserRole.HR, UserRole.ADMIN))]
@@ -68,3 +69,19 @@ async def delete_job(
 ) -> Response:
     await soft_delete_job(session, current_user=current_user, job_id=id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/{id}/status", response_model=JobResponse)
+async def update_job_status(
+    id: uuid.UUID,
+    payload: JobStatusRequest,
+    session: DatabaseSession,
+    current_user: JobManager,
+) -> JobResponse:
+    job = await change_job_status(
+        session,
+        current_user=current_user,
+        job_id=id,
+        target_status=payload.status,
+    )
+    return JobResponse(data=JobData.model_validate(job))
