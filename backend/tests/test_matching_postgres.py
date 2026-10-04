@@ -17,7 +17,7 @@ from app.core.database import create_engine, get_db_session
 from app.core.security import create_access_token
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
-from app.models.resume import Resume
+from app.models.resume import CandidateProfile, Resume
 from app.models.user import User
 from main import app
 
@@ -376,4 +376,165 @@ async def test_real_postgres_gap_analysis_reads_persisted_result(
     await harness.session.refresh(hr_completed)
     assert (completed.status, completed.generation, completed.updated_at) == initial
     assert (hr_completed.status, hr_completed.generation, hr_completed.updated_at) == hr_initial
+    assert harness.outer_transaction.is_active
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_job_leaderboard_scope_filtering_and_pagination(
+    postgres_matching: PostgreSQLMatchingHarness,
+) -> None:
+    harness = postgres_matching
+    now = datetime.now(UTC)
+    unique = uuid.uuid4().hex
+    extra_resumes = [
+        Resume(
+            id=uuid.uuid4(),
+            owner_user_id=harness.users["hr_one"].id,
+            file_name=f"{unique}-{index}.pdf",
+            storage_key=f"leaderboard-integration/{unique}/{index}.pdf",
+            file_size=100,
+            mime_type="application/pdf",
+            create_request_fingerprint=uuid.uuid4().hex * 2,
+            revision=1,
+            parsing_status="PENDING",
+            is_manually_edited=False,
+            is_deleted=False,
+            created_at=now,
+            updated_at=now,
+        )
+        for index in range(2)
+    ]
+    harness.session.add_all(extra_resumes)
+    await harness.session.flush()
+    harness.session.add(
+        CandidateProfile(
+            resume_id=extra_resumes[0].id,
+            full_name="High Score Candidate",
+            current_title="Staff Engineer",
+        )
+    )
+
+    def completed_match(resume: Resume, score: str) -> MatchResult:
+        return MatchResult(
+            id=uuid.uuid4(),
+            job_id=harness.jobs["hr_one"].id,
+            resume_id=resume.id,
+            generation=1,
+            resume_revision=1,
+            job_revision=1,
+            overall_score=Decimal(score),
+            skill_score=Decimal("75.00"),
+            semantic_score=Decimal("85.00"),
+            experience_score=Decimal("80.00"),
+            matched_skills=[],
+            missing_skills=[],
+            gap_analysis_summary=None,
+            algorithm_version="hybrid-v1",
+            embedding_model="integration-model",
+            embedding_preprocessing_version="v1",
+            status="COMPLETED",
+            error_message=None,
+            created_at=now,
+            updated_at=now,
+            calculated_at=now,
+        )
+
+    high = completed_match(extra_resumes[0], "95.00")
+    low = completed_match(extra_resumes[1], "70.00")
+    owned = harness.matches["hr_both_failed"]
+    owned.status = "COMPLETED"
+    owned.overall_score = Decimal("85.00")
+    owned.skill_score = Decimal("75.00")
+    owned.semantic_score = Decimal("85.00")
+    owned.experience_score = Decimal("80.00")
+    owned.embedding_model = "integration-model"
+    owned.embedding_preprocessing_version = "v1"
+    owned.error_message = None
+    owned.calculated_at = now
+    deleted_resume_match = harness.matches["deleted_resume"]
+    deleted_resume_match.status = "COMPLETED"
+    deleted_resume_match.overall_score = Decimal("99.00")
+    deleted_resume_match.skill_score = Decimal("99.00")
+    deleted_resume_match.semantic_score = Decimal("99.00")
+    deleted_resume_match.experience_score = Decimal("99.00")
+    deleted_resume_match.embedding_model = "integration-model"
+    deleted_resume_match.embedding_preprocessing_version = "v1"
+    deleted_resume_match.error_message = None
+    deleted_resume_match.calculated_at = now
+    harness.session.add_all([high, low])
+    await harness.session.commit()
+
+    initial = {
+        match.id: (match.status, match.overall_score, match.updated_at)
+        for match in harness.matches.values()
+    }
+    hr_headers = harness.headers("hr_one")
+    page_one = await harness.client.get(
+        f"/api/v1/jobs/{harness.jobs['hr_one'].id}/leaderboard",
+        params={"limit": 2},
+        headers=hr_headers,
+    )
+    page_two = await harness.client.get(
+        f"/api/v1/jobs/{harness.jobs['hr_one'].id}/leaderboard",
+        params={"page": 2, "limit": 2},
+        headers=hr_headers,
+    )
+    filtered = await harness.client.get(
+        f"/api/v1/jobs/{harness.jobs['hr_one'].id}/leaderboard",
+        params={"min_score": 80},
+        headers=hr_headers,
+    )
+    assert page_one.status_code == 200
+    assert page_one.json()["meta"] == {
+        "page": 1,
+        "limit": 2,
+        "total_items": 3,
+        "total_pages": 2,
+    }
+    assert [item["rank"] for item in page_one.json()["data"]] == [1, 2]
+    assert [item["match"]["overall_score"] for item in page_one.json()["data"]] == [
+        95.0,
+        85.0,
+    ]
+    assert page_one.json()["data"][0]["candidate"] == {
+        "resume_id": str(extra_resumes[0].id),
+        "full_name": "High Score Candidate",
+        "current_title": "Staff Engineer",
+    }
+    assert page_two.json()["data"][0]["rank"] == 3
+    assert filtered.json()["meta"]["total_items"] == 2
+
+    candidate = await harness.client.get(
+        f"/api/v1/jobs/{harness.jobs['hr_one'].id}/leaderboard",
+        headers=harness.headers("candidate"),
+    )
+    other_hr = await harness.client.get(
+        f"/api/v1/jobs/{harness.jobs['hr_one'].id}/leaderboard",
+        headers=harness.headers("hr_two"),
+    )
+    deleted_job = await harness.client.get(
+        f"/api/v1/jobs/{harness.jobs['deleted'].id}/leaderboard",
+        headers=harness.headers("admin"),
+    )
+    admin = await harness.client.get(
+        f"/api/v1/jobs/{harness.jobs['hr_one'].id}/leaderboard",
+        headers=harness.headers("admin"),
+    )
+    assert candidate.status_code == 403
+    assert other_hr.status_code == 404
+    assert deleted_job.status_code == 404
+    assert admin.status_code == 200
+    assert admin.json()["meta"]["total_items"] == 5
+    assert str(deleted_resume_match.id) not in {
+        item["match"]["id"] for item in admin.json()["data"]
+    }
+
+    persisted = list(
+        (
+            await harness.session.scalars(select(MatchResult).where(MatchResult.id.in_(initial)))
+        ).all()
+    )
+    assert {
+        match.id: (match.status, match.overall_score, match.updated_at) for match in persisted
+    } == initial
     assert harness.outer_transaction.is_active
