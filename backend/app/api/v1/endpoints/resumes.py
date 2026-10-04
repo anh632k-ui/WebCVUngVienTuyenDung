@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response, status
 
 from app.api.dependencies import CurrentUser, DatabaseSession
 from app.schemas.resume_schema import (
@@ -18,7 +18,12 @@ from app.schemas.resume_schema import (
     ResumeStatusResponse,
     ResumeSummary,
 )
-from app.services.resume_service import get_resume, get_resume_aggregate, list_resumes
+from app.services.resume_service import (
+    get_resume,
+    get_resume_aggregate,
+    list_resumes,
+    soft_delete_resume,
+)
 
 router = APIRouter(prefix="/resumes", tags=["Resumes"])
 
@@ -71,6 +76,16 @@ async def read_resume(
             educations=[EducationData.model_validate(item) for item in aggregate.educations],
         )
     )
+
+
+@router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_resume(
+    id: uuid.UUID,
+    session: DatabaseSession,
+    current_user: CurrentUser,
+) -> Response:
+    await soft_delete_resume(session, current_user=current_user, resume_id=id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{id}/status", response_model=ResumeStatusResponse)

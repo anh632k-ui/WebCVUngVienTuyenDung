@@ -202,9 +202,17 @@ async def resume_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[ResumeAPI
         )
         return ResumeAggregate(resume, profile, [skill], [experience], [education])
 
+    async def fake_soft_delete_resume(_: Any, *, current_user: User, resume_id: uuid.UUID) -> None:
+        resume = await fake_get_resume(session, current_user=current_user, resume_id=resume_id)
+        now = datetime.now(UTC)
+        resume.is_deleted = True
+        resume.deleted_at = now
+        resume.updated_at = now
+
     monkeypatch.setattr(resume_endpoint, "list_resumes", fake_list_resumes)
     monkeypatch.setattr(resume_endpoint, "get_resume", fake_get_resume)
     monkeypatch.setattr(resume_endpoint, "get_resume_aggregate", fake_get_aggregate)
+    monkeypatch.setattr(resume_endpoint, "soft_delete_resume", fake_soft_delete_resume)
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = override_settings
     transport = ASGITransport(app=app)
@@ -359,8 +367,70 @@ async def test_deleted_and_nonexistent_resume_return_canonical_not_found(
         }
 
 
+@pytest.mark.asyncio
+async def test_candidate_owner_soft_delete_hides_resume_without_other_mutation(
+    resume_api: ResumeAPIContext,
+) -> None:
+    target = resume_api.resumes[0]
+    original_revision = target.revision
+    original_storage_key = target.storage_key
+    response = await resume_api.client.delete(
+        f"/api/v1/resumes/{target.id}", headers=resume_api.headers
+    )
+    listing = await resume_api.client.get("/api/v1/resumes", headers=resume_api.headers)
+    detail = await resume_api.client.get(f"/api/v1/resumes/{target.id}", headers=resume_api.headers)
+    status_response = await resume_api.client.get(
+        f"/api/v1/resumes/{target.id}/status", headers=resume_api.headers
+    )
+    assert response.status_code == 204 and response.content == b""
+    assert target.is_deleted is True and target.deleted_at is not None
+    assert target.revision == original_revision
+    assert target.storage_key == original_storage_key
+    assert str(target.id) not in listing.text
+    assert detail.status_code == 404
+    assert status_response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_hr_owner_and_admin_can_soft_delete(resume_api: ResumeAPIContext) -> None:
+    hr_resume = resume_api.resumes[3]
+    resume_api.actor.id = hr_resume.owner_user_id
+    resume_api.actor.role = "HR"
+    hr_response = await resume_api.client.delete(
+        f"/api/v1/resumes/{hr_resume.id}", headers=resume_api.headers
+    )
+
+    resume_api.actor.role = "ADMIN"
+    admin_target = resume_api.resumes[2]
+    admin_response = await resume_api.client.delete(
+        f"/api/v1/resumes/{admin_target.id}", headers=resume_api.headers
+    )
+    assert hr_response.status_code == 204 and hr_resume.is_deleted is True
+    assert admin_response.status_code == 204 and admin_target.is_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_resume_delete_auth_ownership_and_not_found_semantics(
+    resume_api: ResumeAPIContext,
+) -> None:
+    unauthenticated = await resume_api.client.delete(f"/api/v1/resumes/{resume_api.resumes[0].id}")
+    non_owner = await resume_api.client.delete(
+        f"/api/v1/resumes/{resume_api.resumes[2].id}", headers=resume_api.headers
+    )
+    already_deleted = await resume_api.client.delete(
+        f"/api/v1/resumes/{resume_api.resumes[4].id}", headers=resume_api.headers
+    )
+    nonexistent = await resume_api.client.delete(
+        f"/api/v1/resumes/{uuid.uuid4()}", headers=resume_api.headers
+    )
+    assert unauthenticated.status_code == 401
+    for response in (non_owner, already_deleted, nonexistent):
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "RESUME_NOT_FOUND"
+
+
 def test_resume_route_table_contains_only_requested_read_methods() -> None:
     paths = app.openapi()["paths"]
     assert set(paths["/api/v1/resumes"]) == {"get"}
-    assert set(paths["/api/v1/resumes/{id}"]) == {"get"}
+    assert set(paths["/api/v1/resumes/{id}"]) == {"get", "delete"}
     assert set(paths["/api/v1/resumes/{id}/status"]) == {"get"}

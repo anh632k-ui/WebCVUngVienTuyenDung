@@ -306,3 +306,57 @@ async def test_real_postgres_resume_read_endpoints(
     )
     assert {item.id: (item.parsing_status, item.updated_at) for item in persisted} == initial_state
     assert harness.outer_transaction.is_active
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_resume_soft_delete(
+    postgres_resumes: PostgreSQLResumeHarness,
+) -> None:
+    harness = postgres_resumes
+    target = harness.resumes["parsed"]
+    target_id = target.id
+    candidate_headers = harness.headers("candidate")
+    original_revision = target.revision
+    original_storage_key = target.storage_key
+    original_updated_at = target.updated_at
+    profile_count = await harness.session.scalar(
+        select(func.count())
+        .select_from(CandidateProfile)
+        .where(CandidateProfile.resume_id == target_id)
+    )
+
+    response = await harness.client.delete(
+        f"/api/v1/resumes/{target_id}", headers=candidate_headers
+    )
+    assert response.status_code == 204 and response.content == b""
+
+    harness.session.expire_all()
+    persisted = await harness.session.scalar(select(Resume).where(Resume.id == target_id))
+    assert persisted is not None
+    assert persisted.is_deleted is True
+    assert persisted.deleted_at is not None
+    assert persisted.updated_at >= original_updated_at
+    assert persisted.revision == original_revision
+    assert persisted.storage_key == original_storage_key
+    assert (
+        await harness.session.scalar(
+            select(func.count())
+            .select_from(CandidateProfile)
+            .where(CandidateProfile.resume_id == target_id)
+        )
+        == profile_count
+    )
+
+    listing = await harness.client.get(
+        "/api/v1/resumes",
+        params={"keyword": harness.unique_part, "limit": 100},
+        headers=candidate_headers,
+    )
+    detail = await harness.client.get(f"/api/v1/resumes/{target_id}", headers=candidate_headers)
+    status_response = await harness.client.get(
+        f"/api/v1/resumes/{target_id}/status", headers=candidate_headers
+    )
+    assert str(target_id) not in listing.text
+    assert detail.status_code == 404
+    assert status_response.status_code == 404
+    assert harness.outer_transaction.is_active

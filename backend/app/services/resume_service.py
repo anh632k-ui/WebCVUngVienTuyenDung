@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -115,3 +116,24 @@ async def get_resume_aggregate(
         ).all()
     )
     return ResumeAggregate(resume, profile, skills, experiences, educations)
+
+
+async def soft_delete_resume(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    resume_id: uuid.UUID,
+) -> None:
+    resume = await session.scalar(
+        select(Resume)
+        .where(Resume.id == resume_id, *_visibility_filters(current_user))
+        .with_for_update()
+    )
+    if resume is None:
+        raise APIError(404, "RESUME_NOT_FOUND", "Resume not found")
+
+    now = datetime.now(UTC)
+    resume.is_deleted = True
+    resume.deleted_at = now
+    resume.updated_at = now
+    await session.commit()
