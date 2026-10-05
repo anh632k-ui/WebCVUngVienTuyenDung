@@ -27,6 +27,18 @@ from app.ai.schemas import ParsedResumeResult, TaxonomySkill
 from app.ai.sections import ResumeSection, identify_section_heading, split_resume_sections
 from app.ai.skill_normalizer import normalize_skills
 from app.ai.text_processing import MAX_EXTRACTED_TEXT_CHARS, normalize_extracted_text
+from app.services.resume_service import validate_resume_upload
+
+STRICT_WORDPROCESSINGML_NAMESPACE = "http://purl.oclc.org/ooxml/wordprocessingml/main"
+TRANSITIONAL_WORDPROCESSINGML_NAMESPACE = (
+    "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+)
+STRICT_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument"
+)
+TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+)
 
 
 def make_pdf(pages: list[list[str]]) -> bytes:
@@ -54,6 +66,36 @@ def make_docx(paragraphs: list[str], tables: list[list[list[str]]] | None = None
     output = io.BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+def make_profile_docx(
+    document_xml: str | bytes,
+    relationship_type: str = STRICT_OFFICE_DOCUMENT_RELATIONSHIP,
+) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            "<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'>"
+            "<Override PartName='/word/document.xml' ContentType='application/vnd."
+            "openxmlformats-officedocument.wordprocessingml.document.main+xml'/>"
+            "</Types>",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/"
+            "relationships'><Relationship Id='rId1' "
+            f"Type='{relationship_type}' Target='word/document.xml'/></Relationships>",
+        )
+        archive.writestr("word/document.xml", document_xml)
+    return output.getvalue()
+
+
+def strict_document(body: str) -> str:
+    return (
+        f"<w:document xmlns:w='{STRICT_WORDPROCESSINGML_NAMESPACE}'>"
+        f"<w:body>{body}</w:body></w:document>"
+    )
 
 
 @pytest.fixture
@@ -96,6 +138,109 @@ def test_real_docx_extracts_paragraphs_and_table_cells_in_stable_order() -> None
     source = make_docx(["Header paragraph"], [[["Left cell", "Right cell"]]])
     text = extract_docx_text(source)
     assert text.splitlines() == ["Header paragraph", "Left cell", "Right cell"]
+
+
+def test_strict_docx_paragraph_is_accepted_by_upload_and_parser() -> None:
+    source = make_profile_docx(strict_document("<w:p><w:r><w:t>Strict resume</w:t></w:r></w:p>"))
+
+    _, mime_type = validate_resume_upload("resume.docx", source)
+
+    assert mime_type == DOCX_MIME_TYPE
+    assert extract_docx_text(source) == "Strict resume"
+
+
+def test_strict_docx_table_text_preserves_document_order() -> None:
+    source = make_profile_docx(
+        strict_document(
+            "<w:p><w:r><w:t>Before table</w:t></w:r></w:p>"
+            "<w:tbl><w:tr>"
+            "<w:tc><w:p><w:r><w:t>Left cell</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>Right cell</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:tbl>"
+            "<w:p><w:r><w:t>After table</w:t></w:r></w:p>"
+        )
+    )
+
+    assert extract_docx_text(source).splitlines() == [
+        "Before table",
+        "Left cell",
+        "Right cell",
+        "After table",
+    ]
+
+
+def test_strict_docx_preserves_vietnamese_and_is_deterministic(
+    taxonomy: tuple[TaxonomySkill, ...],
+) -> None:
+    source = make_profile_docx(
+        strict_document(
+            "<w:p><w:r><w:t>K\u1ef9 n\u0103ng</w:t><w:tab/><w:t>Python</w:t></w:r></w:p>"
+            "<w:p><w:r><w:t>Kinh nghi\u1ec7m l\u00e0m vi\u1ec7c</w:t></w:r></w:p>"
+        )
+    )
+
+    first_text = extract_docx_text(source)
+    second_text = extract_docx_text(source)
+
+    assert first_text == second_text
+    assert "K\u1ef9 n\u0103ng Python" in first_text
+    assert "Kinh nghi\u1ec7m l\u00e0m vi\u1ec7c" in first_text
+    assert parse_resume(source, DOCX_MIME_TYPE, taxonomy) == parse_resume(
+        source,
+        DOCX_MIME_TYPE,
+        taxonomy,
+    )
+
+
+@pytest.mark.parametrize(
+    ("relationship_type", "document_namespace"),
+    [
+        (STRICT_OFFICE_DOCUMENT_RELATIONSHIP, TRANSITIONAL_WORDPROCESSINGML_NAMESPACE),
+        (TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP, STRICT_WORDPROCESSINGML_NAMESPACE),
+    ],
+)
+def test_docx_mixed_relationship_and_document_profiles_are_rejected(
+    relationship_type: str,
+    document_namespace: str,
+) -> None:
+    source = make_profile_docx(
+        f"<w:document xmlns:w='{document_namespace}'><w:body/></w:document>",
+        relationship_type,
+    )
+
+    with pytest.raises(ResumeParseError) as raised:
+        extract_docx_text(source)
+
+    assert raised.value.kind is ResumeParseErrorKind.UNREADABLE_SOURCE
+
+
+def test_malformed_strict_document_is_a_controlled_failure() -> None:
+    source = make_profile_docx(
+        f"<w:document xmlns:w='{STRICT_WORDPROCESSINGML_NAMESPACE}'>"
+        "<w:body><w:p><w:r><w:t>Truncated"
+    )
+
+    with pytest.raises(ResumeParseError) as raised:
+        extract_docx_text(source)
+
+    assert raised.value.kind is ResumeParseErrorKind.UNREADABLE_SOURCE
+
+
+def test_strict_document_xml_size_limit_is_controlled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document_xml = strict_document("<w:p><w:r><w:t>Resume</w:t></w:r></w:p>")
+    source = make_profile_docx(document_xml)
+    monkeypatch.setattr(
+        pdf_docx_extractor,
+        "MAX_DOCX_DOCUMENT_XML_BYTES",
+        len(document_xml.encode()) - 1,
+    )
+
+    with pytest.raises(ResumeParseError) as raised:
+        extract_docx_text(source)
+
+    assert raised.value.kind is ResumeParseErrorKind.TEXT_LIMIT_EXCEEDED
 
 
 def test_docx_package_entry_limit_rejects_before_python_docx(
