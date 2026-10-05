@@ -68,6 +68,8 @@ Admin. Pagination/filter.
 Admin. `is_active` và/hoặc `role`.
 Rules:
 - không self-lock/self-demote;
+- `role` chỉ nhận `CANDIDATE` hoặc `HR`; endpoint chỉ hỗ trợ `CANDIDATE <-> HR`;
+- không thể gán role `ADMIN`, và target đang là `ADMIN` không thể bị đổi role tại endpoint này;
 - đổi Candidate<->HR chỉ khi target user không sở hữu Resume/JD chưa soft-delete;
 - conflict trả `409 ROLE_CHANGE_CONFLICT`.
 
@@ -109,7 +111,7 @@ Responses:
 - 413/415/422 theo validation.
 
 ## GET `/resumes`
-Candidate/HR chỉ owner; Admin all. Mặc định chỉ `is_deleted=false`. Filter pagination/status/skills.
+Candidate/HR chỉ owner; Admin all; chỉ trả Resume có `is_deleted=false`. Query hỗ trợ `page`, `limit`, `keyword`, `parsing_status`; các filter được kết hợp với scope ownership/deleted-state.
 
 ## GET `/resumes/{id}`
 Owner/Admin, resource chưa soft-delete. `candidate_profile` **nullable** vì cardinality 0..1.
