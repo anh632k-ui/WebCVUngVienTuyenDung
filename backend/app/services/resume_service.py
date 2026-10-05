@@ -48,8 +48,10 @@ DOCX_DOCUMENT_PROFILES = {
     (DOCX_STRICT_WORDPROCESSINGML_NAMESPACE, DOCX_STRICT_OFFICE_DOCUMENT_RELATIONSHIP),
 }
 DOCX_METADATA_MAX_SIZE = 64 * 1024
-DOCX_ROOT_SCAN_MAX_SIZE = 64 * 1024
-DOCX_ROOT_SCAN_CHUNK_SIZE = 4096
+# Resume DOCX XML is normally far smaller; this generous ceiling prevents
+# highly-compressed document parts from expanding without bound during validation.
+DOCX_DOCUMENT_XML_MAX_SIZE = 16 * 1024 * 1024
+DOCX_XML_VALIDATION_CHUNK_SIZE = 64 * 1024
 
 
 @dataclass
@@ -73,24 +75,36 @@ def _word_document_root_namespace(
     archive: zipfile.ZipFile,
     document: zipfile.ZipInfo,
 ) -> str | None:
-    parser = ElementTree.XMLPullParser(events=("start",))
-    scanned = 0
+    parser = ElementTree.XMLPullParser(events=("start", "end"))
+    bytes_read = 0
+    root_namespace: str | None = None
+    root_seen = False
     with archive.open(document) as source:
-        while scanned < DOCX_ROOT_SCAN_MAX_SIZE:
-            chunk = source.read(min(DOCX_ROOT_SCAN_CHUNK_SIZE, DOCX_ROOT_SCAN_MAX_SIZE - scanned))
+        while True:
+            remaining = DOCX_DOCUMENT_XML_MAX_SIZE - bytes_read
+            chunk = source.read(min(DOCX_XML_VALIDATION_CHUNK_SIZE, remaining + 1))
             if not chunk:
+                break
+            bytes_read += len(chunk)
+            if bytes_read > DOCX_DOCUMENT_XML_MAX_SIZE:
                 return None
-            scanned += len(chunk)
             parser.feed(chunk)
             events = cast(Iterator[tuple[str, Any]], parser.read_events())
-            for _, element in events:
-                if not isinstance(element.tag, str) or not element.tag.startswith("{"):
-                    return None
-                namespace, separator, local_name = element.tag[1:].partition("}")
-                if separator != "}" or local_name != "document":
-                    return None
-                return namespace
-    return None
+            for event, element in events:
+                if not root_seen:
+                    if event != "start" or not isinstance(element.tag, str):
+                        return None
+                    if not element.tag.startswith("{"):
+                        return None
+                    namespace, separator, local_name = element.tag[1:].partition("}")
+                    if separator != "}" or local_name != "document":
+                        return None
+                    root_namespace = namespace
+                    root_seen = True
+                if event == "end":
+                    element.clear()
+    parser.close()
+    return root_namespace if root_seen else None
 
 
 def _is_docx(data: bytes) -> bool:
@@ -112,6 +126,7 @@ def _is_docx(data: bytes) -> bool:
                 or relationships.flag_bits & 0x1
                 or document.flag_bits & 0x1
                 or document.is_dir()
+                or document.file_size > DOCX_DOCUMENT_XML_MAX_SIZE
             ):
                 return False
             content_root = ElementTree.fromstring(archive.read(content_types))

@@ -28,7 +28,12 @@ from app.core.security import create_access_token
 from app.models.resume import Resume
 from app.models.user import User
 from app.services.resume_dispatcher import get_resume_parse_dispatcher
-from app.services.resume_service import MAX_RESUME_FILE_SIZE, upload_resume, validate_resume_upload
+from app.services.resume_service import (
+    DOCX_DOCUMENT_XML_MAX_SIZE,
+    MAX_RESUME_FILE_SIZE,
+    upload_resume,
+    validate_resume_upload,
+)
 from app.storage.resume_storage import LocalResumeStorage, PutIfAbsentResult
 from main import app
 
@@ -291,16 +296,36 @@ def test_valid_minimal_transitional_docx_is_accepted() -> None:
     assert mime_type == ("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
+def test_complete_well_formed_word_document_is_accepted() -> None:
+    document_xml = (
+        f"<w:document xmlns:w='{WORDPROCESSINGML_NAMESPACE}'>"
+        "<w:body><w:p><w:r><w:t>Resume</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    assert validate_resume_upload("resume.docx", make_docx(document_xml))[1].endswith(
+        "wordprocessingml.document"
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "document_xml",
     [
         b"not XML",
         b"<w:document xmlns:w='unterminated",
+        f"<w:document xmlns:w='{WORDPROCESSINGML_NAMESPACE}'><w:body>",
+        (f"<w:document xmlns:w='{WORDPROCESSINGML_NAMESPACE}'><w:body></w:document>"),
         f"<w:styles xmlns:w='{WORDPROCESSINGML_NAMESPACE}'/>",
         "<document/>",
     ],
-    ids=["metadata-spoof", "malformed-xml", "wrong-root", "unnamespaced-root"],
+    ids=[
+        "metadata-spoof",
+        "malformed-root",
+        "truncated-after-root",
+        "malformed-child-tail",
+        "wrong-root",
+        "unnamespaced-root",
+    ],
 )
 async def test_upload_rejects_invalid_word_document_root(
     upload_api: UploadContext,
@@ -310,6 +335,25 @@ async def test_upload_rejects_invalid_word_document_root(
         "/api/v1/resumes/upload",
         headers=upload_api.headers,
         files={"file": ("spoofed.docx", make_docx(document_xml))},
+    )
+    assert response.status_code == 415
+    assert response.json()["error"]["code"] == "UNSUPPORTED_FILE_FORMAT"
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_document_xml_beyond_validation_bound(
+    upload_api: UploadContext,
+) -> None:
+    prefix = f"<w:document xmlns:w='{WORDPROCESSINGML_NAMESPACE}'>".encode()
+    suffix = b"</w:document>"
+    document_xml = prefix + b" " * (DOCX_DOCUMENT_XML_MAX_SIZE + 1) + suffix
+    payload = make_docx(document_xml)
+    assert len(payload) <= MAX_RESUME_FILE_SIZE
+
+    response = await upload_api.client.post(
+        "/api/v1/resumes/upload",
+        headers=upload_api.headers,
+        files={"file": ("expanded.docx", payload)},
     )
     assert response.status_code == 415
     assert response.json()["error"]["code"] == "UNSUPPORTED_FILE_FORMAT"
