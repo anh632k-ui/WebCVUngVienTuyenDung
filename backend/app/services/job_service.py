@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,10 +10,13 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.exceptions import APIError
 from app.models.job import JobDescription
+from app.models.match_result import MatchResult
+from app.models.resume import CandidateProfile, Resume
 from app.models.skill import JobSkill
 from app.models.user import User
 from app.schemas.auth_schema import UserRole
 from app.schemas.job_schema import JobStatus, ParsingStatus
+from app.schemas.match_schema import MatchStatus
 
 
 def _visibility_filters(current_user: User) -> list[ColumnElement[bool]]:
@@ -156,3 +160,53 @@ async def change_job_status(
     await session.commit()
     await session.refresh(job)
     return job
+
+
+async def list_job_leaderboard(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    job_id: uuid.UUID,
+    page: int,
+    limit: int,
+    min_score: Decimal | None,
+) -> tuple[list[tuple[MatchResult, CandidateProfile | None]], int]:
+    job_filters = [
+        JobDescription.id == job_id,
+        JobDescription.is_deleted.is_(False),
+    ]
+    if current_user.role == UserRole.HR.value:
+        job_filters.append(JobDescription.recruiter_id == current_user.id)
+
+    job = await session.scalar(select(JobDescription.id).where(*job_filters))
+    if job is None:
+        raise APIError(404, "JOB_NOT_FOUND", "Job not found")
+
+    statement = (
+        select(MatchResult, CandidateProfile)
+        .join(Resume, Resume.id == MatchResult.resume_id)
+        .join(JobDescription, JobDescription.id == MatchResult.job_id)
+        .outerjoin(CandidateProfile, CandidateProfile.resume_id == Resume.id)
+        .where(
+            MatchResult.job_id == job_id,
+            MatchResult.status == MatchStatus.COMPLETED.value,
+            Resume.is_deleted.is_(False),
+            JobDescription.is_deleted.is_(False),
+        )
+    )
+    if current_user.role == UserRole.HR.value:
+        statement = statement.where(Resume.owner_user_id == current_user.id)
+    if min_score is not None:
+        statement = statement.where(MatchResult.overall_score >= min_score)
+
+    total_items = (
+        await session.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+        or 0
+    )
+    statement = (
+        statement.order_by(MatchResult.overall_score.desc(), MatchResult.id.asc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    rows = (await session.execute(statement)).all()
+    return [(match, profile) for match, profile in rows], total_items
