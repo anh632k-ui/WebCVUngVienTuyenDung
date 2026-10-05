@@ -29,6 +29,19 @@ class ResumeSummary(BaseModel):
     parsed_at: datetime | None = None
 
 
+class ResumeUploadData(BaseModel):
+    resume_id: uuid.UUID
+    revision: int = Field(ge=1)
+    file_name: str
+    file_size: int = Field(gt=0)
+    parsing_status: ParsingStatus
+
+
+class ResumeUploadResponse(BaseModel):
+    success: Literal[True] = True
+    data: ResumeUploadData
+
+
 class CandidateProfileData(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

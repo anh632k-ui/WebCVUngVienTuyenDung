@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     jwt_secret_key: SecretStr | None = Field(default=None, min_length=32)
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
     access_token_expire_minutes: int = Field(default=15, gt=0, le=1440)
+    resume_storage_root: Path = BACKEND_DIR.parent / ".local" / "resume_storage"
 
     @field_validator("database_url", mode="before")
     @classmethod

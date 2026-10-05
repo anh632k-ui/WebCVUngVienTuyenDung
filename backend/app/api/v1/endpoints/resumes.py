@@ -1,9 +1,11 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, Depends, File, Header, Query, Response, UploadFile, status
 
-from app.api.dependencies import CurrentUser, DatabaseSession
+from app.api.dependencies import ApplicationSettings, CurrentUser, DatabaseSession, require_roles
+from app.models.user import User
+from app.schemas.auth_schema import UserRole
 from app.schemas.resume_schema import (
     CandidateProfileData,
     EducationData,
@@ -17,15 +19,64 @@ from app.schemas.resume_schema import (
     ResumeStatusData,
     ResumeStatusResponse,
     ResumeSummary,
+    ResumeUploadData,
+    ResumeUploadResponse,
 )
+from app.services.resume_dispatcher import ResumeParseDispatcher, get_resume_parse_dispatcher
 from app.services.resume_service import (
+    MAX_RESUME_FILE_SIZE,
     get_resume,
     get_resume_aggregate,
     list_resumes,
     soft_delete_resume,
+    upload_resume,
 )
+from app.storage.resume_storage import LocalResumeStorage, ResumeStorage
 
 router = APIRouter(prefix="/resumes", tags=["Resumes"])
+ResumeUploader = Annotated[User, Depends(require_roles(UserRole.CANDIDATE, UserRole.HR))]
+
+
+def get_resume_storage(settings: ApplicationSettings) -> ResumeStorage:
+    return LocalResumeStorage(settings.resume_storage_root)
+
+
+ResumeStorageDependency = Annotated[ResumeStorage, Depends(get_resume_storage)]
+ResumeDispatcherDependency = Annotated[ResumeParseDispatcher, Depends(get_resume_parse_dispatcher)]
+
+
+@router.post("/upload", response_model=ResumeUploadResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_resume_upload(
+    session: DatabaseSession,
+    current_user: ResumeUploader,
+    storage: ResumeStorageDependency,
+    dispatcher: ResumeDispatcherDependency,
+    idempotency_key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
+    file: Annotated[UploadFile, File()],
+) -> ResumeUploadResponse:
+    filename = file.filename
+    try:
+        data = await file.read(MAX_RESUME_FILE_SIZE + 1)
+    finally:
+        await file.close()
+    resume = await upload_resume(
+        session,
+        current_user=current_user,
+        idempotency_key=idempotency_key,
+        filename=filename,
+        data=data,
+        storage=storage,
+        dispatcher=dispatcher,
+    )
+    return ResumeUploadResponse(
+        data=ResumeUploadData(
+            resume_id=resume.id,
+            revision=resume.revision,
+            file_name=resume.file_name,
+            file_size=resume.file_size,
+            parsing_status=ParsingStatus(resume.parsing_status),
+        )
+    )
 
 
 @router.get("", response_model=PaginatedResumesResponse)

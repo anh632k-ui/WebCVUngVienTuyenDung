@@ -59,7 +59,7 @@ package "Background Tasks" {
 
 database "PostgreSQL 18 + pgvector" as DB
 component "Redis/Celery [when enabled]" as Queue
-folder "CV Storage\ndeterministic resume key" as Storage
+folder "CV Storage\nconfigurable local filesystem (MVP)\nbehind storage abstraction\ndeterministic logical resume key" as Storage
 
 AuthAPI --> UserService
 UsersAPI --> UserService
