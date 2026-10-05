@@ -5,8 +5,10 @@ import io
 import logging
 import uuid
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any, cast
 from xml.etree import ElementTree
 
 from sqlalchemy import func, select
@@ -36,7 +38,18 @@ DOCX_DOCUMENT_CONTENT_TYPE = (
 DOCX_OFFICE_DOCUMENT_RELATIONSHIP = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 )
+DOCX_STRICT_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument"
+)
+DOCX_WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+DOCX_STRICT_WORDPROCESSINGML_NAMESPACE = "http://purl.oclc.org/ooxml/wordprocessingml/main"
+DOCX_DOCUMENT_PROFILES = {
+    (DOCX_WORDPROCESSINGML_NAMESPACE, DOCX_OFFICE_DOCUMENT_RELATIONSHIP),
+    (DOCX_STRICT_WORDPROCESSINGML_NAMESPACE, DOCX_STRICT_OFFICE_DOCUMENT_RELATIONSHIP),
+}
 DOCX_METADATA_MAX_SIZE = 64 * 1024
+DOCX_ROOT_SCAN_MAX_SIZE = 64 * 1024
+DOCX_ROOT_SCAN_CHUNK_SIZE = 4096
 
 
 @dataclass
@@ -54,6 +67,30 @@ def _validate_filename(filename: str | None) -> str:
     if "\x00" in filename or "/" in filename or "\\" in filename:
         raise APIError(422, "INVALID_FILE", "Upload filename must not contain path components")
     return filename
+
+
+def _word_document_root_namespace(
+    archive: zipfile.ZipFile,
+    document: zipfile.ZipInfo,
+) -> str | None:
+    parser = ElementTree.XMLPullParser(events=("start",))
+    scanned = 0
+    with archive.open(document) as source:
+        while scanned < DOCX_ROOT_SCAN_MAX_SIZE:
+            chunk = source.read(min(DOCX_ROOT_SCAN_CHUNK_SIZE, DOCX_ROOT_SCAN_MAX_SIZE - scanned))
+            if not chunk:
+                return None
+            scanned += len(chunk)
+            parser.feed(chunk)
+            events = cast(Iterator[tuple[str, Any]], parser.read_events())
+            for _, element in events:
+                if not isinstance(element.tag, str) or not element.tag.startswith("{"):
+                    return None
+                namespace, separator, local_name = element.tag[1:].partition("}")
+                if separator != "}" or local_name != "document":
+                    return None
+                return namespace
+    return None
 
 
 def _is_docx(data: bytes) -> bool:
@@ -80,19 +117,33 @@ def _is_docx(data: bytes) -> bool:
             content_root = ElementTree.fromstring(archive.read(content_types))
             relationship_root = ElementTree.fromstring(archive.read(relationships))
             has_document_content_type = any(
-                element.tag.endswith("Override")
+                element.tag.rsplit("}", 1)[-1] == "Override"
                 and element.attrib.get("PartName") == "/word/document.xml"
                 and element.attrib.get("ContentType") == DOCX_DOCUMENT_CONTENT_TYPE
                 for element in content_root
             )
-            has_document_relationship = any(
-                element.tag.endswith("Relationship")
-                and element.attrib.get("Type") == DOCX_OFFICE_DOCUMENT_RELATIONSHIP
-                and element.attrib.get("Target", "").lstrip("/") == "word/document.xml"
+            relationship_types = {
+                element.attrib["Type"]
                 for element in relationship_root
+                if element.tag.rsplit("}", 1)[-1] == "Relationship"
+                and "Type" in element.attrib
+                and element.attrib.get("Target", "").lstrip("/") == "word/document.xml"
+            }
+            document_namespace = _word_document_root_namespace(archive, document)
+            has_document_profile = any(
+                namespace == document_namespace and relationship in relationship_types
+                for namespace, relationship in DOCX_DOCUMENT_PROFILES
             )
-            return has_document_content_type and has_document_relationship
-    except (ElementTree.ParseError, KeyError, OSError, zipfile.BadZipFile, RuntimeError):
+            return has_document_content_type and has_document_profile
+    except (
+        ElementTree.ParseError,
+        KeyError,
+        NotImplementedError,
+        OSError,
+        ValueError,
+        zipfile.BadZipFile,
+        RuntimeError,
+    ):
         return False
 
 

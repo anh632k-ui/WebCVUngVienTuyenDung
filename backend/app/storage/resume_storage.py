@@ -37,12 +37,12 @@ class LocalResumeStorage:
         ):
             raise ValueError("Invalid storage key")
 
-        candidate = self._root.joinpath(*logical.parts)
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        resolved_parent = candidate.parent.resolve()
+        unresolved_parent = self._root.joinpath(*logical.parts[:-1])
+        resolved_parent = unresolved_parent.resolve(strict=False)
         if not resolved_parent.is_relative_to(self._root):
             raise ValueError("Storage key escapes configured root")
-        target = resolved_parent / candidate.name
+        resolved_parent.mkdir(parents=True, exist_ok=True)
+        target = resolved_parent / logical.parts[-1]
         if target.is_symlink():
             raise ValueError("Symbolic-link storage objects are not supported")
         return target

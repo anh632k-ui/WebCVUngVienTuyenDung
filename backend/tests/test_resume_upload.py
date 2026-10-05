@@ -34,9 +34,14 @@ from main import app
 
 TEST_SECRET = "resume-upload-unit-test-jwt-secret"
 PDF_BYTES = b"%PDF-1.7\n% resume upload test\n%%EOF\n"
+WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
-def make_docx() -> bytes:
+def make_docx(
+    document_xml: str | bytes = (
+        f"<w:document xmlns:w='{WORDPROCESSINGML_NAMESPACE}'><w:body/></w:document>"
+    ),
+) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
@@ -51,7 +56,7 @@ def make_docx() -> bytes:
             "Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
             "officeDocument' Target='word/document.xml'/></Relationships>",
         )
-        archive.writestr("word/document.xml", "<w:document/>")
+        archive.writestr("word/document.xml", document_xml)
     return output.getvalue()
 
 
@@ -281,6 +286,35 @@ async def test_upload_rejects_arbitrary_non_word_zip(upload_api: UploadContext) 
     assert response.status_code == 415
 
 
+def test_valid_minimal_transitional_docx_is_accepted() -> None:
+    _, mime_type = validate_resume_upload("resume.docx", make_docx())
+    assert mime_type == ("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "document_xml",
+    [
+        b"not XML",
+        b"<w:document xmlns:w='unterminated",
+        f"<w:styles xmlns:w='{WORDPROCESSINGML_NAMESPACE}'/>",
+        "<document/>",
+    ],
+    ids=["metadata-spoof", "malformed-xml", "wrong-root", "unnamespaced-root"],
+)
+async def test_upload_rejects_invalid_word_document_root(
+    upload_api: UploadContext,
+    document_xml: str | bytes,
+) -> None:
+    response = await upload_api.client.post(
+        "/api/v1/resumes/upload",
+        headers=upload_api.headers,
+        files={"file": ("spoofed.docx", make_docx(document_xml))},
+    )
+    assert response.status_code == 415
+    assert response.json()["error"]["code"] == "UNSUPPORTED_FILE_FORMAT"
+
+
 def test_exact_five_mib_file_is_allowed_but_one_extra_byte_is_rejected() -> None:
     exact = b"%PDF-" + b"x" * (MAX_RESUME_FILE_SIZE - 5)
     assert len(exact) == MAX_RESUME_FILE_SIZE
@@ -288,6 +322,25 @@ def test_exact_five_mib_file_is_allowed_but_one_extra_byte_is_rejected() -> None
     with pytest.raises(APIError) as raised:
         validate_resume_upload("large.pdf", exact + b"x")
     assert raised.value.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_storage_rejects_symlinked_ancestor_before_external_side_effect(
+    tmp_path: Path,
+) -> None:
+    storage_root = tmp_path / "storage"
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    storage = LocalResumeStorage(storage_root)
+    linked_directory = storage_root / "linked"
+    try:
+        linked_directory.symlink_to(outside_root, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"Directory symlinks are unavailable in this environment: {error}")
+
+    with pytest.raises(ValueError, match="escapes configured root"):
+        await storage.put_if_absent("linked/created-outside/source", PDF_BYTES)
+    assert not (outside_root / "created-outside").exists()
 
 
 @pytest.mark.asyncio
