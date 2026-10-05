@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from app.schemas.auth_schema import UserData, UserRole
+from app.schemas.auth_schema import UserData
+
+
+class AdminAssignableRole(StrEnum):
+    CANDIDATE = "CANDIDATE"
+    HR = "HR"
 
 
 class AdminUserPatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     is_active: bool | None = None
-    role: UserRole | None = None
+    role: AdminAssignableRole | None = None
 
     @model_validator(mode="after")
     def require_at_least_one_field(self) -> Self:

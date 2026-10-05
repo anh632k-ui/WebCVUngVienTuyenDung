@@ -89,6 +89,7 @@ async def postgres_admin() -> AsyncIterator[PostgreSQLAdminHarness]:
 
     users = {
         "admin": make_user("admin", "ADMIN"),
+        "other_admin": make_user("other-admin", "ADMIN"),
         "free_candidate": make_user("free-candidate", "CANDIDATE"),
         "resume_candidate": make_user("resume-candidate", "CANDIDATE"),
         "job_hr": make_user("job-hr", "HR"),
@@ -171,8 +172,8 @@ async def test_real_postgres_admin_user_management(
     assert listing.json()["meta"] == {
         "page": 1,
         "limit": 2,
-        "total_items": 4,
-        "total_pages": 2,
+        "total_items": 5,
+        "total_pages": 3,
     }
     assert len(listing.json()["data"]) == 2
     assert "password_hash" not in listing.text
@@ -200,6 +201,36 @@ async def test_real_postgres_admin_user_management(
     assert self_lock.json()["error"]["code"] == "ADMIN_SELF_LOCK_FORBIDDEN"
     assert self_demote.status_code == 400
     assert self_demote.json()["error"]["code"] == "ADMIN_SELF_DEMOTION_FORBIDDEN"
+
+    candidate_to_admin = await harness.client.patch(
+        f"/api/v1/admin/users/{harness.users['resume_candidate'].id}",
+        json={"role": "ADMIN"},
+        headers=harness.headers,
+    )
+    hr_to_admin = await harness.client.patch(
+        f"/api/v1/admin/users/{harness.users['job_hr'].id}",
+        json={"role": "ADMIN"},
+        headers=harness.headers,
+    )
+    assert candidate_to_admin.status_code == 422
+    assert hr_to_admin.status_code == 422
+
+    other_admin = harness.users["other_admin"]
+    for role in ("CANDIDATE", "HR"):
+        forbidden = await harness.client.patch(
+            f"/api/v1/admin/users/{other_admin.id}",
+            json={"role": role},
+            headers=harness.headers,
+        )
+        assert forbidden.status_code == 400
+        assert forbidden.json()["error"]["code"] == "ADMIN_ROLE_CHANGE_FORBIDDEN"
+    deactivate_other_admin = await harness.client.patch(
+        f"/api/v1/admin/users/{other_admin.id}",
+        json={"is_active": False},
+        headers=harness.headers,
+    )
+    assert deactivate_other_admin.status_code == 200
+    assert deactivate_other_admin.json()["data"]["is_active"] is False
 
     free_candidate = harness.users["free_candidate"]
     deactivate = await harness.client.patch(

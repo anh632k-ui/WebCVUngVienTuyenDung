@@ -63,8 +63,15 @@ async def patch_user(
     if target.id == actor.id:
         if payload.is_active is False:
             raise APIError(400, "ADMIN_SELF_LOCK_FORBIDDEN", "Admin cannot deactivate themselves")
-        if payload.role is not None and payload.role != UserRole.ADMIN:
+        if payload.role is not None:
             raise APIError(400, "ADMIN_SELF_DEMOTION_FORBIDDEN", "Admin cannot demote themselves")
+
+    if target.role == UserRole.ADMIN.value and payload.role is not None:
+        raise APIError(
+            400,
+            "ADMIN_ROLE_CHANGE_FORBIDDEN",
+            "ADMIN role cannot be reassigned by this endpoint",
+        )
 
     if (
         payload.role is not None

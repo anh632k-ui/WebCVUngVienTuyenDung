@@ -129,8 +129,14 @@ async def admin_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AdminAPICo
             raise APIError(404, "USER_NOT_FOUND", "User not found")
         if target.id == actor.id and payload.is_active is False:
             raise APIError(400, "ADMIN_SELF_LOCK_FORBIDDEN", "Admin cannot deactivate themselves")
-        if target.id == actor.id and payload.role not in {None, UserRole.ADMIN}:
+        if target.id == actor.id and payload.role is not None:
             raise APIError(400, "ADMIN_SELF_DEMOTION_FORBIDDEN", "Admin cannot demote themselves")
+        if target.role == "ADMIN" and payload.role is not None:
+            raise APIError(
+                400,
+                "ADMIN_ROLE_CHANGE_FORBIDDEN",
+                "ADMIN role cannot be reassigned by this endpoint",
+            )
         if (
             payload.role is not None
             and payload.role.value != target.role
@@ -250,6 +256,58 @@ async def test_admin_can_change_active_state_and_candidate_hr_roles(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("target_role", ["CANDIDATE", "HR"])
+async def test_candidate_and_hr_cannot_be_promoted_to_admin(
+    admin_api: AdminAPIContext, target_role: str
+) -> None:
+    target = next(user for user in admin_api.users.values() if user.role == target_role)
+    response = await admin_api.client.patch(
+        f"/api/v1/admin/users/{target.id}",
+        headers=admin_api.headers,
+        json={"role": "ADMIN"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["CANDIDATE", "HR"])
+async def test_other_admin_role_cannot_be_reassigned(admin_api: AdminAPIContext, role: str) -> None:
+    target = next(
+        user
+        for user in admin_api.users.values()
+        if user.role == "ADMIN" and user.id != admin_api.actor.id
+    )
+    response = await admin_api.client.patch(
+        f"/api/v1/admin/users/{target.id}",
+        headers=admin_api.headers,
+        json={"role": role},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "ADMIN_ROLE_CHANGE_FORBIDDEN",
+        "message": "ADMIN role cannot be reassigned by this endpoint",
+        "details": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_other_admin_active_state_can_be_changed(admin_api: AdminAPIContext) -> None:
+    target = next(
+        user
+        for user in admin_api.users.values()
+        if user.role == "ADMIN" and user.id != admin_api.actor.id
+    )
+    response = await admin_api.client.patch(
+        f"/api/v1/admin/users/{target.id}",
+        headers=admin_api.headers,
+        json={"is_active": False},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["is_active"] is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("payload", "code"),
     [
@@ -326,3 +384,11 @@ def test_admin_route_table_contains_only_canonical_methods() -> None:
     paths = app.openapi()["paths"]
     assert set(paths["/api/v1/admin/users"]) == {"get"}
     assert set(paths["/api/v1/admin/users/{id}"]) == {"patch"}
+
+
+def test_admin_patch_openapi_excludes_admin_role() -> None:
+    schemas = app.openapi()["components"]["schemas"]
+    role_schema = schemas["AdminUserPatchRequest"]["properties"]["role"]
+    reference = role_schema.get("anyOf", [role_schema])[0]["$ref"]
+    assignable = schemas[reference.rsplit("/", maxsplit=1)[-1]]
+    assert assignable["enum"] == ["CANDIDATE", "HR"]

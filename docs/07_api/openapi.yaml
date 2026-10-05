@@ -103,7 +103,7 @@ paths:
     patch:
       tags: [Admin]
       summary: Khóa/mở khóa hoặc đổi role
-      description: Đổi Candidate/HR bị 409 nếu target còn Resume/JD chưa soft-delete.
+      description: Chỉ đổi CANDIDATE <-> HR; không gán/gỡ ADMIN. Đổi Candidate/HR bị 409 nếu target còn Resume/JD chưa soft-delete.
       parameters:
         - {$ref: '#/components/parameters/UuidId'}
       requestBody:
@@ -438,6 +438,7 @@ components:
 
   schemas:
     Role: {type: string, enum: [CANDIDATE, HR, ADMIN]}
+    AdminAssignableRole: {type: string, enum: [CANDIDATE, HR]}
     ParsingStatus: {type: string, enum: [PENDING, PROCESSING, PARSED, FAILED]}
     JobStatus: {type: string, enum: [DRAFT, ACTIVE, CLOSED]}
     MatchStatus: {type: string, enum: [PENDING, PROCESSING, COMPLETED, FAILED]}
@@ -507,7 +508,7 @@ components:
       minProperties: 1
       properties:
         is_active: {type: boolean}
-        role: {$ref: '#/components/schemas/Role'}
+        role: {$ref: '#/components/schemas/AdminAssignableRole'}
 
     User:
       type: object

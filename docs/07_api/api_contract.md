@@ -68,6 +68,8 @@ Admin. Pagination/filter.
 Admin. `is_active` và/hoặc `role`.
 Rules:
 - không self-lock/self-demote;
+- `role` chỉ nhận `CANDIDATE` hoặc `HR`; endpoint chỉ hỗ trợ `CANDIDATE <-> HR`;
+- không thể gán role `ADMIN`, và target đang là `ADMIN` không thể bị đổi role tại endpoint này;
 - đổi Candidate<->HR chỉ khi target user không sở hữu Resume/JD chưa soft-delete;
 - conflict trả `409 ROLE_CHANGE_CONFLICT`.
 
