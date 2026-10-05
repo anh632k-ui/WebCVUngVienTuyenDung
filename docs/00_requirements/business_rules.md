@@ -7,7 +7,7 @@
 - **BR-AUTH-04** Chỉ lưu password hash.
 - **BR-AUTH-05** Admin không self-lock/self-demote.
 - **BR-AUTH-06** MVP dùng Access Token JWT. Refresh Rotation/HttpOnly session là Advanced, không nằm OpenAPI MVP.
-- **BR-AUTH-07** Đổi `CANDIDATE <-> HR` chỉ khi user không có Resume/JD chưa soft-delete; nếu có trả `409 ROLE_CHANGE_CONFLICT`.
+- **BR-AUTH-07** Endpoint đổi role của Admin chỉ hỗ trợ `CANDIDATE <-> HR`, và chỉ khi user không có Resume/JD chưa soft-delete; nếu có trả `409 ROLE_CHANGE_CONFLICT`. Gán hoặc gỡ role `ADMIN` nằm ngoài endpoint này; tài khoản `ADMIN` không thể bị đổi role tại đây.
 
 ## CV
 - **BR-CV-01** PDF/DOCX, tối đa 5 MB; kiểm file thực tế.
