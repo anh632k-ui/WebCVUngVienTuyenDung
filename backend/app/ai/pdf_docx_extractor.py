@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import zipfile
 from collections.abc import Iterator
 from typing import Any
 
@@ -18,6 +19,10 @@ from app.ai.text_processing import MAX_EXTRACTED_TEXT_CHARS, require_meaningful_
 PDF_MIME_TYPE = "application/pdf"
 DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 MAX_DOCX_BLOCKS = 20_000
+# Package-level guards run before python-docx can inflate OPC parts. These are
+# generous for a <=5 MiB resume while bounding highly-compressed ZIP packages.
+MAX_DOCX_ZIP_ENTRIES = 2_048
+MAX_DOCX_UNCOMPRESSED_PACKAGE_BYTES = 64 * 1024 * 1024
 MAX_PDF_PAGES = 1_000
 
 
@@ -93,8 +98,44 @@ def _iter_docx_blocks(document: DocumentObject) -> Iterator[str]:
                         yield text
 
 
+def _preflight_docx_package(source_bytes: bytes) -> None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(source_bytes)) as archive:
+            total_uncompressed_bytes = 0
+            for entry_count, entry in enumerate(archive.infolist(), start=1):
+                if entry_count > MAX_DOCX_ZIP_ENTRIES:
+                    raise ResumeParseError(
+                        ResumeParseErrorKind.TEXT_LIMIT_EXCEEDED,
+                        "DOCX package contains too many ZIP entries",
+                    )
+                if entry.file_size < 0 or entry.compress_size < 0:
+                    raise ResumeParseError(
+                        ResumeParseErrorKind.UNREADABLE_SOURCE,
+                        "DOCX package metadata is invalid",
+                    )
+                if entry.flag_bits & 0x1:
+                    raise ResumeParseError(
+                        ResumeParseErrorKind.UNREADABLE_SOURCE,
+                        "Encrypted DOCX package entries are not supported",
+                    )
+                total_uncompressed_bytes += entry.file_size
+                if total_uncompressed_bytes > MAX_DOCX_UNCOMPRESSED_PACKAGE_BYTES:
+                    raise ResumeParseError(
+                        ResumeParseErrorKind.TEXT_LIMIT_EXCEEDED,
+                        "DOCX package exceeds the uncompressed size limit",
+                    )
+    except ResumeParseError:
+        raise
+    except (NotImplementedError, OSError, RuntimeError, zipfile.BadZipFile) as error:
+        raise ResumeParseError(
+            ResumeParseErrorKind.UNREADABLE_SOURCE,
+            "DOCX source is corrupt or unreadable",
+        ) from error
+
+
 def extract_docx_text(source_bytes: bytes) -> str:
     try:
+        _preflight_docx_package(source_bytes)
         document = Document(io.BytesIO(source_bytes))
         parts: list[str] = []
         size = 0

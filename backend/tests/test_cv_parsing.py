@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import zipfile
 from datetime import date
 from decimal import Decimal
 
@@ -9,6 +10,7 @@ from docx import Document
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 
+from app.ai import pdf_docx_extractor
 from app.ai.education_extractor import extract_educations
 from app.ai.entity_recognizer import extract_profile
 from app.ai.errors import ResumeParseError, ResumeParseErrorKind
@@ -94,6 +96,45 @@ def test_real_docx_extracts_paragraphs_and_table_cells_in_stable_order() -> None
     source = make_docx(["Header paragraph"], [[["Left cell", "Right cell"]]])
     text = extract_docx_text(source)
     assert text.splitlines() == ["Header paragraph", "Left cell", "Right cell"]
+
+
+def test_docx_package_entry_limit_rejects_before_python_docx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = make_docx(["Resume text"])
+    document_called = False
+
+    def fail_if_called(_source: io.BytesIO) -> None:
+        nonlocal document_called
+        document_called = True
+        raise AssertionError("python-docx must not run after preflight rejection")
+
+    monkeypatch.setattr(pdf_docx_extractor, "MAX_DOCX_ZIP_ENTRIES", 1)
+    monkeypatch.setattr(pdf_docx_extractor, "Document", fail_if_called)
+
+    with pytest.raises(ResumeParseError) as raised:
+        extract_docx_text(source)
+
+    assert raised.value.kind is ResumeParseErrorKind.TEXT_LIMIT_EXCEEDED
+    assert document_called is False
+
+
+def test_docx_package_uncompressed_size_limit_is_controlled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = make_docx(["Resume text"])
+    with zipfile.ZipFile(io.BytesIO(source)) as archive:
+        declared_size = sum(entry.file_size for entry in archive.infolist())
+    monkeypatch.setattr(
+        pdf_docx_extractor,
+        "MAX_DOCX_UNCOMPRESSED_PACKAGE_BYTES",
+        declared_size - 1,
+    )
+
+    with pytest.raises(ResumeParseError) as raised:
+        extract_docx_text(source)
+
+    assert raised.value.kind is ResumeParseErrorKind.TEXT_LIMIT_EXCEEDED
 
 
 @pytest.mark.parametrize(
