@@ -43,9 +43,9 @@ DOCX_STRICT_OFFICE_DOCUMENT_RELATIONSHIP = (
 )
 DOCX_WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 DOCX_STRICT_WORDPROCESSINGML_NAMESPACE = "http://purl.oclc.org/ooxml/wordprocessingml/main"
-DOCX_DOCUMENT_PROFILES = {
-    (DOCX_WORDPROCESSINGML_NAMESPACE, DOCX_OFFICE_DOCUMENT_RELATIONSHIP),
-    (DOCX_STRICT_WORDPROCESSINGML_NAMESPACE, DOCX_STRICT_OFFICE_DOCUMENT_RELATIONSHIP),
+DOCX_RELATIONSHIP_NAMESPACES = {
+    DOCX_OFFICE_DOCUMENT_RELATIONSHIP: DOCX_WORDPROCESSINGML_NAMESPACE,
+    DOCX_STRICT_OFFICE_DOCUMENT_RELATIONSHIP: DOCX_STRICT_WORDPROCESSINGML_NAMESPACE,
 }
 DOCX_METADATA_MAX_SIZE = 64 * 1024
 # Resume DOCX XML is normally far smaller; this generous ceiling prevents
@@ -137,19 +137,23 @@ def _is_docx(data: bytes) -> bool:
                 and element.attrib.get("ContentType") == DOCX_DOCUMENT_CONTENT_TYPE
                 for element in content_root
             )
-            relationship_types = {
-                element.attrib["Type"]
+            document_relationships = [
+                element
                 for element in relationship_root
                 if element.tag.rsplit("}", 1)[-1] == "Relationship"
-                and "Type" in element.attrib
                 and element.attrib.get("Target", "").lstrip("/") == "word/document.xml"
-            }
+            ]
+            if len(document_relationships) != 1:
+                return False
+            document_relationship = document_relationships[0]
+            if document_relationship.attrib.get("TargetMode", "Internal") != "Internal":
+                return False
+            relationship_type = document_relationship.attrib.get("Type", "")
+            expected_document_namespace = DOCX_RELATIONSHIP_NAMESPACES.get(relationship_type)
+            if expected_document_namespace is None:
+                return False
             document_namespace = _word_document_root_namespace(archive, document)
-            has_document_profile = any(
-                namespace == document_namespace and relationship in relationship_types
-                for namespace, relationship in DOCX_DOCUMENT_PROFILES
-            )
-            return has_document_content_type and has_document_profile
+            return has_document_content_type and document_namespace == expected_document_namespace
     except (
         ElementTree.ParseError,
         KeyError,

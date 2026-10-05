@@ -40,12 +40,36 @@ from main import app
 TEST_SECRET = "resume-upload-unit-test-jwt-secret"
 PDF_BYTES = b"%PDF-1.7\n% resume upload test\n%%EOF\n"
 WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+STRICT_WORDPROCESSINGML_NAMESPACE = "http://purl.oclc.org/ooxml/wordprocessingml/main"
+TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+)
+STRICT_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument"
+)
+
+
+def office_document_relationship(
+    relationship_type: str,
+    *,
+    relationship_id: str = "rId1",
+    target_mode: str | None = None,
+) -> str:
+    target_mode_attribute = f" TargetMode='{target_mode}'" if target_mode is not None else ""
+    return (
+        f"<Relationship Id='{relationship_id}' Type='{relationship_type}' "
+        f"Target='word/document.xml'{target_mode_attribute}/>"
+    )
 
 
 def make_docx(
     document_xml: str | bytes = (
         f"<w:document xmlns:w='{WORDPROCESSINGML_NAMESPACE}'><w:body/></w:document>"
     ),
+    *,
+    relationship_type: str = TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP,
+    target_mode: str | None = None,
+    additional_relationships: tuple[str, ...] = (),
 ) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -57,9 +81,10 @@ def make_docx(
         )
         archive.writestr(
             "_rels/.rels",
-            "<Relationships><Relationship "
-            "Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
-            "officeDocument' Target='word/document.xml'/></Relationships>",
+            "<Relationships>"
+            + office_document_relationship(relationship_type, target_mode=target_mode)
+            + "".join(additional_relationships)
+            + "</Relationships>",
         )
         archive.writestr("word/document.xml", document_xml)
     return output.getvalue()
@@ -294,6 +319,138 @@ async def test_upload_rejects_arbitrary_non_word_zip(upload_api: UploadContext) 
 def test_valid_minimal_transitional_docx_is_accepted() -> None:
     _, mime_type = validate_resume_upload("resume.docx", make_docx())
     assert mime_type == ("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+def test_valid_minimal_strict_docx_is_accepted() -> None:
+    document_xml = (
+        f"<w:document xmlns:w='{STRICT_WORDPROCESSINGML_NAMESPACE}'><w:body/></w:document>"
+    )
+    _, mime_type = validate_resume_upload(
+        "resume.docx",
+        make_docx(document_xml, relationship_type=STRICT_OFFICE_DOCUMENT_RELATIONSHIP),
+    )
+    assert mime_type == ("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("relationship_type", "document_namespace"),
+    [
+        (TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP, WORDPROCESSINGML_NAMESPACE),
+        (STRICT_OFFICE_DOCUMENT_RELATIONSHIP, STRICT_WORDPROCESSINGML_NAMESPACE),
+    ],
+)
+async def test_upload_rejects_external_main_document_relationship(
+    upload_api: UploadContext,
+    relationship_type: str,
+    document_namespace: str,
+) -> None:
+    payload = make_docx(
+        f"<w:document xmlns:w='{document_namespace}'><w:body/></w:document>",
+        relationship_type=relationship_type,
+        target_mode="External",
+    )
+
+    response = await upload_api.client.post(
+        "/api/v1/resumes/upload",
+        headers=upload_api.headers,
+        files={"file": ("external.docx", payload)},
+    )
+
+    assert response.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_mixed_main_document_relationships(
+    upload_api: UploadContext,
+) -> None:
+    payload = make_docx(
+        additional_relationships=(
+            office_document_relationship(
+                STRICT_OFFICE_DOCUMENT_RELATIONSHIP,
+                relationship_id="rId2",
+            ),
+        )
+    )
+
+    response = await upload_api.client.post(
+        "/api/v1/resumes/upload",
+        headers=upload_api.headers,
+        files={"file": ("mixed.docx", payload)},
+    )
+
+    assert response.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_duplicate_main_document_relationships(
+    upload_api: UploadContext,
+) -> None:
+    payload = make_docx(
+        additional_relationships=(
+            office_document_relationship(
+                TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP,
+                relationship_id="rId2",
+            ),
+        )
+    )
+
+    response = await upload_api.client.post(
+        "/api/v1/resumes/upload",
+        headers=upload_api.headers,
+        files={"file": ("duplicate.docx", payload)},
+    )
+
+    assert response.status_code == 415
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        make_docx(relationship_type="urn:unsupported-office-document-relationship"),
+        make_docx(additional_relationships=("<Relationship",)),
+    ],
+    ids=["unsupported", "malformed"],
+)
+async def test_upload_rejects_unsupported_or_malformed_main_document_relationship(
+    upload_api: UploadContext,
+    payload: bytes,
+) -> None:
+    response = await upload_api.client.post(
+        "/api/v1/resumes/upload",
+        headers=upload_api.headers,
+        files={"file": ("invalid-relationship.docx", payload)},
+    )
+
+    assert response.status_code == 415
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("relationship_type", "document_namespace"),
+    [
+        (STRICT_OFFICE_DOCUMENT_RELATIONSHIP, WORDPROCESSINGML_NAMESPACE),
+        (TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP, STRICT_WORDPROCESSINGML_NAMESPACE),
+    ],
+)
+async def test_upload_rejects_relationship_document_namespace_mismatch(
+    upload_api: UploadContext,
+    relationship_type: str,
+    document_namespace: str,
+) -> None:
+    payload = make_docx(
+        f"<w:document xmlns:w='{document_namespace}'><w:body/></w:document>",
+        relationship_type=relationship_type,
+    )
+
+    response = await upload_api.client.post(
+        "/api/v1/resumes/upload",
+        headers=upload_api.headers,
+        files={"file": ("mismatch.docx", payload)},
+    )
+
+    assert response.status_code == 415
 
 
 def test_complete_well_formed_word_document_is_accepted() -> None:
