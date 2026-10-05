@@ -109,7 +109,7 @@ Responses:
 - 413/415/422 theo validation.
 
 ## GET `/resumes`
-Candidate/HR chỉ owner; Admin all. Mặc định chỉ `is_deleted=false`. Filter pagination/status/skills.
+Candidate/HR chỉ owner; Admin all; chỉ trả Resume có `is_deleted=false`. Query hỗ trợ `page`, `limit`, `keyword`, `parsing_status`; các filter được kết hợp với scope ownership/deleted-state.
 
 ## GET `/resumes/{id}`
 Owner/Admin, resource chưa soft-delete. `candidate_profile` **nullable** vì cardinality 0..1.
