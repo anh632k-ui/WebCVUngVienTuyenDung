@@ -27,6 +27,7 @@ from app.ai.schemas import ParsedResumeResult, TaxonomySkill
 from app.ai.sections import ResumeSection, identify_section_heading, split_resume_sections
 from app.ai.skill_normalizer import normalize_skills
 from app.ai.text_processing import MAX_EXTRACTED_TEXT_CHARS, normalize_extracted_text
+from app.core.exceptions import APIError
 from app.services.resume_service import validate_resume_upload
 
 STRICT_WORDPROCESSINGML_NAMESPACE = "http://purl.oclc.org/ooxml/wordprocessingml/main"
@@ -71,7 +72,15 @@ def make_docx(paragraphs: list[str], tables: list[list[list[str]]] | None = None
 def make_profile_docx(
     document_xml: str | bytes,
     relationship_type: str = STRICT_OFFICE_DOCUMENT_RELATIONSHIP,
+    *,
+    target_mode: str | None = None,
+    additional_relationships: tuple[str, ...] = (),
 ) -> bytes:
+    target_mode_attribute = f" TargetMode='{target_mode}'" if target_mode is not None else ""
+    primary_relationship = (
+        f"<Relationship Id='rId1' Type='{relationship_type}' "
+        f"Target='word/document.xml'{target_mode_attribute}/>"
+    )
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
@@ -84,8 +93,10 @@ def make_profile_docx(
         archive.writestr(
             "_rels/.rels",
             "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/"
-            "relationships'><Relationship Id='rId1' "
-            f"Type='{relationship_type}' Target='word/document.xml'/></Relationships>",
+            "relationships'>"
+            + primary_relationship
+            + "".join(additional_relationships)
+            + "</Relationships>",
         )
         archive.writestr("word/document.xml", document_xml)
     return output.getvalue()
@@ -212,6 +223,52 @@ def test_docx_mixed_relationship_and_document_profiles_are_rejected(
         extract_docx_text(source)
 
     assert raised.value.kind is ResumeParseErrorKind.UNREADABLE_SOURCE
+    with pytest.raises(APIError) as upload_error:
+        validate_resume_upload("resume.docx", source)
+    assert upload_error.value.status_code == 415
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        make_profile_docx(
+            strict_document("<w:p><w:r><w:t>Strict</w:t></w:r></w:p>"),
+            target_mode="External",
+        ),
+        make_profile_docx(
+            f"<w:document xmlns:w='{TRANSITIONAL_WORDPROCESSINGML_NAMESPACE}'>"
+            "<w:body><w:p><w:r><w:t>Transitional</w:t></w:r></w:p></w:body>"
+            "</w:document>",
+            TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP,
+            target_mode="External",
+        ),
+        make_profile_docx(
+            strict_document("<w:p><w:r><w:t>Strict</w:t></w:r></w:p>"),
+            additional_relationships=(
+                "<Relationship Id='rId2' "
+                f"Type='{TRANSITIONAL_OFFICE_DOCUMENT_RELATIONSHIP}' "
+                "Target='word/document.xml'/>",
+            ),
+        ),
+        make_profile_docx(
+            strict_document("<w:p><w:r><w:t>Strict</w:t></w:r></w:p>"),
+            "urn:unsupported-office-document-relationship",
+        ),
+        make_profile_docx(
+            strict_document("<w:p><w:r><w:t>Strict</w:t></w:r></w:p>"),
+            additional_relationships=("<Relationship",),
+        ),
+    ],
+    ids=["strict-external", "transitional-external", "mixed", "unsupported", "malformed"],
+)
+def test_upload_and_parser_reject_invalid_main_document_relationships(source: bytes) -> None:
+    with pytest.raises(APIError) as upload_error:
+        validate_resume_upload("resume.docx", source)
+    with pytest.raises(ResumeParseError) as parser_error:
+        extract_docx_text(source)
+
+    assert upload_error.value.status_code == 415
+    assert parser_error.value.kind is ResumeParseErrorKind.UNREADABLE_SOURCE
 
 
 def test_malformed_strict_document_is_a_controlled_failure() -> None:
