@@ -16,8 +16,16 @@ _SAFE_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _boundary_pattern(value: str) -> re.Pattern[str]:
-    return re.compile(rf"(?<![\w+#.]){re.escape(value)}(?![\w+#.])", re.IGNORECASE)
+def taxonomy_skill_aliases(skill: TaxonomySkill) -> tuple[str, ...]:
+    """Return stable, reviewed aliases for one existing taxonomy skill."""
+    return tuple(dict.fromkeys((skill.name, *_SAFE_ALIASES.get(skill.normalized_name, ()))))
+
+
+def taxonomy_skill_pattern(skill: TaxonomySkill) -> re.Pattern[str]:
+    """Compile the punctuation-safe matcher shared by Resume and Job parsing."""
+    aliases = sorted(taxonomy_skill_aliases(skill), key=len, reverse=True)
+    alternatives = "|".join(re.escape(alias) for alias in aliases)
+    return re.compile(rf"(?<![\w+#.])(?:{alternatives})(?![\w+#.])", re.IGNORECASE)
 
 
 def normalize_skills(
@@ -31,8 +39,7 @@ def normalize_skills(
     for skill in sorted(taxonomy, key=lambda item: item.id):
         if skill.id in seen_ids:
             continue
-        aliases = (skill.name, *_SAFE_ALIASES.get(skill.normalized_name, ()))
-        if any(_boundary_pattern(alias).search(text) for alias in aliases):
+        if taxonomy_skill_pattern(skill).search(text):
             matches.append(
                 ParsedSkill(
                     skill_id=skill.id,
