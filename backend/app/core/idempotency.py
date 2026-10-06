@@ -4,6 +4,7 @@ import uuid
 
 APP_IDEMPOTENCY_NAMESPACE = uuid.UUID("bd7b1f30-b2de-549c-a8dd-8d742ee5bc12")
 RESUME_UPLOAD_ROUTE = "/api/v1/resumes/upload"
+JOB_CREATE_ROUTE = "/api/v1/jobs"
 
 
 def derive_idempotent_resource_id(

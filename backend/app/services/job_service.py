@@ -1,22 +1,120 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.exceptions import APIError
+from app.core.idempotency import JOB_CREATE_ROUTE, derive_idempotent_resource_id
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
 from app.models.resume import CandidateProfile, Resume
 from app.models.skill import JobSkill
 from app.models.user import User
 from app.schemas.auth_schema import UserRole
-from app.schemas.job_schema import JobStatus, ParsingStatus
+from app.schemas.job_schema import JobCreateRequest, JobStatus, ParsingStatus
 from app.schemas.match_schema import MatchStatus
+from app.services.job_create_payload import job_create_fingerprint
+from app.services.job_dispatcher import JobParseDispatcher
+
+logger = logging.getLogger(__name__)
+
+
+def _idempotency_conflict() -> APIError:
+    return APIError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "Idempotency-Key was reused with different Job content",
+    )
+
+
+async def _dispatch_if_pending(
+    dispatcher: JobParseDispatcher,
+    job: JobDescription,
+) -> None:
+    if job.parsing_status != ParsingStatus.PENDING.value:
+        return
+    try:
+        await dispatcher.dispatch(job.id, job.revision)
+    except Exception:  # noqa: BLE001 - committed Job remains independently recoverable
+        logger.error(
+            "job_parse_dispatch_failed job_id=%s revision=%s",
+            job.id,
+            job.revision,
+        )
+
+
+async def create_job(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    idempotency_key: uuid.UUID,
+    payload: JobCreateRequest,
+    dispatcher: JobParseDispatcher,
+) -> JobDescription:
+    fingerprint = job_create_fingerprint(payload)
+    job_id = derive_idempotent_resource_id(
+        current_user.id,
+        JOB_CREATE_ROUTE,
+        idempotency_key,
+    )
+
+    existing = await session.get(JobDescription, job_id)
+    if existing is not None:
+        if existing.create_request_fingerprint != fingerprint:
+            raise _idempotency_conflict()
+        await _dispatch_if_pending(dispatcher, existing)
+        return existing
+
+    job = JobDescription(
+        id=job_id,
+        recruiter_id=current_user.id,
+        title=payload.title,
+        job_level=payload.job_level,
+        location=payload.location,
+        raw_content=payload.raw_content,
+        create_request_fingerprint=fingerprint,
+        revision=1,
+        min_experience_years=Decimal("0.0"),
+        education_requirement=None,
+        job_embedding=None,
+        embedding_model=None,
+        embedding_preprocessing_version=None,
+        parsing_status=ParsingStatus.PENDING.value,
+        parsing_error_message=None,
+        is_criteria_verified=False,
+        w_skill=payload.w_skill,
+        w_semantic=payload.w_semantic,
+        w_experience=payload.w_experience,
+        status=JobStatus.DRAFT.value,
+        is_deleted=False,
+        deleted_at=None,
+        parsed_at=None,
+    )
+    session.add(job)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        winner = await session.get(JobDescription, job_id, populate_existing=True)
+        if winner is None:
+            raise
+        if winner.create_request_fingerprint != fingerprint:
+            raise _idempotency_conflict() from None
+        await _dispatch_if_pending(dispatcher, winner)
+        return winner
+    except SQLAlchemyError:
+        await session.rollback()
+        raise
+
+    await _dispatch_if_pending(dispatcher, job)
+    return job
 
 
 def _visibility_filters(current_user: User) -> list[ColumnElement[bool]]:
