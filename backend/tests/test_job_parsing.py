@@ -243,6 +243,11 @@ def test_distinct_skills_use_local_positive_cues(
         ("Python not mandatory, Python 3+ years required", Decimal("3.0")),
         ("Python preferred and Python required", Decimal("0.0")),
         ("Python 5+ years preferred and Python 2+ years required", Decimal("2.0")),
+        ("Ưu tiên Python và bắt buộc Python", Decimal("0.0")),
+        ("Bắt buộc Python và ưu tiên Python", Decimal("0.0")),
+        ("Ưu tiên Python hoặc bắt buộc Python", Decimal("0.0")),
+        ("Preferred Python or required Python", Decimal("0.0")),
+        ("Required Python or preferred Python", Decimal("0.0")),
     ],
 )
 def test_repeated_skill_occurrences_preserve_local_mandatory_evidence(

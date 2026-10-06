@@ -23,7 +23,10 @@ _RANGE_OR_PLUS = rf"(?:\s*(?:-|–|—|to|đến)\s*{_NUMBER}|\s*\+)?"
 _REQUIRED_RANGE_OR_PLUS = rf"(?:\s*(?:-|–|—|to|đến)\s*{_NUMBER}|\s*\+)"
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?;])\s+")
-_LOCAL_EVIDENCE_SEPARATOR = re.compile(r",|\b(?:and|but|while|whereas)\b", re.IGNORECASE)
+_LOCAL_EVIDENCE_SEPARATOR = re.compile(
+    r",|\b(?:and|or|but|while|whereas|và|hoặc|nhưng|còn|trong\s+khi)\b",
+    re.IGNORECASE,
+)
 _MANDATORY_CUE = re.compile(
     r"\b(?:required|must(?:\s+have)?|mandatory|essential|minimum\s+qualification)\b|"
     r"(?<!không\s)\bbắt\s+buộc\b|\byêu\s+cầu\b|\btối\s+thiểu\b",
