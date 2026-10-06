@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -417,6 +418,74 @@ async def test_request_rejects_extra_empty_limits_invalid_weights_and_db_roundin
 
     assert response.status_code == 422
     assert job_create_api.session.rows == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("title", "Backend\x00Engineer"),
+        ("job_level", "Senior\x00"),
+        ("location", "Ha\x00noi"),
+        ("raw_content", "Build\x00 APIs"),
+        ("title", "Backend\ud800 Engineer"),
+        ("raw_content", "Build\ud800 APIs"),
+        ("job_level", "Senior\udfff"),
+    ],
+    ids=[
+        "title-nul",
+        "job-level-nul",
+        "location-nul",
+        "raw-content-nul",
+        "title-high-surrogate",
+        "raw-content-high-surrogate",
+        "job-level-low-surrogate",
+    ],
+)
+async def test_request_rejects_non_postgresql_and_non_utf8_text_before_side_effects(
+    job_create_api: JobCreateAPI,
+    field: str,
+    invalid_value: str,
+) -> None:
+    payload = DEFAULT_PAYLOAD | {field: invalid_value}
+    response = await job_create_api.client.post(
+        "/api/v1/jobs",
+        headers=job_create_api.headers(uuid.uuid4()) | {"Content-Type": "application/json"},
+        content=json.dumps(payload, ensure_ascii=True).encode("ascii"),
+    )
+
+    assert response.status_code == 422
+    assert job_create_api.session.rows == {}
+    assert job_create_api.dispatcher.calls == []
+    assert job_create_api.session.events == []
+
+
+@pytest.mark.asyncio
+async def test_valid_vietnamese_controls_and_normalization_remain_accepted(
+    job_create_api: JobCreateAPI,
+) -> None:
+    payload = DEFAULT_PAYLOAD | {
+        "title": " Ky\u0303 su\u031b ",
+        "job_level": " Cao ca\u0302\u0301p ",
+        "location": " Ha\u0300 No\u0302\u0323i ",
+        "raw_content": "Mo\u0302 ta\u0309:\r\n\tKy\u0303 na\u0306ng",
+    }
+    response = await job_create_api.client.post(
+        "/api/v1/jobs",
+        headers=job_create_api.headers(uuid.uuid4()),
+        json=payload,
+    )
+
+    assert response.status_code == 201
+    row = next(iter(job_create_api.session.rows.values()))
+    assert row.title == "Kỹ sư"
+    assert row.job_level == "Cao cấp"
+    assert row.location == "Hà Nội"
+    assert row.raw_content == "Mô tả:\n\tKỹ năng"
+    for value in (row.title, row.job_level, row.location, row.raw_content):
+        assert value is not None
+        value.encode("utf-8")
+    assert job_create_api.dispatcher.calls == [(row.id, 1)]
 
 
 @pytest.mark.asyncio

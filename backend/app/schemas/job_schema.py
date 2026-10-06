@@ -48,6 +48,17 @@ JobCreateWeight = Annotated[
 ]
 
 
+def validate_job_create_text(value: str) -> str:
+    """Reject text PostgreSQL cannot store or canonical JSON cannot encode."""
+    if "\x00" in value:
+        raise ValueError("Job create text must not contain NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("Job create text must be valid UTF-8 text") from error
+    return value
+
+
 class JobCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
 
@@ -83,6 +94,11 @@ class JobCreateRequest(BaseModel):
             return value
         normalized_lines = value.replace("\r\n", "\n").replace("\r", "\n")
         return normalize("NFC", normalized_lines)
+
+    @field_validator("title", "job_level", "location", "raw_content", mode="after")
+    @classmethod
+    def validate_normalized_text(cls, value: str | None) -> str | None:
+        return validate_job_create_text(value) if value is not None else None
 
     @model_validator(mode="after")
     def validate_weight_sum(self) -> JobCreateRequest:
