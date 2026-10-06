@@ -26,6 +26,9 @@ dependencies = [
 ai = [
     "sentence-transformers>=3.3,<6.0",
 ]
+queue = [
+    "celery[redis]>=5.5,<6.0",
+]
 dev = [
     "httpx>=0.28,<1.0",
     "pytest>=8.4,<9.0",

@@ -4,29 +4,13 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.core.config import Settings, get_settings
+from app.core.config import get_settings
+from app.core.db_base import Base
+from app.core.engine_factory import create_engine
 
-
-class Base(DeclarativeBase):
-    """Declarative base for mappings to the existing canonical schema."""
-
-
-def create_engine(settings: Settings) -> AsyncEngine | None:
-    if settings.database_url is None:
-        return None
-    return create_async_engine(
-        settings.database_url.get_secret_value(),
-        pool_pre_ping=True,
-        connect_args={"timeout": settings.database_connect_timeout_seconds},
-    )
+__all__ = ["Base", "create_engine"]
 
 
 settings = get_settings()

@@ -26,3 +26,33 @@ python -m pytest
 python -m ruff check .
 python -m mypy app
 ```
+
+## Resume parse queue
+
+Resume upload works without queue dependencies or Redis. In that mode the committed resume stays
+`PENDING`, dispatch is a no-op, and the recovery loop is disabled. To run asynchronous parsing,
+install both optional runtime groups and configure `CELERY_BROKER_URL` to a shared Redis broker:
+
+```powershell
+python -m pip install -e ".[queue,ai]"
+```
+
+The API process publishes only the resume ID and expected revision. Start Redis separately, then
+run a worker from `backend/`. Windows development uses Celery's single-process pool:
+
+```powershell
+celery -A app.tasks.celery_worker:app worker --loglevel=INFO --pool=solo
+```
+
+Linux production may use the prefork pool; model and database resources are initialized lazily in
+each child after fork:
+
+```bash
+celery -A app.tasks.celery_worker:app worker --loglevel=INFO --pool=prefork
+```
+
+API and worker processes must use the same `DATABASE_URL`, `RESUME_STORAGE_ROOT`, and broker. The
+API recovery loop periodically republishes old, active `PENDING` revisions. It never changes resume
+state; duplicate deliveries are safe because the parse worker claims work with the existing
+revision/status compare-and-set guard. Broker publication failures are logged without connection
+credentials and do not undo a committed upload.

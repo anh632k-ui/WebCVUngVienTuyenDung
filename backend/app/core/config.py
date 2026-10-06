@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
     database_url: SecretStr | None = None
     database_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    celery_broker_url: SecretStr | None = None
+    resume_recovery_grace_seconds: int = Field(default=300, ge=1, le=86_400)
+    resume_recovery_interval_seconds: int = Field(default=60, ge=1, le=3_600)
+    resume_recovery_batch_size: int = Field(default=100, ge=1, le=1_000)
     jwt_secret_key: SecretStr | None = Field(default=None, min_length=32)
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
     access_token_expire_minutes: int = Field(default=15, gt=0, le=1440)
@@ -49,6 +53,17 @@ class Settings(BaseSettings):
     @field_validator("jwt_secret_key", mode="before")
     @classmethod
     def normalize_jwt_secret(cls, value: str | SecretStr | None) -> str | SecretStr | None:
+        if value is None:
+            return None
+        raw_value = value.get_secret_value() if isinstance(value, SecretStr) else value
+        return value if raw_value.strip() else None
+
+    @field_validator("celery_broker_url", mode="before")
+    @classmethod
+    def normalize_celery_broker_url(
+        cls,
+        value: str | SecretStr | None,
+    ) -> str | SecretStr | None:
         if value is None:
             return None
         raw_value = value.get_secret_value() if isinstance(value, SecretStr) else value
