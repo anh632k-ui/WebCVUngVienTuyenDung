@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    PlainSerializer,
     WithJsonSchema,
     field_validator,
     model_validator,
@@ -33,6 +34,11 @@ class JobStatus(StrEnum):
     CLOSED = "CLOSED"
 
 
+class JobSkillImportance(StrEnum):
+    MANDATORY = "MANDATORY"
+    OPTIONAL = "OPTIONAL"
+
+
 def _decimal_weight_from_json_number(value: object) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise ValueError("Job weights must be JSON numbers")
@@ -45,6 +51,29 @@ JobCreateWeight = Annotated[
     BeforeValidator(_decimal_weight_from_json_number),
     Field(ge=0, le=1, decimal_places=3),
     WithJsonSchema({"type": "number", "minimum": 0, "maximum": 1}),
+]
+
+
+def _criteria_decimal_from_json_number(value: object) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise ValueError("Criteria years must be JSON numbers")
+    decimal_value = Decimal(str(value))
+    if not decimal_value.is_finite():
+        raise ValueError("Criteria years must be finite")
+    decimal_value = Decimal("0") if decimal_value == 0 else decimal_value
+    if decimal_value < 0:
+        raise ValueError("Criteria years must be non-negative")
+    if decimal_value > Decimal("999.9") or decimal_value != decimal_value.quantize(Decimal("0.1")):
+        raise ValueError("Criteria years must fit PostgreSQL NUMERIC(4,1)")
+    return decimal_value
+
+
+CriteriaYears = Annotated[
+    Decimal,
+    BeforeValidator(_criteria_decimal_from_json_number),
+    Field(ge=0, max_digits=4, decimal_places=1),
+    PlainSerializer(lambda value: float(value), return_type=float, when_used="json"),
+    WithJsonSchema({"type": "number", "minimum": 0}),
 ]
 
 
@@ -111,6 +140,50 @@ class JobStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: JobStatus
+
+
+class JobSkillCriterion(BaseModel):
+    model_config = ConfigDict(extra="forbid", json_schema_mode_override="validation")
+
+    skill_id: int
+    importance: JobSkillImportance
+    min_years_required: CriteriaYears = Field(
+        default=Decimal("0.0"), json_schema_extra={"default": 0}
+    )
+
+
+class JobCriteriaRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    min_experience_years: CriteriaYears = Field(default_factory=lambda: Decimal("0.0"))
+    education_requirement: str | None = Field(default=None, max_length=255)
+    skills: list[JobSkillCriterion] = Field(min_length=1)
+
+    @field_validator("education_requirement", mode="after")
+    @classmethod
+    def validate_education_requirement(cls, value: str | None) -> str | None:
+        return validate_job_create_text(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_unique_skill_ids(self) -> JobCriteriaRequest:
+        skill_ids = [skill.skill_id for skill in self.skills]
+        if len(skill_ids) != len(set(skill_ids)):
+            raise ValueError("Criteria skill IDs must be unique")
+        return self
+
+
+class JobCriteriaData(BaseModel):
+    job_id: uuid.UUID
+    revision: int = Field(ge=1)
+    min_experience_years: CriteriaYears = Field(default=Decimal("0.0"))
+    education_requirement: str | None = None
+    is_criteria_verified: bool
+    skills: list[JobSkillCriterion]
+
+
+class JobCriteriaResponse(BaseModel):
+    success: Literal[True] = True
+    data: JobCriteriaData
 
 
 class JobData(BaseModel):
