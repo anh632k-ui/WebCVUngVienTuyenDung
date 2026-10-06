@@ -11,9 +11,8 @@ _HORIZONTAL_WHITESPACE = re.compile(r"[^\S\n]+")
 _EXCESSIVE_BLANK_LINES = re.compile(r"\n(?:[ \t]*\n){2,}")
 
 
-def normalize_extracted_text(text: str) -> str:
-    """Normalize parser text deterministically without changing letter case or accents."""
-
+def normalize_parser_text(text: str) -> str:
+    """Apply shared deterministic semantic text normalization without domain errors."""
     normalized = unicodedata.normalize("NFC", text).replace("\r\n", "\n").replace("\r", "\n")
     normalized = "".join(
         character
@@ -22,7 +21,13 @@ def normalize_extracted_text(text: str) -> str:
     )
     normalized = _HORIZONTAL_WHITESPACE.sub(" ", normalized)
     normalized = "\n".join(line.strip() for line in normalized.split("\n"))
-    normalized = _EXCESSIVE_BLANK_LINES.sub("\n\n", normalized).strip()
+    return _EXCESSIVE_BLANK_LINES.sub("\n\n", normalized).strip()
+
+
+def normalize_extracted_text(text: str) -> str:
+    """Normalize parser text deterministically without changing letter case or accents."""
+
+    normalized = normalize_parser_text(text)
     if len(normalized) > MAX_EXTRACTED_TEXT_CHARS:
         raise ResumeParseError(
             ResumeParseErrorKind.TEXT_LIMIT_EXCEEDED,
