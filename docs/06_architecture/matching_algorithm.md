@@ -23,6 +23,9 @@ Tạo các employment interval định lượng:
 - thiếu start => không định lượng;
 - merge overlap trước khi cộng.
 
+Quy ước kỹ thuật deterministic: số năm kinh nghiệm định lượng của ứng viên bằng tổng số
+ngày trong các interval hợp lệ sau khi merge chia cho `365.25`.
+
 Nếu `required<=0`: 100.
 Nếu `required>0` và không có interval định lượng: 0.
 Nếu candidate>=required: 100.
@@ -31,6 +34,10 @@ Không đoán số năm từ title/description khi không có date đủ tin c�
 
 ## Overall
 `Overall=w_skill*Skill+w_semantic*Semantic+w_experience*Experience`, defaults 0.5/0.3/0.2.
+
+Các score có thể trả về/lưu được làm tròn 2 chữ số thập phân bằng `ROUND_HALF_UP`.
+`Overall` được tính từ các component **chưa làm tròn** và weights, sau đó mới được làm tròn
+độc lập.
 
 ## Gap
 Missing MANDATORY=CRITICAL; OPTIONAL=MINOR. Skill có nhưng thiếu years có thể PARTIAL evidence.
