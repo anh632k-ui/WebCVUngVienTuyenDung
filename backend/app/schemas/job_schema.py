@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
+from unicodedata import normalize
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    WithJsonSchema,
+    field_validator,
+    model_validator,
+)
 
 from app.schemas.match_schema import MatchSummary
 
@@ -21,6 +31,80 @@ class JobStatus(StrEnum):
     DRAFT = "DRAFT"
     ACTIVE = "ACTIVE"
     CLOSED = "CLOSED"
+
+
+def _decimal_weight_from_json_number(value: object) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise ValueError("Job weights must be JSON numbers")
+    decimal_value = Decimal(str(value))
+    return Decimal("0") if decimal_value == 0 else decimal_value
+
+
+JobCreateWeight = Annotated[
+    Decimal,
+    BeforeValidator(_decimal_weight_from_json_number),
+    Field(ge=0, le=1, decimal_places=3),
+    WithJsonSchema({"type": "number", "minimum": 0, "maximum": 1}),
+]
+
+
+def validate_job_create_text(value: str) -> str:
+    """Reject text PostgreSQL cannot store or canonical JSON cannot encode."""
+    if "\x00" in value:
+        raise ValueError("Job create text must not contain NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("Job create text must be valid UTF-8 text") from error
+    return value
+
+
+class JobCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    job_level: str = Field(min_length=1, max_length=50)
+    location: str | None = Field(default=None, max_length=150)
+    raw_content: str = Field(min_length=1)
+    w_skill: JobCreateWeight = Field(default=Decimal("0.500"), json_schema_extra={"default": 0.5})
+    w_semantic: JobCreateWeight = Field(
+        default=Decimal("0.300"), json_schema_extra={"default": 0.3}
+    )
+    w_experience: JobCreateWeight = Field(
+        default=Decimal("0.200"), json_schema_extra={"default": 0.2}
+    )
+
+    @field_validator("title", "job_level", mode="before")
+    @classmethod
+    def normalize_trimmed_required_text(cls, value: object) -> object:
+        return normalize("NFC", value).strip() if isinstance(value, str) else value
+
+    @field_validator("location", mode="before")
+    @classmethod
+    def normalize_optional_location(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = normalize("NFC", value).strip()
+        return normalized or None
+
+    @field_validator("raw_content", mode="before")
+    @classmethod
+    def normalize_raw_content(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized_lines = value.replace("\r\n", "\n").replace("\r", "\n")
+        return normalize("NFC", normalized_lines)
+
+    @field_validator("title", "job_level", "location", "raw_content", mode="after")
+    @classmethod
+    def validate_normalized_text(cls, value: str | None) -> str | None:
+        return validate_job_create_text(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_weight_sum(self) -> JobCreateRequest:
+        if self.w_skill + self.w_semantic + self.w_experience != Decimal("1.000"):
+            raise ValueError("Job weights must sum exactly to 1.000")
+        return self
 
 
 class JobStatusRequest(BaseModel):

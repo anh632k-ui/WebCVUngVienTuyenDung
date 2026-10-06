@@ -400,9 +400,9 @@ async def test_admin_can_soft_delete_job(job_api: JobAPIContext) -> None:
     assert target.is_deleted is True and target.deleted_at is not None
 
 
-def test_job_route_table_contains_only_requested_read_methods() -> None:
+def test_job_route_table_preserves_existing_methods_with_create() -> None:
     paths = app.openapi()["paths"]
-    assert set(paths["/api/v1/jobs"]) == {"get"}
+    assert set(paths["/api/v1/jobs"]) == {"get", "post"}
     assert set(paths["/api/v1/jobs/{id}"]) == {"get", "delete"}
     assert set(paths["/api/v1/jobs/{id}/status"]) == {"patch"}
 

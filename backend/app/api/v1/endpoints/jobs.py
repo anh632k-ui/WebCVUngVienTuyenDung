@@ -1,12 +1,13 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 
 from app.api.dependencies import CurrentUser, DatabaseSession, require_roles
 from app.models.user import User
 from app.schemas.auth_schema import UserRole
 from app.schemas.job_schema import (
+    JobCreateRequest,
     JobData,
     JobResponse,
     JobStatus,
@@ -15,10 +16,37 @@ from app.schemas.job_schema import (
     PaginationMeta,
     ParsingStatus,
 )
-from app.services.job_service import change_job_status, get_job, list_jobs, soft_delete_job
+from app.services.job_dispatcher import JobParseDispatcher, get_job_parse_dispatcher
+from app.services.job_service import (
+    change_job_status,
+    create_job,
+    get_job,
+    list_jobs,
+    soft_delete_job,
+)
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 JobManager = Annotated[User, Depends(require_roles(UserRole.HR, UserRole.ADMIN))]
+JobCreator = Annotated[User, Depends(require_roles(UserRole.HR))]
+JobDispatcherDependency = Annotated[JobParseDispatcher, Depends(get_job_parse_dispatcher)]
+
+
+@router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
+async def create_new_job(
+    payload: JobCreateRequest,
+    session: DatabaseSession,
+    current_user: JobCreator,
+    dispatcher: JobDispatcherDependency,
+    idempotency_key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
+) -> JobResponse:
+    job = await create_job(
+        session,
+        current_user=current_user,
+        idempotency_key=idempotency_key,
+        payload=payload,
+        dispatcher=dispatcher,
+    )
+    return JobResponse(data=JobData.model_validate(job))
 
 
 @router.get("", response_model=PaginatedJobsResponse)
