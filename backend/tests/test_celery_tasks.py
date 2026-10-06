@@ -13,22 +13,31 @@ from typing import Any
 import pytest
 
 from app.core.config import Settings
+from app.services.job_dispatcher import JOB_PARSE_TASK_NAME
 from app.services.resume_dispatcher import RESUME_PARSE_TASK_NAME
 from app.tasks import celery_tasks, worker_runtime
 from app.tasks.celery_app import QueueRuntimeUnavailable, create_celery_app
+from app.workers.job_parse_worker import JobParseTaskOutcome
 from app.workers.resume_parse_worker import ResumeParseTaskOutcome
 
 
 class FakeRuntime:
     def __init__(self) -> None:
-        self.calls: list[tuple[uuid.UUID, int]] = []
+        self.resume_calls: list[tuple[uuid.UUID, int]] = []
+        self.job_calls: list[tuple[uuid.UUID, int]] = []
         self.closed = False
+        self.close_calls = 0
 
-    def run(self, resume_id: uuid.UUID, revision: int) -> ResumeParseTaskOutcome:
-        self.calls.append((resume_id, revision))
+    def run_resume(self, resume_id: uuid.UUID, revision: int) -> ResumeParseTaskOutcome:
+        self.resume_calls.append((resume_id, revision))
         return ResumeParseTaskOutcome.PARSED
 
+    def run_job(self, job_id: uuid.UUID, revision: int) -> JobParseTaskOutcome:
+        self.job_calls.append((job_id, revision))
+        return JobParseTaskOutcome.PARSED
+
     def close(self) -> None:
+        self.close_calls += 1
         self.closed = True
 
 
@@ -144,15 +153,20 @@ def test_celery_imports_do_not_create_engine_before_child_runtime() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_task_validates_payload_and_delegates_to_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tasks_validate_payload_and_delegate_to_same_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime = FakeRuntime()
     monkeypatch.setattr(celery_tasks, "get_worker_runtime", lambda: runtime)
     resume_id = uuid.uuid4()
+    job_id = uuid.uuid4()
 
-    result = celery_tasks.execute_resume_parse_task(str(resume_id), 3)
+    resume_result = celery_tasks.execute_resume_parse_task(str(resume_id), 3)
+    job_result = celery_tasks.execute_job_parse_task(str(job_id), 5)
 
-    assert result == "PARSED"
-    assert runtime.calls == [(resume_id, 3)]
+    assert resume_result == job_result == "PARSED"
+    assert runtime.resume_calls == [(resume_id, 3)]
+    assert runtime.job_calls == [(job_id, 5)]
 
 
 @pytest.mark.parametrize(
@@ -162,6 +176,8 @@ def test_task_validates_payload_and_delegates_to_runtime(monkeypatch: pytest.Mon
 def test_task_rejects_invalid_payload(resume_id: str, revision: Any) -> None:
     with pytest.raises(ValueError):
         celery_tasks.execute_resume_parse_task(resume_id, revision)
+    with pytest.raises(ValueError):
+        celery_tasks.execute_job_parse_task(resume_id, revision)
 
 
 def test_celery_app_requires_broker_without_importing_celery() -> None:
@@ -191,6 +207,7 @@ def test_celery_app_uses_safe_json_no_result_configuration() -> None:
     assert application.configuration["broker_connection_retry_on_startup"] is False
     assert application.configuration["enable_utc"] is True
     assert application.registered[RESUME_PARSE_TASK_NAME][1] is True
+    assert application.registered[JOB_PARSE_TASK_NAME][1] is True
     assert len(signal.connections) == 1
 
 
@@ -223,40 +240,68 @@ def test_runtime_singleton_is_pid_aware_and_shutdown_is_idempotent(
     worker_runtime.shutdown_worker_runtime()
     worker_runtime.shutdown_worker_runtime()
     assert created[1].closed is True
+    assert created[1].close_calls == 1
     assert created[0].closed is False
 
 
-def test_worker_runtime_reuses_one_async_runner_and_disposes_engine(
+def test_shared_worker_runtime_reuses_runner_engine_and_provider_for_resume_job_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop_ids: list[int] = []
+    resource_observations: list[tuple[str, int, int, int]] = []
+    disposal_loop_ids: list[int] = []
 
     class FakeEngine:
         disposed = False
 
         async def dispose(self) -> None:
-            loop_ids.append(id(asyncio.get_running_loop()))
+            disposal_loop_ids.append(id(asyncio.get_running_loop()))
             self.disposed = True
 
-    async def process(*args: Any, **kwargs: Any) -> ResumeParseTaskOutcome:
-        del args, kwargs
-        loop_ids.append(id(asyncio.get_running_loop()))
+    async def process_resume(*args: Any, **kwargs: Any) -> ResumeParseTaskOutcome:
+        del args
+        resource_observations.append(
+            (
+                "resume",
+                id(asyncio.get_running_loop()),
+                id(kwargs["session_factory"]),
+                id(kwargs["embedding_provider"]),
+            )
+        )
         return ResumeParseTaskOutcome.DISCARDED
 
+    async def process_job(*args: Any, **kwargs: Any) -> JobParseTaskOutcome:
+        del args
+        resource_observations.append(
+            (
+                "job",
+                id(asyncio.get_running_loop()),
+                id(kwargs["session_factory"]),
+                id(kwargs["embedding_provider"]),
+            )
+        )
+        return JobParseTaskOutcome.DISCARDED
+
     engine = FakeEngine()
-    monkeypatch.setattr(worker_runtime, "process_resume_parse_task", process)
+    embedding_provider = object()
+    monkeypatch.setattr(worker_runtime, "process_resume_parse_task", process_resume)
+    monkeypatch.setattr(worker_runtime, "process_job_parse_task", process_job)
     monkeypatch.setattr(worker_runtime, "async_sessionmaker", lambda *args, **kwargs: object())
-    runtime = worker_runtime.ResumeParseWorkerRuntime(
+    runtime = worker_runtime.ParseWorkerRuntime(
         Settings(_env_file=None),
         database_engine=engine,  # type: ignore[arg-type]
         storage=object(),  # type: ignore[arg-type]
-        embedding_provider=object(),  # type: ignore[arg-type]
+        embedding_provider=embedding_provider,  # type: ignore[arg-type]
     )
 
-    assert runtime.run(uuid.uuid4(), 1) == ResumeParseTaskOutcome.DISCARDED
-    assert runtime.run(uuid.uuid4(), 2) == ResumeParseTaskOutcome.DISCARDED
+    assert runtime.run_resume(uuid.uuid4(), 1) == ResumeParseTaskOutcome.DISCARDED
+    assert runtime.run_job(uuid.uuid4(), 2) == JobParseTaskOutcome.DISCARDED
+    assert runtime.run_resume(uuid.uuid4(), 3) == ResumeParseTaskOutcome.DISCARDED
     runtime.close()
     runtime.close()
 
-    assert len(set(loop_ids)) == 1
+    assert [observation[0] for observation in resource_observations] == ["resume", "job", "resume"]
+    assert len({observation[1] for observation in resource_observations}) == 1
+    assert len({observation[2] for observation in resource_observations}) == 1
+    assert {observation[3] for observation in resource_observations} == {id(embedding_provider)}
+    assert disposal_loop_ids == [resource_observations[0][1]]
     assert engine.disposed is True

@@ -5,7 +5,7 @@ from importlib import import_module
 from typing import Any
 
 from app.core.config import Settings, get_settings
-from app.tasks.celery_tasks import register_resume_parse_task
+from app.tasks.celery_tasks import register_job_parse_task, register_resume_parse_task
 from app.tasks.worker_runtime import shutdown_worker_runtime
 
 
@@ -58,6 +58,7 @@ def create_celery_app(
         },
     )
     register_resume_parse_task(application)
+    register_job_parse_task(application)
 
     shutdown_signals: tuple[Any, ...]
     if shutdown_signal is None:
@@ -75,7 +76,7 @@ def create_celery_app(
         signal.connect(
             _shutdown_child_runtime,
             weak=False,
-            dispatch_uid="webcv-resume-worker-runtime-shutdown",
+            dispatch_uid="webcv-parse-worker-runtime-shutdown",
         )
     return application
 
