@@ -161,6 +161,77 @@ def test_mandatory_evidence_wins_across_repeated_mentions(
     assert skill_map(result)["Python"][0] == "MANDATORY"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Requirements\nPython 2+ years\nPreferred Qualifications\nPython 5+ years",
+        "Preferred Qualifications\nPython 5+ years\nRequirements\nPython 2+ years",
+    ],
+)
+def test_optional_years_never_strengthen_mandatory_evidence(
+    taxonomy: tuple[TaxonomySkill, ...],
+    text: str,
+) -> None:
+    first = parse_job_description(text, taxonomy)
+    second = parse_job_description(text, taxonomy)
+
+    assert skill_map(first)["Python"] == ("MANDATORY", Decimal("2.0"))
+    assert second == first
+
+
+def test_repeated_mandatory_evidence_uses_strongest_mandatory_years(
+    taxonomy: tuple[TaxonomySkill, ...],
+) -> None:
+    result = parse_job_description(
+        "Requirements\nPython 2+ years\nPython 4+ years",
+        taxonomy,
+    )
+
+    assert skill_map(result)["Python"] == ("MANDATORY", Decimal("4.0"))
+
+
+def test_repeated_optional_evidence_uses_strongest_optional_years(
+    taxonomy: tuple[TaxonomySkill, ...],
+) -> None:
+    result = parse_job_description(
+        "Preferred Qualifications\nPython 2+ years\nPython 5+ years",
+        taxonomy,
+    )
+
+    assert skill_map(result)["Python"] == ("OPTIONAL", Decimal("5.0"))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Python preferred, not required",
+        "Python optional, not mandatory",
+        "Python is not required",
+    ],
+)
+def test_negated_english_mandatory_cues_are_optional(
+    taxonomy: tuple[TaxonomySkill, ...],
+    text: str,
+) -> None:
+    assert skill_map(parse_job_description(text, taxonomy))["Python"] == (
+        "OPTIONAL",
+        Decimal("0.0"),
+    )
+
+
+def test_distinct_skills_use_local_positive_cues(
+    taxonomy: tuple[TaxonomySkill, ...],
+) -> None:
+    assert skill_map(parse_job_description("Python required, Java preferred", taxonomy)) == {
+        "Java": ("OPTIONAL", Decimal("0.0")),
+        "Python": ("MANDATORY", Decimal("0.0")),
+    }
+    assert skill_map(parse_job_description("Python preferred, but Docker required", taxonomy)) == {
+        "Docker": ("MANDATORY", Decimal("0.0")),
+        "Python": ("OPTIONAL", Decimal("0.0")),
+    }
+
+
 def test_boundary_matching_handles_collisions_punctuation_and_stable_order(
     taxonomy: tuple[TaxonomySkill, ...],
 ) -> None:

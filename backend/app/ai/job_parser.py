@@ -27,8 +27,10 @@ _MANDATORY_CUE = re.compile(
     r"(?<!không\s)\bbắt\s+buộc\b|\byêu\s+cầu\b|\btối\s+thiểu\b",
     re.IGNORECASE,
 )
+_NEGATED_MANDATORY_CUE = re.compile(r"\bnot\s+(?:required|mandatory)\b", re.IGNORECASE)
 _OPTIONAL_CUE = re.compile(
     r"\b(?:preferred|nice\s+to\s+have|bonus|advantage|optional|plus)\b|"
+    r"\bnot\s+(?:required|mandatory)\b|"
     r"\bưu\s+tiên\b|\blợi\s+thế\b|\bđiểm\s+cộng\b|\bkhông\s+bắt\s+buộc\b",
     re.IGNORECASE,
 )
@@ -159,14 +161,14 @@ def _importance(
     section: JobSection | None,
     skill_years: Decimal,
     skill_pattern: re.Pattern[str],
-    skill_count: int,
 ) -> JobSkillImportance | None:
     skill_match = skill_pattern.search(sentence)
-    mandatory_matches = tuple(_MANDATORY_CUE.finditer(sentence))
+    positive_cue_text = _NEGATED_MANDATORY_CUE.sub(
+        lambda match: " " * len(match.group(0)), sentence
+    )
+    mandatory_matches = tuple(_MANDATORY_CUE.finditer(positive_cue_text))
     optional_matches = tuple(_OPTIONAL_CUE.finditer(sentence))
     if skill_match is not None and mandatory_matches and optional_matches:
-        if skill_count == 1:
-            return "MANDATORY"
 
         def distance(cue: re.Match[str]) -> int:
             if cue.end() <= skill_match.start():
@@ -198,33 +200,34 @@ def _extract_skills(
     ordered = _ordered_taxonomy(taxonomy)
     patterns = {skill.id: taxonomy_skill_pattern(skill) for skill in ordered}
     by_id = {skill.id: skill for skill in ordered}
-    evidence: dict[int, tuple[JobSkillImportance, Decimal]] = {}
+    evidence: dict[int, dict[JobSkillImportance, Decimal]] = {}
     for line in lines:
         for sentence in _sentences(line.text):
             matched = tuple(skill for skill in ordered if patterns[skill.id].search(sentence))
             for skill in matched:
                 pattern = patterns[skill.id]
                 years = _skill_years(sentence, pattern)
-                importance = _importance(sentence, line.section, years, pattern, len(matched))
+                importance = _importance(sentence, line.section, years, pattern)
                 if importance is None:
                     continue
-                previous = evidence.get(skill.id)
-                if previous is not None:
-                    if previous[0] == "MANDATORY":
-                        importance = "MANDATORY"
-                    years = max(years, previous[1])
-                evidence[skill.id] = (importance, years)
+                by_importance = evidence.setdefault(skill.id, {})
+                by_importance[importance] = max(years, by_importance.get(importance, _ZERO_YEARS))
 
-    return tuple(
-        ParsedJobSkill(
-            skill_id=skill_id,
-            name=by_id[skill_id].name,
-            normalized_name=by_id[skill_id].normalized_name,
-            importance=importance,
-            min_years_required=years,
+    results: list[ParsedJobSkill] = []
+    for skill_id, by_importance in sorted(evidence.items()):
+        selected_importance: JobSkillImportance = (
+            "MANDATORY" if "MANDATORY" in by_importance else "OPTIONAL"
         )
-        for skill_id, (importance, years) in sorted(evidence.items())
-    )
+        results.append(
+            ParsedJobSkill(
+                skill_id=skill_id,
+                name=by_id[skill_id].name,
+                normalized_name=by_id[skill_id].normalized_name,
+                importance=selected_importance,
+                min_years_required=by_importance[selected_importance],
+            )
+        )
+    return tuple(results)
 
 
 def _extract_global_experience(
