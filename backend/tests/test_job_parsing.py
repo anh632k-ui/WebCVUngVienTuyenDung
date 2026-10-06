@@ -207,9 +207,16 @@ def test_repeated_optional_evidence_uses_strongest_optional_years(
         "Python preferred, not required",
         "Python optional, not mandatory",
         "Python is not required",
+        "Python không yêu cầu",
+        "Không yêu cầu Python",
+        "Python is not essential",
+        "Python không phải là yêu cầu",
+        "Python không phải yêu cầu",
+        "Python không phải là bắt buộc",
+        "Python không phải bắt buộc",
     ],
 )
-def test_negated_english_mandatory_cues_are_optional(
+def test_negated_mandatory_cues_are_optional(
     taxonomy: tuple[TaxonomySkill, ...],
     text: str,
 ) -> None:
@@ -248,6 +255,13 @@ def test_distinct_skills_use_local_positive_cues(
         ("Ưu tiên Python hoặc bắt buộc Python", Decimal("0.0")),
         ("Preferred Python or required Python", Decimal("0.0")),
         ("Required Python or preferred Python", Decimal("0.0")),
+        ("Python không yêu cầu nhưng bắt buộc Python", Decimal("0.0")),
+        ("Bắt buộc Python nhưng không yêu cầu Python", Decimal("0.0")),
+        ("Python not essential but Python required", Decimal("0.0")),
+        ("Python required whereas Python not essential", Decimal("0.0")),
+        ("Ưu tiên Python trong khi bắt buộc Python", Decimal("0.0")),
+        ("Ưu tiên Python còn bắt buộc Python", Decimal("0.0")),
+        ("Preferred Python while required Python", Decimal("0.0")),
     ],
 )
 def test_repeated_skill_occurrences_preserve_local_mandatory_evidence(
@@ -272,6 +286,24 @@ def test_repeated_optional_occurrences_use_strongest_local_optional_years(
 
     assert skill_map(first)["Python"] == ("OPTIONAL", Decimal("5.0"))
     assert second == first
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Yêu cầu Python",
+        "Python essential",
+        "Bắt buộc Python",
+    ],
+)
+def test_positive_mandatory_cues_remain_mandatory(
+    taxonomy: tuple[TaxonomySkill, ...],
+    text: str,
+) -> None:
+    assert skill_map(parse_job_description(text, taxonomy))["Python"] == (
+        "MANDATORY",
+        Decimal("0.0"),
+    )
 
 
 def test_boundary_matching_handles_collisions_punctuation_and_stable_order(

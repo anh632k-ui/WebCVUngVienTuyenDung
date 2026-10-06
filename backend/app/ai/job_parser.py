@@ -32,11 +32,14 @@ _MANDATORY_CUE = re.compile(
     r"(?<!không\s)\bbắt\s+buộc\b|\byêu\s+cầu\b|\btối\s+thiểu\b",
     re.IGNORECASE,
 )
-_NEGATED_MANDATORY_CUE = re.compile(r"\bnot\s+(?:required|mandatory)\b", re.IGNORECASE)
+_NEGATED_MANDATORY_CUE = re.compile(
+    r"\bnot\s+(?:required|mandatory|essential)\b|"
+    r"\bkhông\s+(?:(?:phải(?:\s+là)?\s+)?(?:yêu\s+cầu|bắt\s+buộc))\b",
+    re.IGNORECASE,
+)
 _OPTIONAL_CUE = re.compile(
     r"\b(?:preferred|nice\s+to\s+have|bonus|advantage|optional|plus)\b|"
-    r"\bnot\s+(?:required|mandatory)\b|"
-    r"\bưu\s+tiên\b|\blợi\s+thế\b|\bđiểm\s+cộng\b|\bkhông\s+bắt\s+buộc\b",
+    r"\bưu\s+tiên\b|\blợi\s+thế\b|\bđiểm\s+cộng\b",
     re.IGNORECASE,
 )
 _NON_CANDIDATE_EXPERIENCE = re.compile(
@@ -192,7 +195,8 @@ def _importance(
     )
     optional_matches = tuple(
         match
-        for match in _OPTIONAL_CUE.finditer(sentence)
+        for pattern in (_OPTIONAL_CUE, _NEGATED_MANDATORY_CUE)
+        for match in pattern.finditer(sentence)
         if cue_start <= match.start() and match.end() <= cue_end
     )
     if mandatory_matches and optional_matches:
