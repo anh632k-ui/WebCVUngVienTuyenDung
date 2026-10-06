@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
@@ -22,6 +23,7 @@ _RANGE_OR_PLUS = rf"(?:\s*(?:-|–|—|to|đến)\s*{_NUMBER}|\s*\+)?"
 _REQUIRED_RANGE_OR_PLUS = rf"(?:\s*(?:-|–|—|to|đến)\s*{_NUMBER}|\s*\+)"
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?;])\s+")
+_LOCAL_EVIDENCE_SEPARATOR = re.compile(r",|\b(?:and|but|while|whereas)\b", re.IGNORECASE)
 _MANDATORY_CUE = re.compile(
     r"\b(?:required|must(?:\s+have)?|mandatory|essential|minimum\s+qualification)\b|"
     r"(?<!không\s)\bbắt\s+buộc\b|\byêu\s+cầu\b|\btối\s+thiểu\b",
@@ -82,6 +84,12 @@ class JobParseError(Exception):
         self.message = message
 
 
+@dataclass(frozen=True)
+class _SkillEvidence:
+    importance: JobSkillImportance
+    min_years_required: Decimal
+
+
 def _normalize_job_text(raw_content: str) -> str:
     if not isinstance(raw_content, str):
         raise JobParseError(JobParseErrorKind.INVALID_INPUT, "Job content must be text")
@@ -126,31 +134,38 @@ def _ordered_taxonomy(
     return tuple(unique.values())
 
 
-def _skill_years(sentence: str, skill_pattern: re.Pattern[str]) -> Decimal:
+def _skill_years(
+    sentence: str,
+    skill_pattern: re.Pattern[str],
+    skill_match: re.Match[str],
+) -> Decimal:
     skill_source = skill_pattern.pattern
     patterns = (
         re.compile(
-            rf"{skill_source}\s*(?::|-|–|—)?\s*(?:minimum\s+|at\s+least\s+)?"
+            rf"(?P<skill>{skill_source})\s*(?::|-|–|—)?\s*"
+            rf"(?:minimum\s+|at\s+least\s+)?"
             rf"{_CAPTURE_YEARS}{_RANGE_OR_PLUS}\s*years?"
             r"(?:\s+(?:of\s+)?experience)?\b",
             re.IGNORECASE,
         ),
         re.compile(
             rf"(?:minimum\s+|at\s+least\s+)?{_CAPTURE_YEARS}{_RANGE_OR_PLUS}\s*years?\s+"
-            rf"(?:(?:of\s+)?experience\s+)?(?:with|using|in|of)?\s*{skill_source}",
+            rf"(?:(?:of\s+)?experience\s+)?(?:with|using|in|of)?\s*"
+            rf"(?P<skill>{skill_source})",
             re.IGNORECASE,
         ),
         re.compile(
             rf"(?:tối\s+thiểu|ít\s+nhất|yêu\s+cầu)\s+{_CAPTURE_YEARS}"
             rf"{_RANGE_OR_PLUS}\s*năm(?:\s+kinh\s+nghiệm)?(?:\s+(?:với|về))?\s*"
-            rf"{skill_source}",
+            rf"(?P<skill>{skill_source})",
             re.IGNORECASE,
         ),
     )
     values = [
         value
         for pattern in patterns
-        if (match := pattern.search(sentence)) is not None
+        for match in pattern.finditer(sentence)
+        if match.span("skill") == skill_match.span()
         if (value := _decimal_years(match.group("years"))) is not None
     ]
     return max(values, default=_ZERO_YEARS)
@@ -160,15 +175,24 @@ def _importance(
     sentence: str,
     section: JobSection | None,
     skill_years: Decimal,
-    skill_pattern: re.Pattern[str],
+    skill_match: re.Match[str],
+    cue_bounds: tuple[int, int] | None = None,
 ) -> JobSkillImportance | None:
-    skill_match = skill_pattern.search(sentence)
     positive_cue_text = _NEGATED_MANDATORY_CUE.sub(
         lambda match: " " * len(match.group(0)), sentence
     )
-    mandatory_matches = tuple(_MANDATORY_CUE.finditer(positive_cue_text))
-    optional_matches = tuple(_OPTIONAL_CUE.finditer(sentence))
-    if skill_match is not None and mandatory_matches and optional_matches:
+    cue_start, cue_end = cue_bounds or (0, len(sentence))
+    mandatory_matches = tuple(
+        match
+        for match in _MANDATORY_CUE.finditer(positive_cue_text)
+        if cue_start <= match.start() and match.end() <= cue_end
+    )
+    optional_matches = tuple(
+        match
+        for match in _OPTIONAL_CUE.finditer(sentence)
+        if cue_start <= match.start() and match.end() <= cue_end
+    )
+    if mandatory_matches and optional_matches:
 
         def distance(cue: re.Match[str]) -> int:
             if cue.end() <= skill_match.start():
@@ -193,6 +217,60 @@ def _importance(
     return None
 
 
+def _evidence_boundary(
+    sentence: str,
+    left_match: re.Match[str],
+    right_match: re.Match[str],
+) -> int:
+    separators = tuple(
+        _LOCAL_EVIDENCE_SEPARATOR.finditer(sentence, left_match.end(), right_match.start())
+    )
+    return separators[-1].end() if separators else right_match.start()
+
+
+def _repeated_skill_cue_bounds(
+    sentence: str,
+    skill_matches: tuple[re.Match[str], ...],
+    index: int,
+) -> tuple[int, int]:
+    start = (
+        0
+        if index == 0
+        else _evidence_boundary(sentence, skill_matches[index - 1], skill_matches[index])
+    )
+    end = (
+        len(sentence)
+        if index == len(skill_matches) - 1
+        else _evidence_boundary(sentence, skill_matches[index], skill_matches[index + 1])
+    )
+    return start, end
+
+
+def _skill_evidence(
+    sentence: str,
+    section: JobSection | None,
+    skill_pattern: re.Pattern[str],
+) -> tuple[_SkillEvidence, ...]:
+    evidence: list[_SkillEvidence] = []
+    skill_matches = tuple(skill_pattern.finditer(sentence))
+    for index, skill_match in enumerate(skill_matches):
+        years = _skill_years(sentence, skill_pattern, skill_match)
+        cue_bounds = (
+            _repeated_skill_cue_bounds(sentence, skill_matches, index)
+            if len(skill_matches) > 1
+            else None
+        )
+        importance = _importance(sentence, section, years, skill_match, cue_bounds)
+        if importance is not None:
+            evidence.append(
+                _SkillEvidence(
+                    importance=importance,
+                    min_years_required=years,
+                )
+            )
+    return tuple(evidence)
+
+
 def _extract_skills(
     lines: Sequence[ContextualJobLine],
     taxonomy: Sequence[TaxonomySkill],
@@ -205,13 +283,17 @@ def _extract_skills(
         for sentence in _sentences(line.text):
             matched = tuple(skill for skill in ordered if patterns[skill.id].search(sentence))
             for skill in matched:
-                pattern = patterns[skill.id]
-                years = _skill_years(sentence, pattern)
-                importance = _importance(sentence, line.section, years, pattern)
-                if importance is None:
-                    continue
-                by_importance = evidence.setdefault(skill.id, {})
-                by_importance[importance] = max(years, by_importance.get(importance, _ZERO_YEARS))
+                for local_evidence in _skill_evidence(
+                    sentence,
+                    line.section,
+                    patterns[skill.id],
+                ):
+                    by_importance = evidence.setdefault(skill.id, {})
+                    importance = local_evidence.importance
+                    by_importance[importance] = max(
+                        local_evidence.min_years_required,
+                        by_importance.get(importance, _ZERO_YEARS),
+                    )
 
     results: list[ParsedJobSkill] = []
     for skill_id, by_importance in sorted(evidence.items()):

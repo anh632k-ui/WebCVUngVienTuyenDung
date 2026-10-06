@@ -232,6 +232,43 @@ def test_distinct_skills_use_local_positive_cues(
     }
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_years"),
+    [
+        ("Python preferred, Python required", Decimal("0.0")),
+        ("Python required, Python preferred", Decimal("0.0")),
+        ("Python 5+ years preferred, Python 2+ years required", Decimal("2.0")),
+        ("Python 2+ years required, Python 5+ years preferred", Decimal("2.0")),
+        ("Python not required, Python required", Decimal("0.0")),
+        ("Python not mandatory, Python 3+ years required", Decimal("3.0")),
+        ("Python preferred and Python required", Decimal("0.0")),
+        ("Python 5+ years preferred and Python 2+ years required", Decimal("2.0")),
+    ],
+)
+def test_repeated_skill_occurrences_preserve_local_mandatory_evidence(
+    taxonomy: tuple[TaxonomySkill, ...],
+    text: str,
+    expected_years: Decimal,
+) -> None:
+    first = parse_job_description(text, taxonomy)
+    second = parse_job_description(text, taxonomy)
+
+    assert skill_map(first)["Python"] == ("MANDATORY", expected_years)
+    assert second == first
+
+
+def test_repeated_optional_occurrences_use_strongest_local_optional_years(
+    taxonomy: tuple[TaxonomySkill, ...],
+) -> None:
+    text = "Python 2+ years preferred, Python 5+ years optional"
+
+    first = parse_job_description(text, taxonomy)
+    second = parse_job_description(text, taxonomy)
+
+    assert skill_map(first)["Python"] == ("OPTIONAL", Decimal("5.0"))
+    assert second == first
+
+
 def test_boundary_matching_handles_collisions_punctuation_and_stable_order(
     taxonomy: tuple[TaxonomySkill, ...],
 ) -> None:
