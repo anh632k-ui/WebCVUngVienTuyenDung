@@ -11,9 +11,10 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
-from app.core.database import dispose_engine
+from app.core.database import SessionFactory, dispose_engine
 from app.core.exceptions import APIError
 from app.core.logging import configure_logging
+from app.services.resume_recovery import start_resume_recovery, stop_resume_recovery
 
 settings = get_settings()
 configure_logging(settings)
@@ -23,9 +24,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("application_started environment=%s", settings.app_env)
-    yield
-    await dispose_engine()
-    logger.info("application_stopped")
+    recovery_task = start_resume_recovery(settings, SessionFactory)
+    try:
+        yield
+    finally:
+        await stop_resume_recovery(recovery_task)
+        await dispose_engine()
+        logger.info("application_stopped")
 
 
 def create_app() -> FastAPI:

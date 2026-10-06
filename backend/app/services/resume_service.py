@@ -196,7 +196,7 @@ async def _dispatch_if_pending(
     try:
         await dispatcher.dispatch(resume.id, resume.revision)
     except Exception:  # noqa: BLE001 - persistence succeeds independently of best-effort dispatch
-        logger.exception(
+        logger.error(
             "resume_parse_dispatch_failed resume_id=%s revision=%s",
             resume.id,
             resume.revision,
