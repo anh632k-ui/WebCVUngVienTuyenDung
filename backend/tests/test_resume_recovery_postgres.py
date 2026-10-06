@@ -2,25 +2,40 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, AsyncTransaction
 
 from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.vector_embedding import BGE_M3_EMBEDDING_DIMENSION, BGE_M3_MODEL_NAME
 from app.core.config import Settings
 from app.core.database import create_engine
-from app.models.resume import Resume
+from app.models.resume import CandidateProfile, Resume, ResumeEducation, ResumeExperience
+from app.models.skill import ResumeSkill
 from app.models.user import User
 from app.services.resume_recovery import (
     recover_pending_resumes,
     select_resume_recovery_candidates,
 )
+from app.workers.resume_parse_worker import ResumeParseTaskOutcome, process_resume_parse_task
+
+
+class UnusedStorage:
+    async def read_bytes(self, key: str) -> bytes:
+        raise AssertionError(f"Discarded recovery task read storage: {key}")
+
+
+class UnusedEmbeddingProvider:
+    model_name = BGE_M3_MODEL_NAME
+    dimension = BGE_M3_EMBEDDING_DIMENSION
+
+    async def embed(self, text: str) -> list[float]:
+        raise AssertionError(f"Discarded recovery task generated an embedding: {text}")
 
 
 class RecordingDispatcher:
@@ -39,7 +54,7 @@ class RecoveryHarness:
     connection: AsyncConnection
     transaction: AsyncTransaction
     setup_session: AsyncSession
-    session_factory: object
+    session_factory: Callable[[], AsyncSession]
     user: User
 
     async def create_resume(
@@ -157,7 +172,7 @@ async def test_real_postgres_selection_is_stale_pending_active_ordered_and_bound
     await harness.create_resume(updated_at=now - timedelta(minutes=20), deleted=True)
 
     candidates = await select_resume_recovery_candidates(
-        harness.session_factory,  # type: ignore[arg-type]
+        harness.session_factory,
         cutoff=now - timedelta(minutes=5),
         batch_size=2,
     )
@@ -182,7 +197,7 @@ async def test_real_postgres_recovery_dispatches_current_revision_without_mutati
     dispatcher = RecordingDispatcher(fail_id=first_id)
 
     result = await recover_pending_resumes(
-        harness.session_factory,  # type: ignore[arg-type]
+        harness.session_factory,
         dispatcher,
         grace_seconds=300,
         batch_size=10,
@@ -201,3 +216,114 @@ async def test_real_postgres_recovery_dispatches_current_revision_without_mutati
     )
     assert all(resume.parsing_status == "PENDING" for resume in persisted)
     assert all(resume.updated_at == original[resume.id] for resume in persisted)
+
+
+async def assert_no_parse_aggregate(harness: RecoveryHarness, resume_id: uuid.UUID) -> None:
+    async with harness.session_factory() as session:
+        resume = await session.get(Resume, resume_id)
+        assert resume is not None
+        assert resume.raw_text is None
+        assert resume.resume_embedding is None
+        related_counts = [
+            await session.scalar(
+                select(func.count()).select_from(model).where(model.resume_id == resume_id)
+            )
+            for model in (CandidateProfile, ResumeSkill, ResumeExperience, ResumeEducation)
+        ]
+    assert related_counts == [0, 0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_recovered_task_is_discarded_if_resume_is_soft_deleted_before_claim(
+    recovery_harness: RecoveryHarness,
+) -> None:
+    harness = recovery_harness
+    now = datetime.now(UTC)
+    resume = await harness.create_resume(updated_at=now - timedelta(minutes=20), revision=4)
+    candidates = await select_resume_recovery_candidates(
+        harness.session_factory,
+        cutoff=now - timedelta(minutes=5),
+        batch_size=10,
+    )
+    assert [(candidate.resume_id, candidate.revision) for candidate in candidates] == [
+        (resume.id, 4)
+    ]
+
+    deleted_at = datetime.now(UTC)
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Resume)
+            .where(Resume.id == resume.id)
+            .values(is_deleted=True, deleted_at=deleted_at, updated_at=deleted_at)
+        )
+        await session.commit()
+
+    outcome = await process_resume_parse_task(
+        resume.id,
+        4,
+        session_factory=harness.session_factory,
+        storage=UnusedStorage(),  # type: ignore[arg-type]
+        embedding_provider=UnusedEmbeddingProvider(),
+    )
+
+    assert outcome == ResumeParseTaskOutcome.DISCARDED
+    async with harness.session_factory() as session:
+        persisted = await session.get(Resume, resume.id)
+        assert persisted is not None
+        assert persisted.is_deleted is True
+        assert persisted.deleted_at == deleted_at
+        assert persisted.parsing_status == "PENDING"
+        assert persisted.revision == 4
+    await assert_no_parse_aggregate(harness, resume.id)
+
+
+@pytest.mark.asyncio
+async def test_recovered_task_is_discarded_if_revision_advances_before_claim(
+    recovery_harness: RecoveryHarness,
+) -> None:
+    harness = recovery_harness
+    now = datetime.now(UTC)
+    resume = await harness.create_resume(updated_at=now - timedelta(minutes=20), revision=6)
+    candidates = await select_resume_recovery_candidates(
+        harness.session_factory,
+        cutoff=now - timedelta(minutes=5),
+        batch_size=10,
+    )
+    assert [(candidate.resume_id, candidate.revision) for candidate in candidates] == [
+        (resume.id, 6)
+    ]
+
+    revised_at = datetime.now(UTC)
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Resume)
+            .where(Resume.id == resume.id)
+            .values(
+                revision=7,
+                parsing_status="PENDING",
+                raw_text=None,
+                resume_embedding=None,
+                embedding_model=None,
+                embedding_preprocessing_version=None,
+                parsed_at=None,
+                error_message=None,
+                updated_at=revised_at,
+            )
+        )
+        await session.commit()
+
+    outcome = await process_resume_parse_task(
+        resume.id,
+        6,
+        session_factory=harness.session_factory,
+        storage=UnusedStorage(),  # type: ignore[arg-type]
+        embedding_provider=UnusedEmbeddingProvider(),
+    )
+
+    assert outcome == ResumeParseTaskOutcome.DISCARDED
+    async with harness.session_factory() as session:
+        persisted = await session.get(Resume, resume.id)
+        assert persisted is not None
+        assert persisted.revision == 7
+        assert persisted.parsing_status == "PENDING"
+    await assert_no_parse_aggregate(harness, resume.id)

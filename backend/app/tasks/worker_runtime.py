@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.ai.vector_embedding import BgeM3EmbeddingProvider
 from app.core.config import Settings, get_settings
-from app.core.database import create_engine
+from app.core.engine_factory import create_engine
 from app.storage.resume_storage import LocalResumeStorage, ResumeStorage
 from app.workers.resume_parse_worker import ResumeParseTaskOutcome, process_resume_parse_task
 

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
+import textwrap
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -53,6 +57,91 @@ class FakeCelery:
             return function
 
         return decorator
+
+
+def test_celery_imports_do_not_create_engine_before_child_runtime() -> None:
+    script = textwrap.dedent(
+        """
+        import importlib
+        import os
+        import sys
+        import types
+
+        import sqlalchemy.ext.asyncio as sqlalchemy_asyncio
+
+        engine_creations = []
+
+        class FakeEngine:
+            async def dispose(self):
+                return None
+
+        def recording_create_async_engine(*args, **kwargs):
+            engine_creations.append((args, kwargs))
+            return FakeEngine()
+
+        class FakeConfiguration:
+            def update(self, **kwargs):
+                return None
+
+        class FakeCelery:
+            def __init__(self, *args, **kwargs):
+                self.conf = FakeConfiguration()
+
+            def task(self, **kwargs):
+                return lambda function: function
+
+        class FakeSignal:
+            def connect(self, *args, **kwargs):
+                return None
+
+        celery_module = types.ModuleType("celery")
+        celery_module.Celery = FakeCelery
+        signals_module = types.ModuleType("celery.signals")
+        signals_module.worker_process_shutdown = FakeSignal()
+        signals_module.worker_shutdown = FakeSignal()
+        sys.modules["celery"] = celery_module
+        sys.modules["celery.signals"] = signals_module
+
+        os.environ["DATABASE_URL"] = (
+            "postgresql+asyncpg://worker:placeholder@localhost:5432/webcv_ungvien"
+        )
+        os.environ["CELERY_BROKER_URL"] = "redis://localhost:6379/0"
+        sqlalchemy_asyncio.create_async_engine = recording_create_async_engine
+
+        for module_name in (
+            "app.tasks.celery_app",
+            "app.tasks.celery_tasks",
+            "app.tasks.worker_runtime",
+            "app.tasks.celery_worker",
+        ):
+            importlib.import_module(module_name)
+
+        assert engine_creations == []
+        assert "app.core.database" not in sys.modules
+
+        from app.core.config import Settings
+        from app.tasks import worker_runtime
+
+        worker_runtime.async_sessionmaker = lambda *args, **kwargs: object()
+        runtime = worker_runtime.ResumeParseWorkerRuntime(
+            Settings(_env_file=None),
+            storage=object(),
+            embedding_provider=object(),
+        )
+        assert len(engine_creations) == 1
+        runtime.close()
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_task_validates_payload_and_delegates_to_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
