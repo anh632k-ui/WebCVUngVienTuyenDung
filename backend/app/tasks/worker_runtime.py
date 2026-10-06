@@ -12,6 +12,7 @@ from app.ai.vector_embedding import BgeM3EmbeddingProvider
 from app.core.config import Settings, get_settings
 from app.core.engine_factory import create_engine
 from app.storage.resume_storage import LocalResumeStorage, ResumeStorage
+from app.workers.job_parse_worker import JobParseTaskOutcome, process_job_parse_task
 from app.workers.resume_parse_worker import ResumeParseTaskOutcome, process_resume_parse_task
 
 
@@ -19,8 +20,8 @@ class WorkerRuntimeConfigurationError(RuntimeError):
     """A safe worker startup error that contains no connection credentials."""
 
 
-class ResumeParseWorkerRuntime:
-    """Persistent async resources owned by exactly one Celery child process."""
+class ParseWorkerRuntime:
+    """Shared persistent parse resources owned by exactly one Celery child process."""
 
     def __init__(
         self,
@@ -32,7 +33,7 @@ class ResumeParseWorkerRuntime:
     ) -> None:
         engine = database_engine if database_engine is not None else create_engine(settings)
         if engine is None:
-            raise WorkerRuntimeConfigurationError("Resume parse worker database is not configured")
+            raise WorkerRuntimeConfigurationError("Parse worker database is not configured")
         self._engine = engine
         self._session_factory: Callable[[], AsyncSession] = async_sessionmaker(
             engine,
@@ -44,10 +45,10 @@ class ResumeParseWorkerRuntime:
         self._runner_lock = threading.Lock()
         self._closed = False
 
-    def run(self, resume_id: uuid.UUID, expected_revision: int) -> ResumeParseTaskOutcome:
+    def run_resume(self, resume_id: uuid.UUID, expected_revision: int) -> ResumeParseTaskOutcome:
         with self._runner_lock:
             if self._closed:
-                raise RuntimeError("Resume parse worker runtime is closed")
+                raise RuntimeError("Parse worker runtime is closed")
             return self._runner.run(
                 process_resume_parse_task(
                     resume_id,
@@ -57,6 +58,24 @@ class ResumeParseWorkerRuntime:
                     embedding_provider=self._embedding_provider,
                 )
             )
+
+    def run_job(self, job_id: uuid.UUID, expected_revision: int) -> JobParseTaskOutcome:
+        with self._runner_lock:
+            if self._closed:
+                raise RuntimeError("Parse worker runtime is closed")
+            return self._runner.run(
+                process_job_parse_task(
+                    job_id,
+                    expected_revision,
+                    session_factory=self._session_factory,
+                    embedding_provider=self._embedding_provider,
+                )
+            )
+
+    def run(self, resume_id: uuid.UUID, expected_revision: int) -> ResumeParseTaskOutcome:
+        """Backward-compatible Resume task entry point."""
+
+        return self.run_resume(resume_id, expected_revision)
 
     def close(self) -> None:
         with self._runner_lock:
@@ -69,18 +88,20 @@ class ResumeParseWorkerRuntime:
                 self._closed = True
 
 
-RuntimeFactory = Callable[[Settings], ResumeParseWorkerRuntime]
+ResumeParseWorkerRuntime = ParseWorkerRuntime
+
+RuntimeFactory = Callable[[Settings], ParseWorkerRuntime]
 
 _runtime_lock = threading.Lock()
-_runtime: ResumeParseWorkerRuntime | None = None
+_runtime: ParseWorkerRuntime | None = None
 _runtime_pid: int | None = None
 
 
 def get_worker_runtime(
     *,
     settings: Settings | None = None,
-    runtime_factory: RuntimeFactory = ResumeParseWorkerRuntime,
-) -> ResumeParseWorkerRuntime:
+    runtime_factory: RuntimeFactory = ParseWorkerRuntime,
+) -> ParseWorkerRuntime:
     """Create resources lazily after fork and reuse them within the current child."""
 
     global _runtime, _runtime_pid

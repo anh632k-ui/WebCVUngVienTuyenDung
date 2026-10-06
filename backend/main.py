@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.database import SessionFactory, dispose_engine
 from app.core.exceptions import APIError
 from app.core.logging import configure_logging
+from app.services.job_recovery import start_job_recovery, stop_job_recovery
 from app.services.resume_recovery import start_resume_recovery, stop_resume_recovery
 
 settings = get_settings()
@@ -24,11 +25,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("application_started environment=%s", settings.app_env)
-    recovery_task = start_resume_recovery(settings, SessionFactory)
+    resume_recovery_task = start_resume_recovery(settings, SessionFactory)
+    job_recovery_task = start_job_recovery(settings, SessionFactory)
     try:
         yield
     finally:
-        await stop_resume_recovery(recovery_task)
+        await stop_resume_recovery(resume_recovery_task)
+        await stop_job_recovery(job_recovery_task)
         await dispose_engine()
         logger.info("application_stopped")
 

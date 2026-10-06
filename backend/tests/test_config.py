@@ -17,6 +17,9 @@ def test_defaults_do_not_require_database_credentials() -> None:
     assert settings.resume_recovery_grace_seconds == 300
     assert settings.resume_recovery_interval_seconds == 60
     assert settings.resume_recovery_batch_size == 100
+    assert settings.job_recovery_grace_seconds == 300
+    assert settings.job_recovery_interval_seconds == 60
+    assert settings.job_recovery_batch_size == 100
 
 
 def test_accepts_canonical_async_database_url() -> None:
@@ -47,6 +50,9 @@ def test_queue_configuration_is_optional_bounded_and_secret() -> None:
         resume_recovery_grace_seconds=1,
         resume_recovery_interval_seconds=1,
         resume_recovery_batch_size=1,
+        job_recovery_grace_seconds=1,
+        job_recovery_interval_seconds=1,
+        job_recovery_batch_size=1,
     )
 
     assert settings.celery_broker_url is not None
@@ -54,3 +60,5 @@ def test_queue_configuration_is_optional_bounded_and_secret() -> None:
     assert Settings(_env_file=None, celery_broker_url=" ").celery_broker_url is None
     with pytest.raises(ValidationError):
         Settings(_env_file=None, resume_recovery_batch_size=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, job_recovery_batch_size=0)
