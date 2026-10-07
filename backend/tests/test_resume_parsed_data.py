@@ -63,8 +63,8 @@ def test_full_replacement_requires_all_top_level_fields(missing: str) -> None:
             ]
         },
         {"skills": [{"skill_id": 1, "years_of_experience": "Infinity"}]},
-        {"skills": [{"skill_id": 1, "years_of_experience": "1000.0"}]},
-        {"educations": [{"institution_name": "University", "gpa": "1000"}]},
+        {"skills": [{"skill_id": 1, "years_of_experience": 1000.0}]},
+        {"educations": [{"institution_name": "University", "gpa": 1000.0}]},
         {"educations": [{"institution_name": "University", "start_year": 32768}]},
         {"candidate_profile": {"full_name": "x" * 151}},
         {"experiences": [{"company_name": "bad\x00text", "job_title": "Engineer"}]},
@@ -89,6 +89,24 @@ def test_numeric_values_are_normalized_before_text_and_persistence() -> None:
     document = json.loads(build_resume_aggregate_text(payload, skill_names={7: "Python"}))
     assert document["skills"][0]["years_of_experience"] == "1.3"
     assert document["educations"][0]["gpa"] == "3.46"
+
+
+@pytest.mark.parametrize("value", [-1, -0.05, -0.04, -0.001])
+def test_years_of_experience_rejects_negative_numeric_values_before_rounding(
+    value: float,
+) -> None:
+    with pytest.raises(ValidationError):
+        ResumeParsedDataUpdate.model_validate(
+            _payload(skills=[{"skill_id": 1, "years_of_experience": value}])
+        )
+
+
+@pytest.mark.parametrize("value", [0, 0.001, 0.04, 0.05, 1.25])
+def test_years_of_experience_accepts_nonnegative_numeric_values(value: float) -> None:
+    payload = ResumeParsedDataUpdate.model_validate(
+        _payload(skills=[{"skill_id": 1, "years_of_experience": value}])
+    )
+    assert payload.skills[0].years_of_experience is not None
 
 
 def test_canonical_text_is_deterministic_and_uses_taxonomy_names() -> None:

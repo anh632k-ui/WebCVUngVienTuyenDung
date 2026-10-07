@@ -414,25 +414,30 @@ async def update_resume_parsed_data(
     if not actor_is_admin:
         mutation_filters.append(Resume.owner_user_id == actor_id)
 
-    resume = await session.scalar(
-        select(Resume).where(
-            Resume.id == resume_id,
-            *mutation_filters,
+    # Use a scalar projection for the read-only preflight so an already-loaded
+    # Resume in this request's identity map cannot supply stale readiness state.
+    # The final locked ORM read below still refreshes and re-checks every guard.
+    with session.no_autoflush:
+        preflight_status = await session.scalar(
+            select(Resume.parsing_status).where(
+                Resume.id == resume_id,
+                *mutation_filters,
+            )
         )
-    )
-    if resume is None:
+    if preflight_status is None:
         raise _resume_not_found()
-    if resume.parsing_status != ParsingStatus.PARSED.value:
+    if preflight_status != ParsingStatus.PARSED.value:
         raise _resume_not_ready()
 
     requested_skill_ids = {item.skill_id for item in payload.skills}
-    taxonomy_rows = (
-        await session.execute(
-            select(Skill.id, Skill.name)
-            .where(Skill.id.in_(requested_skill_ids))
-            .order_by(Skill.id.asc())
-        )
-    ).all()
+    with session.no_autoflush:
+        taxonomy_rows = (
+            await session.execute(
+                select(Skill.id, Skill.name)
+                .where(Skill.id.in_(requested_skill_ids))
+                .order_by(Skill.id.asc())
+            )
+        ).all()
     skill_names = {skill_id: name for skill_id, name in taxonomy_rows}
     if set(skill_names) != requested_skill_ids:
         raise APIError(

@@ -33,12 +33,15 @@ def _normalized_decimal(
     minimum: Decimal,
     maximum: Decimal,
     label: str,
+    semantic_minimum: Decimal | None = None,
 ) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise ValueError(f"{label} must be a JSON number")
     decimal_value = Decimal(str(value))
     if not decimal_value.is_finite():
         raise ValueError(f"{label} must be finite")
+    if semantic_minimum is not None and decimal_value < semantic_minimum:
+        raise ValueError(f"{label} must be at least {semantic_minimum}")
     try:
         normalized = decimal_value.quantize(quantum, rounding=ROUND_HALF_UP)
     except InvalidOperation as error:
@@ -55,6 +58,7 @@ def _resume_years_from_json_number(value: object) -> Decimal:
         minimum=Decimal("0.0"),
         maximum=Decimal("999.9"),
         label="years_of_experience",
+        semantic_minimum=Decimal("0"),
     )
 
 

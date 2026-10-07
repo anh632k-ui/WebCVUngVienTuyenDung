@@ -45,6 +45,24 @@ class FailingEmbeddingProvider(RecordingEmbeddingProvider):
         raise RuntimeError("secret model cache path and CV content")
 
 
+class InvalidEmbeddingProvider(RecordingEmbeddingProvider):
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        self.kind = kind
+        if kind == "model":
+            self.model_name = "incompatible-secret-model"
+        if kind == "metadata_dimension":
+            self.dimension = BGE_M3_EMBEDDING_DIMENSION - 1
+
+    async def embed(self, text: str) -> list[float]:
+        self.texts.append(text)
+        if self.kind == "wrong_vector_dimension":
+            return [0.25] * (BGE_M3_EMBEDDING_DIMENSION - 1)
+        if self.kind == "nonfinite":
+            return [float("nan"), *([0.25] * (BGE_M3_EMBEDDING_DIMENSION - 1))]
+        raise RuntimeError("secret model cache path and CV content")
+
+
 @dataclass
 class PostgreSQLResumeHarness:
     client: AsyncClient
@@ -392,6 +410,91 @@ async def test_real_postgres_resume_soft_delete(
 
 
 @pytest.mark.asyncio
+async def test_real_postgres_negative_years_are_rejected_without_any_mutation(
+    postgres_resumes: PostgreSQLResumeHarness,
+) -> None:
+    harness = postgres_resumes
+    target_id = harness.resumes["parsed"].id
+    skill_id = await harness.session.scalar(select(Skill.id).order_by(Skill.id.asc()).limit(1))
+    assert skill_id is not None
+    headers = harness.headers("candidate")
+
+    async def snapshot() -> tuple[object, ...]:
+        harness.session.expire_all()
+        resume = await harness.session.get(Resume, target_id, populate_existing=True)
+        profile = await harness.session.scalar(
+            select(CandidateProfile).where(CandidateProfile.resume_id == target_id)
+        )
+        skills = tuple(
+            (
+                row.skill_id,
+                row.years_of_experience,
+                row.proficiency_level,
+            )
+            for row in (
+                await harness.session.scalars(
+                    select(ResumeSkill)
+                    .where(ResumeSkill.resume_id == target_id)
+                    .order_by(ResumeSkill.id)
+                )
+            ).all()
+        )
+        matches = tuple(
+            (
+                row.id,
+                row.generation,
+                row.resume_revision,
+                row.job_revision,
+                row.status,
+                row.overall_score,
+                row.matched_skills,
+                row.error_message,
+            )
+            for row in (
+                await harness.session.scalars(
+                    select(MatchResult)
+                    .where(MatchResult.resume_id == target_id)
+                    .order_by(MatchResult.id)
+                )
+            ).all()
+        )
+        assert resume is not None and profile is not None
+        return (
+            resume.revision,
+            list(resume.resume_embedding or []),
+            resume.embedding_model,
+            resume.embedding_preprocessing_version,
+            resume.is_manually_edited,
+            profile.full_name,
+            skills,
+            matches,
+        )
+
+    before = await snapshot()
+    provider_calls = len(harness.embedding_provider.texts)
+    for invalid_years in (-1, -0.05, -0.04, -0.001):
+        response = await harness.client.put(
+            f"/api/v1/resumes/{target_id}/parsed-data",
+            headers=headers,
+            json={
+                "candidate_profile": {"full_name": "must-not-persist"},
+                "skills": [
+                    {
+                        "skill_id": skill_id,
+                        "years_of_experience": invalid_years,
+                    }
+                ],
+                "experiences": [],
+                "educations": [],
+            },
+        )
+        assert response.status_code == 422
+
+    assert len(harness.embedding_provider.texts) == provider_calls
+    assert await snapshot() == before
+
+
+@pytest.mark.asyncio
 async def test_real_postgres_replace_parsed_data_and_empty_replacement(
     postgres_resumes: PostgreSQLResumeHarness,
 ) -> None:
@@ -544,8 +647,13 @@ async def test_real_postgres_all_nonparsed_states_reject_manual_edit(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["exception", "model", "metadata_dimension", "wrong_vector_dimension", "nonfinite"],
+)
 async def test_real_postgres_embedding_failure_is_controlled_and_atomic(
     postgres_resumes: PostgreSQLResumeHarness,
+    failure_kind: str,
 ) -> None:
     harness = postgres_resumes
     target_id = harness.resumes["parsed"].id
@@ -557,7 +665,11 @@ async def test_real_postgres_embedding_failure_is_controlled_and_atomic(
     )
     assert original_profile is not None
     original_name = original_profile.full_name
-    failing_provider = FailingEmbeddingProvider()
+    failing_provider: RecordingEmbeddingProvider
+    if failure_kind == "exception":
+        failing_provider = FailingEmbeddingProvider()
+    else:
+        failing_provider = InvalidEmbeddingProvider(failure_kind)
     app.dependency_overrides[resume_endpoint.get_resume_embedding_provider] = lambda: (
         failing_provider
     )
