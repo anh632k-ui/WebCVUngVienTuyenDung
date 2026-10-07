@@ -12,15 +12,55 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, AsyncTransaction
 
+from app.ai.vector_embedding import BGE_M3_EMBEDDING_DIMENSION, BGE_M3_MODEL_NAME
+from app.api.v1.endpoints import resumes as resume_endpoint
 from app.core.config import Settings, get_settings
 from app.core.database import create_engine, get_db_session
 from app.core.security import create_access_token
+from app.models.job import JobDescription
+from app.models.match_result import MatchResult
 from app.models.resume import CandidateProfile, Resume, ResumeEducation, ResumeExperience
 from app.models.skill import ResumeSkill, Skill
 from app.models.user import User
 from main import app
 
 TEST_JWT_SECRET = "resume-postgres-integration-jwt-secret"
+
+
+class RecordingEmbeddingProvider:
+    model_name = BGE_M3_MODEL_NAME
+    dimension = BGE_M3_EMBEDDING_DIMENSION
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def embed(self, text: str) -> list[float]:
+        self.texts.append(text)
+        return [0.25] * self.dimension
+
+
+class FailingEmbeddingProvider(RecordingEmbeddingProvider):
+    async def embed(self, text: str) -> list[float]:
+        self.texts.append(text)
+        raise RuntimeError("secret model cache path and CV content")
+
+
+class InvalidEmbeddingProvider(RecordingEmbeddingProvider):
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        self.kind = kind
+        if kind == "model":
+            self.model_name = "incompatible-secret-model"
+        if kind == "metadata_dimension":
+            self.dimension = BGE_M3_EMBEDDING_DIMENSION - 1
+
+    async def embed(self, text: str) -> list[float]:
+        self.texts.append(text)
+        if self.kind == "wrong_vector_dimension":
+            return [0.25] * (BGE_M3_EMBEDDING_DIMENSION - 1)
+        if self.kind == "nonfinite":
+            return [float("nan"), *([0.25] * (BGE_M3_EMBEDDING_DIMENSION - 1))]
+        raise RuntimeError("secret model cache path and CV content")
 
 
 @dataclass
@@ -32,6 +72,7 @@ class PostgreSQLResumeHarness:
     settings: Settings
     unique_part: str
     outer_transaction: AsyncTransaction
+    embedding_provider: RecordingEmbeddingProvider
 
     def headers(self, user_name: str) -> dict[str, str]:
         token = create_access_token(self.users[user_name].id, self.settings)
@@ -134,7 +175,7 @@ async def postgres_resumes() -> AsyncIterator[PostgreSQLResumeHarness]:
         "parsed": make_resume("parsed", users["candidate"], "PARSED"),
         "deleted": make_resume("deleted", users["candidate"], "PENDING", deleted=True),
         "other": make_resume("other", users["other"], "PENDING"),
-        "hr": make_resume("hr", users["hr"], "PENDING"),
+        "hr": make_resume("hr", users["hr"], "PARSED"),
     }
     session.add_all(resumes.values())
     await session.commit()
@@ -182,6 +223,10 @@ async def postgres_resumes() -> AsyncIterator[PostgreSQLResumeHarness]:
 
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = override_settings
+    embedding_provider = RecordingEmbeddingProvider()
+    app.dependency_overrides[resume_endpoint.get_resume_embedding_provider] = lambda: (
+        embedding_provider
+    )
     tracked_user_ids = {item.id for item in users.values()}
     tracked_resume_ids = {item.id for item in resumes.values()}
     try:
@@ -195,10 +240,12 @@ async def postgres_resumes() -> AsyncIterator[PostgreSQLResumeHarness]:
                 integration_settings,
                 unique_part,
                 outer_transaction,
+                embedding_provider,
             )
     finally:
         app.dependency_overrides.pop(get_db_session, None)
         app.dependency_overrides.pop(get_settings, None)
+        app.dependency_overrides.pop(resume_endpoint.get_resume_embedding_provider, None)
         remaining_users: int | None = None
         remaining_resumes: int | None = None
         try:
@@ -360,3 +407,428 @@ async def test_real_postgres_resume_soft_delete(
     assert detail.status_code == 404
     assert status_response.status_code == 404
     assert harness.outer_transaction.is_active
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_negative_years_are_rejected_without_any_mutation(
+    postgres_resumes: PostgreSQLResumeHarness,
+) -> None:
+    harness = postgres_resumes
+    target_id = harness.resumes["parsed"].id
+    skill_id = await harness.session.scalar(select(Skill.id).order_by(Skill.id.asc()).limit(1))
+    assert skill_id is not None
+    headers = harness.headers("candidate")
+
+    async def snapshot() -> tuple[object, ...]:
+        harness.session.expire_all()
+        resume = await harness.session.get(Resume, target_id, populate_existing=True)
+        profile = await harness.session.scalar(
+            select(CandidateProfile).where(CandidateProfile.resume_id == target_id)
+        )
+        skills = tuple(
+            (
+                row.skill_id,
+                row.years_of_experience,
+                row.proficiency_level,
+            )
+            for row in (
+                await harness.session.scalars(
+                    select(ResumeSkill)
+                    .where(ResumeSkill.resume_id == target_id)
+                    .order_by(ResumeSkill.id)
+                )
+            ).all()
+        )
+        matches = tuple(
+            (
+                row.id,
+                row.generation,
+                row.resume_revision,
+                row.job_revision,
+                row.status,
+                row.overall_score,
+                row.matched_skills,
+                row.error_message,
+            )
+            for row in (
+                await harness.session.scalars(
+                    select(MatchResult)
+                    .where(MatchResult.resume_id == target_id)
+                    .order_by(MatchResult.id)
+                )
+            ).all()
+        )
+        assert resume is not None and profile is not None
+        return (
+            resume.revision,
+            list(resume.resume_embedding or []),
+            resume.embedding_model,
+            resume.embedding_preprocessing_version,
+            resume.is_manually_edited,
+            profile.full_name,
+            skills,
+            matches,
+        )
+
+    before = await snapshot()
+    provider_calls = len(harness.embedding_provider.texts)
+    for invalid_years in (-1, -0.05, -0.04, -0.001):
+        response = await harness.client.put(
+            f"/api/v1/resumes/{target_id}/parsed-data",
+            headers=headers,
+            json={
+                "candidate_profile": {"full_name": "must-not-persist"},
+                "skills": [
+                    {
+                        "skill_id": skill_id,
+                        "years_of_experience": invalid_years,
+                    }
+                ],
+                "experiences": [],
+                "educations": [],
+            },
+        )
+        assert response.status_code == 422
+
+    assert len(harness.embedding_provider.texts) == provider_calls
+    assert await snapshot() == before
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_replace_parsed_data_and_empty_replacement(
+    postgres_resumes: PostgreSQLResumeHarness,
+) -> None:
+    harness = postgres_resumes
+    target_id = harness.resumes["parsed"].id
+    headers = harness.headers("candidate")
+    skill_id = await harness.session.scalar(select(Skill.id).order_by(Skill.id.asc()).limit(1))
+    assert skill_id is not None
+    original_raw_text = harness.resumes["parsed"].raw_text
+    original_parsed_at = harness.resumes["parsed"].parsed_at
+
+    response = await harness.client.put(
+        f"/api/v1/resumes/{target_id}/parsed-data",
+        headers=headers,
+        json={
+            "candidate_profile": {
+                "full_name": "Updated Candidate",
+                "email": "updated@example.com",
+                "professional_summary": "New summary",
+            },
+            "skills": [
+                {
+                    "skill_id": skill_id,
+                    "years_of_experience": 1.25,
+                    "proficiency_level": "EXPERT",
+                }
+            ],
+            "experiences": [
+                {
+                    "company_name": "New Company",
+                    "job_title": "Lead Engineer",
+                    "start_date": "2024-01-01",
+                    "end_date": None,
+                    "is_current": True,
+                }
+            ],
+            "educations": [
+                {
+                    "institution_name": "New University",
+                    "start_year": None,
+                    "graduation_year": None,
+                    "gpa": 3.456,
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["resume"]["revision"] == 2
+    assert data["resume"]["is_manually_edited"] is True
+    assert data["candidate_profile"]["full_name"] == "Updated Candidate"
+    assert data["skills"][0]["years_of_experience"] == 1.3
+    assert data["educations"][0]["gpa"] == 3.46
+
+    harness.session.expire_all()
+    persisted = await harness.session.get(Resume, target_id, populate_existing=True)
+    assert persisted is not None
+    assert persisted.revision == 2
+    assert persisted.raw_text == original_raw_text
+    assert persisted.parsed_at == original_parsed_at
+    assert persisted.embedding_model == BGE_M3_MODEL_NAME
+    assert persisted.embedding_preprocessing_version == "resume-text-v1"
+    assert list(persisted.resume_embedding or []) == [0.25] * BGE_M3_EMBEDDING_DIMENSION
+    assert "Updated Candidate" in harness.embedding_provider.texts[-1]
+    taxonomy_name = await harness.session.scalar(select(Skill.name).where(Skill.id == skill_id))
+    assert taxonomy_name is not None and taxonomy_name in harness.embedding_provider.texts[-1]
+
+    empty = await harness.client.put(
+        f"/api/v1/resumes/{target_id}/parsed-data",
+        headers=headers,
+        json={"candidate_profile": None, "skills": [], "experiences": [], "educations": []},
+    )
+    assert empty.status_code == 200
+    assert empty.json()["data"]["resume"]["revision"] == 3
+    assert empty.json()["data"]["candidate_profile"] is None
+    assert empty.json()["data"]["skills"] == []
+    assert empty.json()["data"]["experiences"] == []
+    assert empty.json()["data"]["educations"] == []
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_parsed_data_authorization_readiness_and_taxonomy(
+    postgres_resumes: PostgreSQLResumeHarness,
+) -> None:
+    harness = postgres_resumes
+    parsed_id = harness.resumes["parsed"].id
+    pending_id = harness.resumes["pending"].id
+    deleted_id = harness.resumes["deleted"].id
+    hr_resume_id = harness.resumes["hr"].id
+    candidate_headers = harness.headers("candidate")
+    other_headers = harness.headers("other")
+    admin_headers = harness.headers("admin")
+    hr_headers = harness.headers("hr")
+    payload = {"candidate_profile": None, "skills": [], "experiences": [], "educations": []}
+
+    not_owner = await harness.client.put(
+        f"/api/v1/resumes/{parsed_id}/parsed-data", headers=other_headers, json=payload
+    )
+    not_ready = await harness.client.put(
+        f"/api/v1/resumes/{pending_id}/parsed-data",
+        headers=candidate_headers,
+        json=payload,
+    )
+    invalid_skill = await harness.client.put(
+        f"/api/v1/resumes/{parsed_id}/parsed-data",
+        headers=candidate_headers,
+        json={**payload, "skills": [{"skill_id": 2_147_483_647}]},
+    )
+    admin = await harness.client.put(
+        f"/api/v1/resumes/{parsed_id}/parsed-data", headers=admin_headers, json=payload
+    )
+    deleted = await harness.client.put(
+        f"/api/v1/resumes/{deleted_id}/parsed-data", headers=candidate_headers, json=payload
+    )
+    nonexistent = await harness.client.put(
+        f"/api/v1/resumes/{uuid.uuid4()}/parsed-data", headers=admin_headers, json=payload
+    )
+    hr_owner = await harness.client.put(
+        f"/api/v1/resumes/{hr_resume_id}/parsed-data", headers=hr_headers, json=payload
+    )
+
+    assert not_owner.status_code == 404
+    assert not_owner.json()["error"]["code"] == "RESUME_NOT_FOUND"
+    assert not_ready.status_code == 422
+    assert not_ready.json()["error"]["code"] == "RESUME_NOT_READY"
+    assert invalid_skill.status_code == 422
+    assert invalid_skill.json()["error"]["code"] == "INVALID_RESUME_DATA"
+    assert admin.status_code == 200
+    assert deleted.status_code == 404
+    assert nonexistent.status_code == 404
+    assert hr_owner.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume_name", ["pending", "processing", "failed"])
+async def test_real_postgres_all_nonparsed_states_reject_manual_edit(
+    postgres_resumes: PostgreSQLResumeHarness,
+    resume_name: str,
+) -> None:
+    harness = postgres_resumes
+    resume_id = harness.resumes[resume_name].id
+    headers = harness.headers("candidate")
+    response = await harness.client.put(
+        f"/api/v1/resumes/{resume_id}/parsed-data",
+        headers=headers,
+        json={"candidate_profile": None, "skills": [], "experiences": [], "educations": []},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "RESUME_NOT_READY"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["exception", "model", "metadata_dimension", "wrong_vector_dimension", "nonfinite"],
+)
+async def test_real_postgres_embedding_failure_is_controlled_and_atomic(
+    postgres_resumes: PostgreSQLResumeHarness,
+    failure_kind: str,
+) -> None:
+    harness = postgres_resumes
+    target_id = harness.resumes["parsed"].id
+    headers = harness.headers("candidate")
+    original_revision = harness.resumes["parsed"].revision
+    original_embedding = list(harness.resumes["parsed"].resume_embedding or [])
+    original_profile = await harness.session.scalar(
+        select(CandidateProfile).where(CandidateProfile.resume_id == target_id)
+    )
+    assert original_profile is not None
+    original_name = original_profile.full_name
+    failing_provider: RecordingEmbeddingProvider
+    if failure_kind == "exception":
+        failing_provider = FailingEmbeddingProvider()
+    else:
+        failing_provider = InvalidEmbeddingProvider(failure_kind)
+    app.dependency_overrides[resume_endpoint.get_resume_embedding_provider] = lambda: (
+        failing_provider
+    )
+
+    response = await harness.client.put(
+        f"/api/v1/resumes/{target_id}/parsed-data",
+        headers=headers,
+        json={
+            "candidate_profile": {"full_name": "must not persist"},
+            "skills": [],
+            "experiences": [],
+            "educations": [],
+        },
+    )
+    assert response.status_code == 503
+    assert response.json() == {
+        "success": False,
+        "error": {
+            "code": "EMBEDDING_UNAVAILABLE",
+            "message": "Resume embedding could not be generated",
+            "details": None,
+        },
+    }
+    assert "secret" not in response.text and "cache" not in response.text
+
+    harness.session.expire_all()
+    persisted = await harness.session.get(Resume, target_id, populate_existing=True)
+    profile = await harness.session.scalar(
+        select(CandidateProfile).where(CandidateProfile.resume_id == target_id)
+    )
+    assert persisted is not None and profile is not None
+    assert persisted.revision == original_revision
+    assert list(persisted.resume_embedding or []) == original_embedding
+    assert profile.full_name == original_name
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_edit_invalidates_all_matches_including_deleted_job(
+    postgres_resumes: PostgreSQLResumeHarness,
+) -> None:
+    harness = postgres_resumes
+    target_id = harness.resumes["parsed"].id
+    headers = harness.headers("candidate")
+    now = datetime.now(UTC)
+
+    def make_job(name: str, revision: int, *, deleted: bool) -> JobDescription:
+        return JobDescription(
+            id=uuid.uuid4(),
+            recruiter_id=harness.users["hr"].id,
+            title=name,
+            job_level="Senior",
+            raw_content=name,
+            create_request_fingerprint=uuid.uuid4().hex * 2,
+            revision=revision,
+            min_experience_years=Decimal("0.0"),
+            job_embedding=[0.1] * 1024,
+            embedding_model=BGE_M3_MODEL_NAME,
+            embedding_preprocessing_version="resume-text-v1",
+            parsing_status="PARSED",
+            is_criteria_verified=True,
+            w_skill=Decimal("0.500"),
+            w_semantic=Decimal("0.300"),
+            w_experience=Decimal("0.200"),
+            status="DRAFT",
+            is_deleted=deleted,
+            created_at=now,
+            updated_at=now,
+            parsed_at=now,
+            deleted_at=now if deleted else None,
+        )
+
+    active_job = make_job("Active historical match", 4, deleted=False)
+    deleted_job = make_job("Deleted historical match", 9, deleted=True)
+    completed = MatchResult(
+        id=uuid.uuid4(),
+        job_id=active_job.id,
+        resume_id=target_id,
+        generation=3,
+        resume_revision=1,
+        job_revision=4,
+        overall_score=Decimal("80.00"),
+        skill_score=Decimal("81.00"),
+        semantic_score=Decimal("82.00"),
+        experience_score=Decimal("83.00"),
+        matched_skills=[{"name": "old"}],
+        missing_skills=[{"name": "old"}],
+        gap_analysis_summary="old",
+        algorithm_version="hybrid-v1",
+        embedding_model=BGE_M3_MODEL_NAME,
+        embedding_preprocessing_version="resume-text-v1",
+        status="COMPLETED",
+        error_message=None,
+        created_at=now,
+        updated_at=now,
+        calculated_at=now,
+    )
+    failed = MatchResult(
+        id=uuid.uuid4(),
+        job_id=deleted_job.id,
+        resume_id=target_id,
+        generation=7,
+        resume_revision=1,
+        job_revision=9,
+        overall_score=None,
+        skill_score=None,
+        semantic_score=None,
+        experience_score=None,
+        matched_skills=[],
+        missing_skills=[],
+        gap_analysis_summary=None,
+        algorithm_version="legacy-preserved",
+        embedding_model=None,
+        embedding_preprocessing_version=None,
+        status="FAILED",
+        error_message="old error",
+        created_at=now,
+        updated_at=now,
+        calculated_at=None,
+    )
+    harness.session.add_all([active_job, deleted_job, completed, failed])
+    await harness.session.commit()
+    completed_id = completed.id
+    failed_id = failed.id
+
+    response = await harness.client.put(
+        f"/api/v1/resumes/{target_id}/parsed-data",
+        headers=headers,
+        json={"candidate_profile": None, "skills": [], "experiences": [], "educations": []},
+    )
+    assert response.status_code == 200
+
+    harness.session.expire_all()
+    rows = list(
+        (
+            await harness.session.scalars(
+                select(MatchResult)
+                .where(MatchResult.id.in_([completed_id, failed_id]))
+                .order_by(MatchResult.id.asc())
+            )
+        ).all()
+    )
+    by_id = {row.id: row for row in rows}
+    assert by_id[completed_id].generation == 4
+    assert by_id[failed_id].generation == 8
+    assert by_id[completed_id].job_revision == 4
+    assert by_id[failed_id].job_revision == 9
+    assert {row.resume_revision for row in rows} == {2}
+    assert {row.status for row in rows} == {"PENDING"}
+    assert by_id[completed_id].algorithm_version == "hybrid-v1"
+    assert by_id[failed_id].algorithm_version == "legacy-preserved"
+    for row in rows:
+        assert row.overall_score is None
+        assert row.skill_score is None
+        assert row.semantic_score is None
+        assert row.experience_score is None
+        assert row.matched_skills == []
+        assert row.missing_skills == []
+        assert row.gap_analysis_summary is None
+        assert row.error_message is None
+        assert row.embedding_model is None
+        assert row.embedding_preprocessing_version is None
+        assert row.calculated_at is None

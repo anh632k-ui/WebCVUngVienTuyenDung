@@ -11,18 +11,28 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from xml.etree import ElementTree
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.ai.resume_manual_text import build_resume_aggregate_text
+from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
+from app.ai.vector_embedding import (
+    BGE_M3_EMBEDDING_DIMENSION,
+    BGE_M3_MODEL_NAME,
+    EmbeddingProvider,
+    validate_dense_embedding,
+)
 from app.core.exceptions import APIError
 from app.core.idempotency import RESUME_UPLOAD_ROUTE, derive_idempotent_resource_id
+from app.models.job import JobDescription
+from app.models.match_result import MatchResult
 from app.models.resume import CandidateProfile, Resume, ResumeEducation, ResumeExperience
-from app.models.skill import ResumeSkill
+from app.models.skill import ResumeSkill, Skill
 from app.models.user import User
 from app.schemas.auth_schema import UserRole
-from app.schemas.resume_schema import ParsingStatus
+from app.schemas.resume_schema import ParsingStatus, ResumeParsedDataUpdate
 from app.services.resume_dispatcher import ResumeParseDispatcher
 from app.storage.resume_storage import ResumeStorage
 
@@ -376,3 +386,191 @@ async def soft_delete_resume(
     resume.deleted_at = now
     resume.updated_at = now
     await session.commit()
+
+
+def _resume_not_found() -> APIError:
+    return APIError(404, "RESUME_NOT_FOUND", "Resume not found")
+
+
+def _resume_not_ready() -> APIError:
+    return APIError(
+        422,
+        "RESUME_NOT_READY",
+        "Resume must be PARSED before parsed data can be reviewed",
+    )
+
+
+async def update_resume_parsed_data(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    resume_id: uuid.UUID,
+    payload: ResumeParsedDataUpdate,
+    embedding_provider: EmbeddingProvider,
+) -> ResumeAggregate:
+    actor_id = current_user.id
+    actor_is_admin = current_user.role == UserRole.ADMIN.value
+    mutation_filters: list[ColumnElement[bool]] = [Resume.is_deleted.is_(False)]
+    if not actor_is_admin:
+        mutation_filters.append(Resume.owner_user_id == actor_id)
+
+    # Use a scalar projection for the read-only preflight so an already-loaded
+    # Resume in this request's identity map cannot supply stale readiness state.
+    # The final locked ORM read below still refreshes and re-checks every guard.
+    with session.no_autoflush:
+        preflight_status = await session.scalar(
+            select(Resume.parsing_status).where(
+                Resume.id == resume_id,
+                *mutation_filters,
+            )
+        )
+    if preflight_status is None:
+        raise _resume_not_found()
+    if preflight_status != ParsingStatus.PARSED.value:
+        raise _resume_not_ready()
+
+    requested_skill_ids = {item.skill_id for item in payload.skills}
+    with session.no_autoflush:
+        taxonomy_rows = (
+            await session.execute(
+                select(Skill.id, Skill.name)
+                .where(Skill.id.in_(requested_skill_ids))
+                .order_by(Skill.id.asc())
+            )
+        ).all()
+    skill_names = {skill_id: name for skill_id, name in taxonomy_rows}
+    if set(skill_names) != requested_skill_ids:
+        raise APIError(
+            422,
+            "INVALID_RESUME_DATA",
+            "One or more resume skills are not in the canonical taxonomy",
+        )
+
+    canonical_text = build_resume_aggregate_text(payload, skill_names=skill_names)
+    # Authentication and preflight reads autobegin this request session. End that
+    # read transaction before inference so the final mutation begins cleanly.
+    await session.rollback()
+    try:
+        if (
+            embedding_provider.model_name != BGE_M3_MODEL_NAME
+            or embedding_provider.dimension != BGE_M3_EMBEDDING_DIMENSION
+        ):
+            raise ValueError("incompatible embedding provider metadata")
+        embedding = validate_dense_embedding(
+            await embedding_provider.embed(canonical_text),
+            expected_dimension=BGE_M3_EMBEDDING_DIMENSION,
+        )
+    except Exception as error:
+        logger.error("resume_manual_embedding_failed resume_id=%s", resume_id)
+        raise APIError(
+            503,
+            "EMBEDDING_UNAVAILABLE",
+            "Resume embedding could not be generated",
+        ) from error
+
+    try:
+        with session.no_autoflush:
+            locked_resume = await session.scalar(
+                select(Resume)
+                .where(
+                    Resume.id == resume_id,
+                    *mutation_filters,
+                )
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        if locked_resume is None:
+            raise _resume_not_found()
+        if locked_resume.parsing_status != ParsingStatus.PARSED.value:
+            raise _resume_not_ready()
+
+        with session.no_autoflush:
+            matches = list(
+                (
+                    await session.scalars(
+                        select(MatchResult)
+                        .where(MatchResult.resume_id == resume_id)
+                        .order_by(MatchResult.id.asc())
+                        .execution_options(populate_existing=True)
+                        .with_for_update()
+                    )
+                ).all()
+            )
+        job_ids = {match.job_id for match in matches}
+        job_revisions = dict(
+            (
+                await session.execute(
+                    select(JobDescription.id, JobDescription.revision).where(
+                        JobDescription.id.in_(job_ids)
+                    )
+                )
+            ).all()
+        )
+        now = datetime.now(UTC)
+
+        await session.execute(
+            delete(CandidateProfile).where(CandidateProfile.resume_id == resume_id)
+        )
+        await session.execute(delete(ResumeSkill).where(ResumeSkill.resume_id == resume_id))
+        await session.execute(
+            delete(ResumeExperience).where(ResumeExperience.resume_id == resume_id)
+        )
+        await session.execute(delete(ResumeEducation).where(ResumeEducation.resume_id == resume_id))
+
+        profile: CandidateProfile | None = None
+        if payload.candidate_profile is not None:
+            profile = CandidateProfile(
+                resume_id=resume_id,
+                **payload.candidate_profile.model_dump(mode="python"),
+            )
+            session.add(profile)
+        skills = [
+            ResumeSkill(resume_id=resume_id, **item.model_dump(mode="python"))
+            for item in payload.skills
+        ]
+        experiences = [
+            ResumeExperience(resume_id=resume_id, **item.model_dump(mode="python"))
+            for item in payload.experiences
+        ]
+        educations = [
+            ResumeEducation(resume_id=resume_id, **item.model_dump(mode="python"))
+            for item in payload.educations
+        ]
+        session.add_all([*skills, *experiences, *educations])
+
+        locked_resume.revision += 1
+        locked_resume.resume_embedding = embedding
+        locked_resume.embedding_model = BGE_M3_MODEL_NAME
+        locked_resume.embedding_preprocessing_version = RESUME_TEXT_PREPROCESSING_VERSION
+        locked_resume.is_manually_edited = True
+        locked_resume.error_message = None
+        locked_resume.updated_at = now
+
+        for match in matches:
+            match.generation += 1
+            match.resume_revision = locked_resume.revision
+            match.job_revision = job_revisions[match.job_id]
+            match.status = "PENDING"
+            match.overall_score = None
+            match.skill_score = None
+            match.semantic_score = None
+            match.experience_score = None
+            match.matched_skills = []
+            match.missing_skills = []
+            match.gap_analysis_summary = None
+            match.error_message = None
+            match.embedding_model = None
+            match.embedding_preprocessing_version = None
+            match.calculated_at = None
+            match.updated_at = now
+
+        await session.flush()
+        await session.commit()
+    except APIError:
+        await session.rollback()
+        raise
+    except Exception:  # noqa: BLE001 - every failed multi-table mutation must rollback
+        await session.rollback()
+        raise
+
+    return ResumeAggregate(locked_resume, profile, skills, experiences, educations)

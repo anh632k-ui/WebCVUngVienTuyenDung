@@ -238,6 +238,73 @@ async def test_resume_reads_require_authentication(resume_api: ResumeAPIContext,
 
 
 @pytest.mark.asyncio
+async def test_parsed_data_update_requires_authentication(resume_api: ResumeAPIContext) -> None:
+    response = await resume_api.client.put(
+        f"/api/v1/resumes/{resume_api.resumes[0].id}/parsed-data",
+        json={"candidate_profile": None, "skills": [], "experiences": [], "educations": []},
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_parsed_data_update_returns_existing_detail_contract(
+    resume_api: ResumeAPIContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = resume_api.resumes[0]
+    target.parsing_status = "PARSED"
+    target.parsed_at = datetime.now(UTC)
+    captured: dict[str, Any] = {}
+
+    async def fake_update(
+        _: Any,
+        *,
+        current_user: User,
+        resume_id: uuid.UUID,
+        payload: Any,
+        embedding_provider: Any,
+    ) -> ResumeAggregate:
+        captured.update(
+            actor=current_user.id,
+            resume_id=resume_id,
+            payload=payload,
+            provider=embedding_provider,
+        )
+        target.revision += 1
+        target.is_manually_edited = True
+        profile = CandidateProfile(
+            resume_id=target.id,
+            full_name="Updated Candidate",
+            email="updated@example.com",
+        )
+        return ResumeAggregate(target, profile, [], [], [])
+
+    monkeypatch.setattr(resume_endpoint, "update_resume_parsed_data", fake_update)
+    response = await resume_api.client.put(
+        f"/api/v1/resumes/{target.id}/parsed-data",
+        headers=resume_api.headers,
+        json={
+            "candidate_profile": {
+                "full_name": "Updated Candidate",
+                "email": "updated@example.com",
+            },
+            "skills": [],
+            "experiences": [],
+            "educations": [],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["resume"]["revision"] == 2
+    assert response.json()["data"]["resume"]["is_manually_edited"] is True
+    assert response.json()["data"]["candidate_profile"]["full_name"] == "Updated Candidate"
+    assert captured["actor"] == resume_api.actor.id
+    assert captured["resume_id"] == target.id
+    assert captured["payload"].candidate_profile.full_name == "Updated Candidate"
+    assert captured["provider"].model_name == "BAAI/bge-m3"
+
+
+@pytest.mark.asyncio
 async def test_candidate_list_is_owned_paginated_filtered_and_read_only(
     resume_api: ResumeAPIContext,
 ) -> None:
@@ -434,3 +501,4 @@ def test_resume_route_table_contains_only_requested_read_methods() -> None:
     assert set(paths["/api/v1/resumes"]) == {"get"}
     assert set(paths["/api/v1/resumes/{id}"]) == {"get", "delete"}
     assert set(paths["/api/v1/resumes/{id}/status"]) == {"get"}
+    assert set(paths["/api/v1/resumes/{id}/parsed-data"]) == {"put"}
