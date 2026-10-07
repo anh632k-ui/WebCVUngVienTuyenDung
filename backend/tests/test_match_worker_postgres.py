@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.ai.matching_engine import ALGORITHM_VERSION, compute_match
@@ -22,6 +22,8 @@ from app.models.match_result import MatchResult
 from app.models.resume import Resume, ResumeExperience
 from app.models.skill import JobSkill, ResumeSkill, Skill
 from app.models.user import User
+from app.schemas.job_schema import JobCriteriaRequest
+from app.services.job_service import update_job_criteria
 from app.workers import match_worker
 from app.workers.match_worker import MatchContextError, MatchTaskOutcome, process_match_task
 
@@ -562,3 +564,166 @@ async def test_terminal_resource_lock_observes_concurrent_soft_delete_before_com
     assert persisted is False
     stored = await harness.load_match(graph.match_id)
     assert stored.status == "PROCESSING" and stored.overall_score is None
+
+
+async def wait_for_database_blocker(
+    observer: AsyncSession, *, waiter_pid: int, blocker_pid: int
+) -> None:
+    # Observe an actual PostgreSQL lock wait, rather than infer timing from sleep
+    # or an event fired before the SQL statement has reached the database.
+    async with asyncio.timeout(5):
+        while True:
+            blockers = await observer.scalar(
+                text("SELECT pg_blocking_pids(:pid)"), {"pid": waiter_pid}
+            )
+            if blocker_pid in blockers:
+                return
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["COMPLETED", "FAILED"])
+@pytest.mark.parametrize("first_lock", ["criteria", "terminal"])
+async def test_terminal_and_criteria_update_serialize_without_deadlock_or_stale_payload(
+    postgres_match_worker: PostgreSQLMatchHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    terminal_status: str,
+    first_lock: str,
+) -> None:
+    harness = postgres_match_worker
+    graph = await harness.create_graph()
+    assert await claim(harness, graph)
+    context = await match_worker._load_computation_context(
+        harness.session_factory,
+        match_id=graph.match_id,
+        expected_generation=1,
+        expected_resume_revision=1,
+        expected_job_revision=1,
+        algorithm_version=ALGORITHM_VERSION,
+    )
+    assert context is not None
+    computed = compute_match(
+        candidate_skills=context.candidate_skills,
+        job_skills=context.job_skills,
+        candidate_experiences=context.candidate_experiences,
+        min_experience_years=context.min_experience_years,
+        weights=context.weights,
+        embeddings=context.embeddings,
+        as_of_date=date(2026, 10, 7),
+    )
+    payload = JobCriteriaRequest.model_validate(
+        {
+            "min_experience_years": 4.0,
+            "skills": [
+                {"skill_id": graph.skill_id, "importance": "OPTIONAL", "min_years_required": 2.0}
+            ],
+        }
+    )
+    job_locked = asyncio.Event()
+    release_terminal = asyncio.Event()
+    tasks: list[asyncio.Task[Any]] = []
+    async with (
+        harness.session_factory() as criteria_session,
+        harness.session_factory() as terminal_session,
+        harness.session_factory() as observer,
+    ):
+        actor = await criteria_session.get(User, harness.user_id)
+        assert actor is not None
+        criteria_pid = await criteria_session.scalar(text("SELECT pg_backend_pid()"))
+        terminal_pid = await terminal_session.scalar(text("SELECT pg_backend_pid()"))
+        assert criteria_pid is not None and terminal_pid is not None
+        assert criteria_pid != terminal_pid
+        # Bound database waits too, so a regression cannot hang fixture cleanup.
+        for session in (criteria_session, terminal_session):
+            await session.execute(text("SET LOCAL lock_timeout = '4s'"))
+
+        async def terminal_write() -> bool:
+            guard: match_worker.MatchTaskGuard = {
+                "match_id": graph.match_id,
+                "expected_generation": 1,
+                "expected_resume_revision": 1,
+                "expected_job_revision": 1,
+                "algorithm_version": ALGORITHM_VERSION,
+            }
+            if terminal_status == "FAILED":
+                outcome = await match_worker._mark_failed(
+                    lambda: terminal_session, **guard, message="Controlled computation failure"
+                )
+                return outcome is MatchTaskOutcome.FAILED
+            return await match_worker._persist_success(
+                lambda: terminal_session, **guard, context=context, computed=computed
+            )
+
+        async def criteria_update() -> None:
+            await update_job_criteria(
+                criteria_session, current_user=actor, job_id=graph.job_id, payload=payload
+            )
+
+        try:
+            async with asyncio.timeout(10):
+                if first_lock == "criteria":
+                    # Keep the real criteria transaction's Job lock while the
+                    # terminal reaches the database. With Resume-first locking,
+                    # criteria invalidation would now deadlock on that Resume.
+                    await criteria_session.scalar(
+                        select(JobDescription)
+                        .where(JobDescription.id == graph.job_id)
+                        .with_for_update()
+                    )
+                    terminal_task = asyncio.create_task(terminal_write())
+                    tasks.append(terminal_task)
+                    await wait_for_database_blocker(
+                        observer, waiter_pid=terminal_pid, blocker_pid=criteria_pid
+                    )
+                    await criteria_update()
+                    assert await terminal_task is False
+                else:
+                    original_scalar = terminal_session.scalar
+
+                    async def gate_after_job_lock(statement: Any, *args: Any, **kwargs: Any) -> Any:
+                        result = await original_scalar(statement, *args, **kwargs)
+                        descriptions = getattr(statement, "column_descriptions", ())
+                        if descriptions and descriptions[0].get("entity") is JobDescription:
+                            job_locked.set()
+                            await release_terminal.wait()
+                        return result
+
+                    monkeypatch.setattr(terminal_session, "scalar", gate_after_job_lock)
+                    terminal_task = asyncio.create_task(terminal_write())
+                    tasks.append(terminal_task)
+                    await job_locked.wait()
+                    criteria_task = asyncio.create_task(criteria_update())
+                    tasks.append(criteria_task)
+                    await wait_for_database_blocker(
+                        observer, waiter_pid=criteria_pid, blocker_pid=terminal_pid
+                    )
+                    release_terminal.set()
+                    assert await terminal_task is True
+                    await criteria_task
+        finally:
+            release_terminal.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert "match_failure_cas_error" not in caplog.text
+    stored = await harness.load_match(graph.match_id)
+    assert stored.generation == 2
+    assert stored.resume_revision == 1 and stored.job_revision == 2
+    assert stored.status == "PENDING"
+    assert stored.overall_score is None and stored.skill_score is None
+    assert stored.semantic_score is None and stored.experience_score is None
+    assert stored.matched_skills == [] and stored.missing_skills == []
+    assert stored.gap_analysis_summary is None and stored.error_message is None
+    assert stored.embedding_model is None and stored.embedding_preprocessing_version is None
+    assert stored.calculated_at is None
+    async with harness.session_factory() as session:
+        job = await session.get(JobDescription, graph.job_id)
+        resume = await session.get(Resume, graph.resume_id)
+        criterion = await session.scalar(select(JobSkill).where(JobSkill.job_id == graph.job_id))
+        assert job is not None and job.revision == 2
+        assert job.min_experience_years == Decimal("4.0") and job.is_criteria_verified
+        assert resume is not None and resume.revision == 1
+        assert criterion is not None and criterion.importance == "OPTIONAL"
+        assert criterion.min_years_required == Decimal("2.0")

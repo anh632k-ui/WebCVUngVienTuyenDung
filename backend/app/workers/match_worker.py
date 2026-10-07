@@ -241,13 +241,17 @@ async def _lock_current_resources(
     expected_resume_revision: int,
     expected_job_revision: int,
 ) -> bool:
-    resume = await session.scalar(select(Resume).where(Resume.id == resume_id).with_for_update())
-    if resume is None or resume.revision != expected_resume_revision or resume.is_deleted:
-        return False
+    # Criteria updates also lock Job first. Keep this order for both terminal
+    # outcomes so an invalidation cannot hold Job while waiting on our Resume.
     job = await session.scalar(
         select(JobDescription).where(JobDescription.id == job_id).with_for_update()
     )
-    return job is not None and job.revision == expected_job_revision and not job.is_deleted
+    if job is None or job.revision != expected_job_revision or job.is_deleted:
+        return False
+    resume = await session.scalar(select(Resume).where(Resume.id == resume_id).with_for_update())
+    return (
+        resume is not None and resume.revision == expected_resume_revision and not resume.is_deleted
+    )
 
 
 def _terminal_guard(
