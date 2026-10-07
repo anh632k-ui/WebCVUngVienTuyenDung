@@ -1,10 +1,17 @@
+import os
+
 import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
 
 
-def test_defaults_do_not_require_database_credentials() -> None:
+def test_defaults_do_not_require_database_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Defaults are independent of the runtime configuration used by integration
+    # tests. _env_file=None disables dotenv, but still reads process variables.
+    for name in tuple(os.environ):
+        if name.lower() in Settings.model_fields:
+            monkeypatch.delenv(name)
     settings = Settings(_env_file=None)
 
     assert settings.app_env == "development"
