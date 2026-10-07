@@ -8,8 +8,12 @@ from app.models.user import User
 from app.schemas.auth_schema import UserRole
 from app.schemas.job_schema import (
     JobCreateRequest,
+    JobCriteriaData,
+    JobCriteriaRequest,
+    JobCriteriaResponse,
     JobData,
     JobResponse,
+    JobSkillCriterion,
     JobStatus,
     JobStatusRequest,
     PaginatedJobsResponse,
@@ -18,11 +22,14 @@ from app.schemas.job_schema import (
 )
 from app.services.job_dispatcher import JobParseDispatcher, get_job_parse_dispatcher
 from app.services.job_service import (
+    JobCriteriaRecord,
     change_job_status,
     create_job,
     get_job,
+    get_job_criteria,
     list_jobs,
     soft_delete_job,
+    update_job_criteria,
 )
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
@@ -87,6 +94,54 @@ async def read_job(
 ) -> JobResponse:
     job = await get_job(session, current_user=current_user, job_id=id)
     return JobResponse(data=JobData.model_validate(job))
+
+
+def _criteria_response(record: JobCriteriaRecord) -> JobCriteriaResponse:
+    job = record.job
+    skills = record.skills
+    return JobCriteriaResponse(
+        data=JobCriteriaData(
+            job_id=job.id,
+            revision=job.revision,
+            min_experience_years=job.min_experience_years,
+            education_requirement=job.education_requirement,
+            is_criteria_verified=job.is_criteria_verified,
+            skills=[
+                JobSkillCriterion(
+                    skill_id=skill.skill_id,
+                    importance=skill.importance,
+                    min_years_required=skill.min_years_required,
+                )
+                for skill in skills
+            ],
+        )
+    )
+
+
+@router.get("/{id}/criteria", response_model=JobCriteriaResponse)
+async def read_job_criteria(
+    id: uuid.UUID,
+    session: DatabaseSession,
+    current_user: JobManager,
+) -> JobCriteriaResponse:
+    record = await get_job_criteria(session, current_user=current_user, job_id=id)
+    return _criteria_response(record)
+
+
+@router.put("/{id}/criteria", response_model=JobCriteriaResponse)
+async def replace_job_criteria(
+    id: uuid.UUID,
+    payload: JobCriteriaRequest,
+    session: DatabaseSession,
+    current_user: JobManager,
+) -> JobCriteriaResponse:
+    record = await update_job_criteria(
+        session,
+        current_user=current_user,
+        job_id=id,
+        payload=payload,
+    )
+    return _criteria_response(record)
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)

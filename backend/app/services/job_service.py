@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -15,15 +16,21 @@ from app.core.idempotency import JOB_CREATE_ROUTE, derive_idempotent_resource_id
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
 from app.models.resume import CandidateProfile, Resume
-from app.models.skill import JobSkill
+from app.models.skill import JobSkill, Skill
 from app.models.user import User
 from app.schemas.auth_schema import UserRole
-from app.schemas.job_schema import JobCreateRequest, JobStatus, ParsingStatus
+from app.schemas.job_schema import JobCreateRequest, JobCriteriaRequest, JobStatus, ParsingStatus
 from app.schemas.match_schema import MatchStatus
 from app.services.job_create_payload import job_create_fingerprint
 from app.services.job_dispatcher import JobParseDispatcher
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class JobCriteriaRecord:
+    job: JobDescription
+    skills: tuple[JobSkill, ...]
 
 
 def _idempotency_conflict() -> APIError:
@@ -182,6 +189,126 @@ async def get_job(
     if job is None:
         raise APIError(404, "JOB_NOT_FOUND", "Job not found")
     return job
+
+
+def _managed_job_filters(current_user: User, job_id: uuid.UUID) -> list[ColumnElement[bool]]:
+    filters: list[ColumnElement[bool]] = [
+        JobDescription.id == job_id,
+        JobDescription.is_deleted.is_(False),
+    ]
+    if current_user.role == UserRole.HR.value:
+        filters.append(JobDescription.recruiter_id == current_user.id)
+    return filters
+
+
+async def get_job_criteria(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    job_id: uuid.UUID,
+) -> JobCriteriaRecord:
+    job = await session.scalar(
+        select(JobDescription).where(*_managed_job_filters(current_user, job_id))
+    )
+    if job is None:
+        raise APIError(404, "JOB_NOT_FOUND", "Job not found")
+    skills = tuple(
+        (
+            await session.scalars(
+                select(JobSkill)
+                .where(JobSkill.job_id == job.id)
+                .order_by(JobSkill.skill_id.asc(), JobSkill.id.asc())
+            )
+        ).all()
+    )
+    return JobCriteriaRecord(job=job, skills=skills)
+
+
+async def update_job_criteria(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    job_id: uuid.UUID,
+    payload: JobCriteriaRequest,
+) -> JobCriteriaRecord:
+    job = await session.scalar(
+        select(JobDescription).where(*_managed_job_filters(current_user, job_id)).with_for_update()
+    )
+    if job is None:
+        raise APIError(404, "JOB_NOT_FOUND", "Job not found")
+    if job.parsing_status != ParsingStatus.PARSED.value:
+        raise APIError(
+            422,
+            "JOB_NOT_READY",
+            "Job must be PARSED before criteria can be reviewed",
+        )
+
+    requested_skill_ids = {criterion.skill_id for criterion in payload.skills}
+    existing_skill_ids = set(
+        (await session.scalars(select(Skill.id).where(Skill.id.in_(requested_skill_ids)))).all()
+    )
+    if existing_skill_ids != requested_skill_ids:
+        raise APIError(
+            422,
+            "INVALID_JOB_CRITERIA",
+            "One or more criteria skills are not in the canonical taxonomy",
+        )
+
+    now = datetime.now(UTC)
+    try:
+        match_rows = (
+            await session.execute(
+                select(MatchResult, Resume.revision)
+                .join(Resume, Resume.id == MatchResult.resume_id)
+                .where(MatchResult.job_id == job.id)
+                .order_by(MatchResult.id.asc())
+                .with_for_update(of=(MatchResult, Resume))
+            )
+        ).all()
+
+        await session.execute(delete(JobSkill).where(JobSkill.job_id == job.id))
+        replacement_skills = tuple(
+            JobSkill(
+                job_id=job.id,
+                skill_id=criterion.skill_id,
+                importance=criterion.importance.value,
+                min_years_required=criterion.min_years_required,
+            )
+            for criterion in sorted(payload.skills, key=lambda item: item.skill_id)
+        )
+        session.add_all(replacement_skills)
+
+        if "min_experience_years" in payload.model_fields_set:
+            job.min_experience_years = payload.min_experience_years
+        if "education_requirement" in payload.model_fields_set:
+            job.education_requirement = payload.education_requirement
+        job.is_criteria_verified = True
+        job.revision += 1
+        job.updated_at = now
+
+        for match, resume_revision in match_rows:
+            match.generation += 1
+            match.resume_revision = resume_revision
+            match.job_revision = job.revision
+            match.status = MatchStatus.PENDING.value
+            match.overall_score = None
+            match.skill_score = None
+            match.semantic_score = None
+            match.experience_score = None
+            match.matched_skills = []
+            match.missing_skills = []
+            match.gap_analysis_summary = None
+            match.error_message = None
+            match.embedding_model = None
+            match.embedding_preprocessing_version = None
+            match.calculated_at = None
+            match.updated_at = now
+
+        await session.commit()
+    except SQLAlchemyError:
+        await session.rollback()
+        raise
+    return JobCriteriaRecord(job=job, skills=replacement_skills)
 
 
 async def soft_delete_job(
