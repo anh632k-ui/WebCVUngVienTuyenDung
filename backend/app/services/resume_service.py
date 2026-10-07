@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import unicodedata
 import uuid
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
+from urllib.parse import quote
 from xml.etree import ElementTree
 
 from sqlalchemy import delete, func, select
@@ -71,6 +73,13 @@ class ResumeAggregate:
     skills: list[ResumeSkill]
     experiences: list[ResumeExperience]
     educations: list[ResumeEducation]
+
+
+@dataclass(frozen=True)
+class ResumeDownload:
+    content: bytes
+    media_type: str
+    content_disposition: str
 
 
 def _validate_filename(filename: str | None) -> str:
@@ -390,6 +399,128 @@ async def soft_delete_resume(
 
 def _resume_not_found() -> APIError:
     return APIError(404, "RESUME_NOT_FOUND", "Resume not found")
+
+
+def _safe_download_filename(
+    filename: str,
+    *,
+    resume_id: uuid.UUID,
+    media_type: str,
+) -> str:
+    extension = ".pdf" if media_type == PDF_MIME_TYPE else ".docx"
+    sanitized = "".join(
+        "_"
+        if unicodedata.category(character).startswith("C") or character in '/\\";'
+        else character
+        for character in filename
+    ).strip()
+    if not sanitized.strip(" ._"):
+        return f"resume-{resume_id}{extension}"
+    return sanitized
+
+
+def build_download_content_disposition(
+    filename: str,
+    *,
+    resume_id: uuid.UUID,
+    media_type: str,
+) -> str:
+    safe_filename = _safe_download_filename(
+        filename,
+        resume_id=resume_id,
+        media_type=media_type,
+    )
+    ascii_filename = safe_filename.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    encoded_filename = quote(safe_filename, safe="!#$&+-.^_`|~")
+    return f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
+
+
+async def download_resume_source(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    resume_id: uuid.UUID,
+    storage: ResumeStorage,
+) -> ResumeDownload:
+    actor_id = current_user.id
+    actor_is_admin = current_user.role == UserRole.ADMIN.value
+    visibility_filters: list[ColumnElement[bool]] = [Resume.is_deleted.is_(False)]
+    if not actor_is_admin:
+        visibility_filters.append(Resume.owner_user_id == actor_id)
+
+    try:
+        with session.no_autoflush:
+            metadata = (
+                await session.execute(
+                    select(
+                        Resume.file_name,
+                        Resume.storage_key,
+                        Resume.file_size,
+                        Resume.mime_type,
+                        Resume.create_request_fingerprint,
+                    ).where(Resume.id == resume_id, *visibility_filters)
+                )
+            ).one_or_none()
+    finally:
+        # Authentication and the metadata query autobegin a transaction. Storage
+        # I/O must never hold a database transaction or snapshot open.
+        await session.rollback()
+
+    if metadata is None:
+        raise _resume_not_found()
+
+    filename, storage_key, expected_size, media_type, expected_fingerprint = metadata
+    if (
+        storage_key != f"resumes/{resume_id}/source"
+        or not isinstance(expected_size, int)
+        or expected_size < 1
+        or expected_size > MAX_RESUME_FILE_SIZE
+        or media_type not in {PDF_MIME_TYPE, DOCX_MIME_TYPE}
+    ):
+        raise _resume_not_found()
+
+    try:
+        content = await storage.read_bytes_bounded(
+            storage_key,
+            expected_size=expected_size,
+            maximum_size=MAX_RESUME_FILE_SIZE,
+        )
+    except (FileNotFoundError, IsADirectoryError, ValueError) as error:
+        raise _resume_not_found() from error
+    except OSError as error:
+        logger.error(
+            "resume_download_storage_failed resume_id=%s error_type=%s",
+            resume_id,
+            type(error).__name__,
+        )
+        raise APIError(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            "An unexpected error occurred",
+        ) from error
+
+    if len(content) != expected_size or hashlib.sha256(content).hexdigest() != expected_fingerprint:
+        raise _resume_not_found()
+
+    try:
+        with session.no_autoflush:
+            still_visible = await session.scalar(
+                select(Resume.id).where(Resume.id == resume_id, *visibility_filters)
+            )
+    finally:
+        await session.rollback()
+    if still_visible is None:
+        raise _resume_not_found()
+
+    return ResumeDownload(
+        content=content,
+        media_type=media_type,
+        content_disposition=build_download_content_disposition(
+            filename,
+            resume_id=resume_id,
+            media_type=media_type,
+        ),
+    )
 
 
 def _resume_not_ready() -> APIError:
