@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class MatchStatus(StrEnum):
@@ -13,6 +13,44 @@ class MatchStatus(StrEnum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class MatchCalculateRequest(BaseModel):
+    job_id: uuid.UUID
+    resume_ids: list[uuid.UUID] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
+
+    @field_validator("resume_ids")
+    @classmethod
+    def reject_duplicate_resume_ids(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("resume_ids must not contain duplicate UUIDs")
+        return value
+
+
+class MatchTriggerData(BaseModel):
+    job_id: uuid.UUID
+    match_ids: list[uuid.UUID]
+    total_matches: int = Field(ge=1)
+    status: Literal[MatchStatus.PENDING] = Field(json_schema_extra={"enum": ["PENDING"]})
+
+
+class MatchTriggerResponse(BaseModel):
+    success: Literal[True]
+    data: MatchTriggerData
+
+
+class ErrorDetail(BaseModel):
+    code: str
+    message: str
+    details: Any = None
+
+
+class ErrorResponse(BaseModel):
+    success: Literal[False]
+    error: ErrorDetail
 
 
 class MatchSummary(BaseModel):

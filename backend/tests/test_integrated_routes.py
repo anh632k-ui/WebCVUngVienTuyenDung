@@ -15,6 +15,7 @@ EXPECTED_METHODS = {
     "/api/v1/jobs/{id}/status": {"patch"},
     "/api/v1/jobs/{id}/leaderboard": {"get"},
     "/api/v1/matching": {"get"},
+    "/api/v1/matching/calculate": {"post"},
     "/api/v1/matching/{match_id}": {"get"},
     "/api/v1/matching/{match_id}/gap-analysis": {"get"},
 }

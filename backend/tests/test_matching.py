@@ -18,7 +18,7 @@ from app.core.exceptions import APIError
 from app.core.security import create_access_token
 from app.models.match_result import MatchResult
 from app.models.user import User
-from app.schemas.match_schema import MatchStatus
+from app.schemas.match_schema import MatchCalculateRequest, MatchStatus
 from main import app
 
 TEST_SECRET = "matching-read-unit-test-jwt-secret-value"
@@ -212,9 +212,23 @@ async def matching_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Matchin
             )
         return match
 
+    async def fake_calculate_matches(
+        _: Any,
+        *,
+        current_user: User,
+        payload: MatchCalculateRequest,
+        dispatcher: Any,
+    ) -> list[uuid.UUID]:
+        del current_user, dispatcher
+        return [
+            uuid.uuid5(uuid.NAMESPACE_URL, f"{payload.job_id}:{resume_id}")
+            for resume_id in payload.resume_ids
+        ]
+
     monkeypatch.setattr(matching_endpoint, "list_matches", fake_list_matches)
     monkeypatch.setattr(matching_endpoint, "get_match", fake_get_match)
     monkeypatch.setattr(matching_endpoint, "get_gap_analysis", fake_get_gap_analysis)
+    monkeypatch.setattr(matching_endpoint, "calculate_matches", fake_calculate_matches)
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = override_settings
     transport = ASGITransport(app=app)
@@ -356,11 +370,111 @@ async def test_deleted_linked_resources_and_missing_match_are_not_found(
         assert response.json()["error"]["code"] == "MATCH_NOT_FOUND"
 
 
-def test_matching_route_table_contains_only_read_endpoints() -> None:
+def test_matching_route_table_contains_canonical_trigger_and_read_endpoints() -> None:
     paths = app.openapi()["paths"]
     assert set(paths["/api/v1/matching"]) == {"get"}
+    assert set(paths["/api/v1/matching/calculate"]) == {"post"}
     assert set(paths["/api/v1/matching/{match_id}"]) == {"get"}
     assert set(paths["/api/v1/matching/{match_id}/gap-analysis"]) == {"get"}
+
+
+def test_matching_trigger_runtime_openapi_matches_canonical_contract() -> None:
+    specification = app.openapi()
+    operation = specification["paths"]["/api/v1/matching/calculate"]["post"]
+    request = specification["components"]["schemas"]["MatchCalculateRequest"]
+    trigger_data = specification["components"]["schemas"]["MatchTriggerData"]
+    response = specification["components"]["schemas"]["MatchTriggerResponse"]
+
+    assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/MatchCalculateRequest"
+    )
+    assert operation["responses"]["202"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/MatchTriggerResponse"
+    )
+    assert set(operation["responses"]) == {"202", "401", "403", "404", "422", "503"}
+    assert request["required"] == ["job_id", "resume_ids"]
+    assert request["properties"]["job_id"]["format"] == "uuid"
+    assert request["properties"]["resume_ids"]["minItems"] == 1
+    assert request["properties"]["resume_ids"]["uniqueItems"] is True
+    assert trigger_data["required"] == ["job_id", "match_ids", "total_matches", "status"]
+    assert trigger_data["properties"]["status"]["enum"] == ["PENDING"]
+    assert response["required"] == ["success", "data"]
+
+
+@pytest.mark.asyncio
+async def test_matching_trigger_returns_canonical_accepted_envelope_in_input_order(
+    matching_api: MatchingAPIContext,
+) -> None:
+    job_id = uuid.uuid4()
+    resume_ids = [uuid.uuid4(), uuid.uuid4()]
+    response = await matching_api.client.post(
+        "/api/v1/matching/calculate",
+        json={"job_id": str(job_id), "resume_ids": [str(item) for item in resume_ids]},
+        headers=matching_api.headers,
+    )
+    assert response.status_code == 202
+    assert response.json() == {
+        "success": True,
+        "data": {
+            "job_id": str(job_id),
+            "match_ids": [
+                str(uuid.uuid5(uuid.NAMESPACE_URL, f"{job_id}:{resume_id}"))
+                for resume_id in resume_ids
+            ],
+            "total_matches": 2,
+            "status": "PENDING",
+        },
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"job_id": str(uuid.uuid4()), "resume_ids": []},
+        {"job_id": "not-a-uuid", "resume_ids": [str(uuid.uuid4())]},
+        {"job_id": str(uuid.uuid4()), "resume_ids": ["not-a-uuid"]},
+    ],
+)
+async def test_matching_trigger_rejects_invalid_request_shapes(
+    matching_api: MatchingAPIContext,
+    body: dict[str, Any],
+) -> None:
+    response = await matching_api.client.post(
+        "/api/v1/matching/calculate",
+        json=body,
+        headers=matching_api.headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_matching_trigger_rejects_duplicate_uuid_after_normalization(
+    matching_api: MatchingAPIContext,
+) -> None:
+    resume_id = uuid.uuid4()
+    response = await matching_api.client.post(
+        "/api/v1/matching/calculate",
+        json={
+            "job_id": str(uuid.uuid4()),
+            "resume_ids": [str(resume_id).upper(), str(resume_id)],
+        },
+        headers=matching_api.headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_matching_trigger_requires_authentication(
+    matching_api: MatchingAPIContext,
+) -> None:
+    response = await matching_api.client.post(
+        "/api/v1/matching/calculate",
+        json={"job_id": str(uuid.uuid4()), "resume_ids": [str(uuid.uuid4())]},
+    )
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
