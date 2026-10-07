@@ -1,22 +1,63 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query, status
 
 from app.api.dependencies import CurrentUser, DatabaseSession
 from app.schemas.match_schema import (
+    ErrorResponse,
     GapAnalysisData,
     GapAnalysisResponse,
+    MatchCalculateRequest,
     MatchDetail,
     MatchResponse,
     MatchStatus,
     MatchSummary,
+    MatchTriggerData,
+    MatchTriggerResponse,
     PaginatedMatchesResponse,
     PaginationMeta,
 )
-from app.services.match_service import get_gap_analysis, get_match, list_matches
+from app.services.match_dispatcher import MatchDispatcher, get_match_dispatcher
+from app.services.match_service import calculate_matches, get_gap_analysis, get_match, list_matches
 
 router = APIRouter(prefix="/matching", tags=["Matching"])
+MatchDispatcherDependency = Annotated[MatchDispatcher, Depends(get_match_dispatcher)]
+
+
+@router.post(
+    "/calculate",
+    response_model=MatchTriggerResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden"},
+        404: {"model": ErrorResponse, "description": "Not found or hidden"},
+        422: {"model": ErrorResponse, "description": "Validation/precondition error"},
+        503: {"model": ErrorResponse, "description": "Task dispatcher unavailable"},
+    },
+)
+async def calculate_matching(
+    payload: MatchCalculateRequest,
+    session: DatabaseSession,
+    current_user: CurrentUser,
+    dispatcher: MatchDispatcherDependency,
+) -> MatchTriggerResponse:
+    match_ids = await calculate_matches(
+        session,
+        current_user=current_user,
+        payload=payload,
+        dispatcher=dispatcher,
+    )
+    return MatchTriggerResponse(
+        success=True,
+        data=MatchTriggerData(
+            job_id=payload.job_id,
+            match_ids=match_ids,
+            total_matches=len(match_ids),
+            status=MatchStatus.PENDING,
+        ),
+    )
 
 
 @router.get("", response_model=PaginatedMatchesResponse)
