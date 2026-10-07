@@ -27,7 +27,7 @@ python -m ruff check .
 python -m mypy app
 ```
 
-## Resume parse queue
+## Parse and Match queue
 
 Resume upload works without queue dependencies or Redis. In that mode the committed resume stays
 `PENDING`, dispatch is a no-op, and the recovery loop is disabled. To run asynchronous parsing,
@@ -37,7 +37,10 @@ install both optional runtime groups and configure `CELERY_BROKER_URL` to a shar
 python -m pip install -e ".[queue,ai]"
 ```
 
-The API process publishes only the resume ID and expected revision. Start Redis separately, then
+Parse tasks publish only the resource ID and expected revision. Match tasks use `match.calculate`
+with `match_id, expected_generation, expected_resume_revision, expected_job_revision,
+algorithm_version`; scoring context and embeddings are loaded from PostgreSQL by the worker.
+Match computation uses stored embeddings and does not load BGE-M3. Start Redis separately, then
 run a worker from `backend/`. Windows development uses Celery's single-process pool:
 
 ```powershell
@@ -52,7 +55,15 @@ celery -A app.tasks.celery_worker:app worker --loglevel=INFO --pool=prefork
 ```
 
 API and worker processes must use the same `DATABASE_URL`, `RESUME_STORAGE_ROOT`, and broker. The
-API recovery loop periodically republishes old, active `PENDING` revisions. It never changes resume
-state; duplicate deliveries are safe because the parse worker claims work with the existing
-revision/status compare-and-set guard. Broker publication failures are logged without connection
-credentials and do not undo a committed upload.
+API recovery loops periodically republish old, active `PENDING` work. Parse recovery uses current
+resource revisions. Match recovery selects only supported algorithms with snapshots matching both
+active linked resources and republishes the exact stored generation, revisions and algorithm.
+Selection sessions close before broker publication. Recovery never changes state, generations,
+revisions, scoring payloads or `updated_at`; it never resets `PROCESSING`. Duplicate deliveries and
+mutations after selection are rejected by the existing claim/terminal compare-and-set guards.
+Broker publication failures are logged without connection credentials and do not undo persistence.
+
+Match recovery starts with the API when both database and broker are configured. Its bounded
+settings are `MATCH_RECOVERY_GRACE_SECONDS` (default 300), `MATCH_RECOVERY_INTERVAL_SECONDS`
+(default 60), and `MATCH_RECOVERY_BATCH_SIZE` (default 100). With no broker, Match dispatch is a
+no-op and the sweep is disabled. The matching trigger/batch endpoint is a separate feature.

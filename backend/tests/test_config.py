@@ -27,6 +27,9 @@ def test_defaults_do_not_require_database_credentials(monkeypatch: pytest.Monkey
     assert settings.job_recovery_grace_seconds == 300
     assert settings.job_recovery_interval_seconds == 60
     assert settings.job_recovery_batch_size == 100
+    assert settings.match_recovery_grace_seconds == 300
+    assert settings.match_recovery_interval_seconds == 60
+    assert settings.match_recovery_batch_size == 100
 
 
 def test_accepts_canonical_async_database_url() -> None:
@@ -60,6 +63,9 @@ def test_queue_configuration_is_optional_bounded_and_secret() -> None:
         job_recovery_grace_seconds=1,
         job_recovery_interval_seconds=1,
         job_recovery_batch_size=1,
+        match_recovery_grace_seconds=1,
+        match_recovery_interval_seconds=1,
+        match_recovery_batch_size=1,
     )
 
     assert settings.celery_broker_url is not None
@@ -69,3 +75,19 @@ def test_queue_configuration_is_optional_bounded_and_secret() -> None:
         Settings(_env_file=None, resume_recovery_batch_size=0)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, job_recovery_batch_size=0)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("match_recovery_grace_seconds", 0),
+        ("match_recovery_grace_seconds", 86_401),
+        ("match_recovery_interval_seconds", 0),
+        ("match_recovery_interval_seconds", 3_601),
+        ("match_recovery_batch_size", 0),
+        ("match_recovery_batch_size", 1_001),
+    ],
+)
+def test_match_recovery_settings_are_bounded(name: str, value: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{name: value})

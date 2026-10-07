@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.engine_factory import create_engine
 from app.storage.resume_storage import LocalResumeStorage, ResumeStorage
 from app.workers.job_parse_worker import JobParseTaskOutcome, process_job_parse_task
+from app.workers.match_worker import MatchTaskOutcome, process_match_task
 from app.workers.resume_parse_worker import ResumeParseTaskOutcome, process_resume_parse_task
 
 
@@ -21,7 +22,7 @@ class WorkerRuntimeConfigurationError(RuntimeError):
 
 
 class ParseWorkerRuntime:
-    """Shared persistent parse resources owned by exactly one Celery child process."""
+    """Shared parse/Match resources owned by exactly one Celery child process."""
 
     def __init__(
         self,
@@ -76,6 +77,28 @@ class ParseWorkerRuntime:
         """Backward-compatible Resume task entry point."""
 
         return self.run_resume(resume_id, expected_revision)
+
+    def run_match(
+        self,
+        match_id: uuid.UUID,
+        expected_generation: int,
+        expected_resume_revision: int,
+        expected_job_revision: int,
+        algorithm_version: str,
+    ) -> MatchTaskOutcome:
+        with self._runner_lock:
+            if self._closed:
+                raise RuntimeError("Match worker runtime is closed")
+            return self._runner.run(
+                process_match_task(
+                    match_id,
+                    expected_generation,
+                    expected_resume_revision,
+                    expected_job_revision,
+                    algorithm_version,
+                    session_factory=self._session_factory,
+                )
+            )
 
     def close(self) -> None:
         with self._runner_lock:

@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -24,6 +24,8 @@ from app.models.skill import JobSkill, ResumeSkill, Skill
 from app.models.user import User
 from app.schemas.job_schema import JobCriteriaRequest
 from app.services.job_service import update_job_criteria
+from app.services.match_dispatcher import MATCH_TASK_NAME, CeleryMatchDispatcher
+from app.services.match_recovery import recover_pending_matches, select_match_recovery_candidates
 from app.workers import match_worker
 from app.workers.match_worker import MatchContextError, MatchTaskOutcome, process_match_task
 
@@ -69,6 +71,7 @@ class PostgreSQLMatchHarness:
         resume_embedding: list[float] | None = None,
         job_embedding: list[float] | None = None,
         min_experience_years: Decimal = Decimal("0.0"),
+        match_updated_at: datetime | None = None,
     ) -> MatchGraph:
         now = datetime.now(UTC)
         resume_id = uuid.uuid4()
@@ -173,7 +176,7 @@ class PostgreSQLMatchHarness:
                         "text-v1" if match_status == "COMPLETED" else None
                     ),
                     created_at=now,
-                    updated_at=now,
+                    updated_at=match_updated_at or now,
                     calculated_at=now if match_status == "COMPLETED" else None,
                 )
             )
@@ -238,6 +241,279 @@ async def claim(harness: PostgreSQLMatchHarness, graph: MatchGraph, **changes: A
             expected_job_revision=changes.get("job_revision", 1),
             algorithm_version=changes.get("algorithm_version", ALGORITHM_VERSION),
         )
+
+
+@pytest.mark.asyncio
+async def test_recovery_selection_is_current_active_pending_ordered_and_bounded(
+    postgres_match_worker: PostgreSQLMatchHarness,
+) -> None:
+    harness = postgres_match_worker
+    now = datetime.now(UTC)
+    old = now - timedelta(minutes=20)
+    tied_a = await harness.create_graph(generation=4, resume_revision=2, match_updated_at=old)
+    tied_b = await harness.create_graph(generation=7, job_revision=3, match_updated_at=old)
+    boundary = await harness.create_graph(match_updated_at=now - timedelta(minutes=5))
+    await harness.create_graph(match_updated_at=now - timedelta(seconds=30))
+    for status in ["PROCESSING", "COMPLETED", "FAILED"]:
+        await harness.create_graph(match_status=status, match_updated_at=old)
+    await harness.create_graph(resume_deleted=True, match_updated_at=old)
+    await harness.create_graph(job_deleted=True, match_updated_at=old)
+    changed_resume = await harness.create_graph(match_updated_at=old)
+    changed_job = await harness.create_graph(match_updated_at=old)
+    unknown_algorithm = await harness.create_graph(match_updated_at=old)
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Resume).where(Resume.id == changed_resume.resume_id).values(revision=2)
+        )
+        await session.execute(
+            update(JobDescription).where(JobDescription.id == changed_job.job_id).values(revision=2)
+        )
+        await session.execute(
+            update(MatchResult)
+            .where(MatchResult.id == unknown_algorithm.match_id)
+            .values(algorithm_version="future-v2")
+        )
+        await session.commit()
+
+    candidates = await select_match_recovery_candidates(
+        harness.session_factory, cutoff=now - timedelta(minutes=5), batch_size=2
+    )
+    assert [item.match_id for item in candidates] == sorted([tied_a.match_id, tied_b.match_id])
+    assert {(item.match_id, item.expected_generation) for item in candidates} == {
+        (tied_a.match_id, 4),
+        (tied_b.match_id, 7),
+    }
+    candidates = await select_match_recovery_candidates(
+        harness.session_factory, cutoff=now - timedelta(minutes=5), batch_size=100
+    )
+    assert [item.match_id for item in candidates] == [
+        *sorted([tied_a.match_id, tied_b.match_id]),
+        boundary.match_id,
+    ]
+    assert all(item.algorithm_version == ALGORITHM_VERSION for item in candidates)
+
+
+async def snapshot_match_graph(
+    harness: PostgreSQLMatchHarness, graph: MatchGraph
+) -> dict[str, Any]:
+    """Compare complete persisted rows, including all scoring inputs and payloads."""
+    queries = {
+        "match": ("match_results", "id", graph.match_id),
+        "resume": ("resumes", "id", graph.resume_id),
+        "job": ("job_descriptions", "id", graph.job_id),
+        "resume_skills": ("resume_skills", "resume_id", graph.resume_id),
+        "job_skills": ("job_skills", "job_id", graph.job_id),
+        "experiences": ("resume_experiences", "resume_id", graph.resume_id),
+    }
+    result: dict[str, Any] = {}
+    async with harness.session_factory() as session:
+        for name, (table, column, value) in queries.items():
+            result[name] = (
+                await session.scalars(
+                    text(f"SELECT to_jsonb(row) FROM {table} AS row WHERE {column} = :value"),
+                    {"value": value},
+                )
+            ).all()
+    return result
+
+
+@pytest.mark.asyncio
+async def test_recovery_republishes_exact_snapshots_without_any_database_mutation(
+    postgres_match_worker: PostgreSQLMatchHarness,
+) -> None:
+    harness = postgres_match_worker
+    now = datetime.now(UTC)
+    first = await harness.create_graph(
+        generation=8,
+        resume_revision=3,
+        job_revision=6,
+        match_updated_at=now - timedelta(minutes=20),
+    )
+    second = await harness.create_graph(
+        generation=9,
+        resume_revision=4,
+        job_revision=7,
+        match_updated_at=now - timedelta(minutes=10),
+    )
+    before = [await snapshot_match_graph(harness, graph) for graph in [first, second]]
+    calls: list[tuple[uuid.UUID, int, int, int, str]] = []
+
+    class Dispatcher:
+        async def dispatch(self, *args: Any) -> None:
+            calls.append(args)
+            if args[0] == first.match_id:
+                raise RuntimeError("broker unavailable")
+
+    for _ in range(2):
+        result = await recover_pending_matches(
+            harness.session_factory, Dispatcher(), grace_seconds=300, batch_size=10, now=now
+        )
+        assert (result.selected, result.dispatched, result.failed) == (2, 1, 1)
+    assert (
+        calls
+        == [
+            (first.match_id, 8, 3, 6, ALGORITHM_VERSION),
+            (second.match_id, 9, 4, 7, ALGORITHM_VERSION),
+        ]
+        * 2
+    )
+    assert [await snapshot_match_graph(harness, graph) for graph in [first, second]] == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "generation",
+        "resume_revision",
+        "job_revision",
+        "algorithm",
+        "resume_delete",
+        "job_delete",
+        "claim",
+    ],
+)
+async def test_task_selected_by_recovery_discards_mutations_before_delivery(
+    postgres_match_worker: PostgreSQLMatchHarness, mutation: str
+) -> None:
+    harness = postgres_match_worker
+    now = datetime.now(UTC)
+    graph = await harness.create_graph(match_updated_at=now - timedelta(minutes=20))
+    selected = await select_match_recovery_candidates(
+        harness.session_factory, cutoff=now - timedelta(minutes=5), batch_size=10
+    )
+    assert len(selected) == 1
+    candidate = selected[0]
+    async with harness.session_factory() as session:
+        if mutation == "generation":
+            statement = (
+                update(MatchResult).where(MatchResult.id == graph.match_id).values(generation=2)
+            )
+        elif mutation == "resume_revision":
+            statement = update(Resume).where(Resume.id == graph.resume_id).values(revision=2)
+        elif mutation == "job_revision":
+            statement = (
+                update(JobDescription).where(JobDescription.id == graph.job_id).values(revision=2)
+            )
+        elif mutation == "algorithm":
+            statement = (
+                update(MatchResult)
+                .where(MatchResult.id == graph.match_id)
+                .values(algorithm_version="future-v2")
+            )
+        elif mutation == "resume_delete":
+            statement = (
+                update(Resume)
+                .where(Resume.id == graph.resume_id)
+                .values(is_deleted=True, deleted_at=now)
+            )
+        elif mutation == "job_delete":
+            statement = (
+                update(JobDescription)
+                .where(JobDescription.id == graph.job_id)
+                .values(is_deleted=True, deleted_at=now)
+            )
+        else:
+            statement = (
+                update(MatchResult)
+                .where(MatchResult.id == graph.match_id)
+                .values(status="PROCESSING")
+            )
+        await session.execute(statement)
+        await session.commit()
+    before_delivery = await snapshot_match_graph(harness, graph)
+    outcome = await process_match_task(
+        candidate.match_id,
+        candidate.expected_generation,
+        candidate.expected_resume_revision,
+        candidate.expected_job_revision,
+        candidate.algorithm_version,
+        session_factory=harness.session_factory,
+    )
+    assert outcome == MatchTaskOutcome.DISCARDED
+    assert await snapshot_match_graph(harness, graph) == before_delivery
+
+
+@pytest.mark.asyncio
+async def test_recovery_delivers_through_real_celery_worker_and_shared_postgres_runtime(
+    postgres_match_worker: PostgreSQLMatchHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise Celery JSON transport and registered task execution without an external broker.
+    pytest.importorskip("celery")
+    from celery.contrib.testing.worker import start_worker
+    from celery.signals import task_postrun
+
+    from app.ai.vector_embedding import BgeM3EmbeddingProvider
+    from app.tasks import celery_app, worker_runtime
+
+    harness = postgres_match_worker
+    graph = await harness.create_graph(
+        generation=8,
+        resume_revision=3,
+        job_revision=6,
+        match_updated_at=datetime.now(UTC) - timedelta(minutes=20),
+    )
+    settings = integration_database_settings().model_copy(
+        update={
+            "celery_broker_url": Settings(
+                _env_file=None, celery_broker_url="memory://"
+            ).celery_broker_url
+        }
+    )
+    application = celery_app.create_celery_app(settings)
+    application.conf.task_default_queue = f"match-integration-{uuid.uuid4().hex}"
+    application.conf.worker_hijack_root_logger = False
+    monkeypatch.setattr(celery_app, "get_celery_app", lambda: application)
+    monkeypatch.setattr(worker_runtime, "get_settings", lambda: settings)
+    monkeypatch.setattr(worker_runtime, "_runtime", None)
+    monkeypatch.setattr(worker_runtime, "_runtime_pid", None)
+
+    def forbidden_model_load() -> None:
+        raise AssertionError("Match delivery loaded BGE-M3")
+
+    monkeypatch.setattr(BgeM3EmbeddingProvider, "_load_sentence_transformer", forbidden_model_load)
+    loop = asyncio.get_running_loop()
+    delivered = asyncio.Event()
+    outcomes: list[str] = []
+
+    def observe(*, task: Any, retval: Any, **kwargs: Any) -> None:
+        if task.name == MATCH_TASK_NAME:
+            outcomes.append(retval)
+            loop.call_soon_threadsafe(delivered.set)
+
+    signal_id = f"match-integration-{uuid.uuid4().hex}"
+    task_postrun.connect(observe, weak=False, dispatch_uid=signal_id)
+    context = start_worker(
+        application,
+        pool="solo",
+        perform_ping_check=False,
+        shutdown_timeout=10,
+        without_heartbeat=True,
+    )
+    started = False
+    try:
+        await asyncio.wait_for(asyncio.to_thread(context.__enter__), timeout=10)
+        started = True
+        result = await recover_pending_matches(
+            harness.session_factory, CeleryMatchDispatcher(), grace_seconds=300, batch_size=10
+        )
+        assert (result.selected, result.dispatched, result.failed) == (1, 1, 0)
+        await asyncio.wait_for(delivered.wait(), timeout=10)
+        assert outcomes == ["COMPLETED"]
+        delivered.clear()
+        await CeleryMatchDispatcher().dispatch(graph.match_id, 8, 3, 6, ALGORITHM_VERSION)
+        await asyncio.wait_for(delivered.wait(), timeout=10)
+        assert outcomes == ["COMPLETED", "DISCARDED"]
+        stored = await harness.load_match(graph.match_id)
+        assert stored.status == "COMPLETED"
+        assert (stored.generation, stored.resume_revision, stored.job_revision) == (8, 3, 6)
+        assert stored.overall_score == Decimal("100.00")
+    finally:
+        task_postrun.disconnect(dispatch_uid=signal_id)
+        if started:
+            await asyncio.to_thread(context.__exit__, None, None, None)
+        await asyncio.to_thread(worker_runtime.shutdown_worker_runtime)
 
 
 @pytest.mark.asyncio

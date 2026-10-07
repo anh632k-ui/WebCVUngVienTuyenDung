@@ -120,6 +120,14 @@ Claim chỉ hợp lệ khi row còn `PENDING`, generation/snapshots khớp, link
 
 Terminal COMPLETED/FAILED chỉ hợp lệ từ `PROCESSING` với cùng generation/snapshots, linked revisions vẫn khớp và linked resources vẫn chưa xóa. `rowcount=0` => stale/duplicate/deleted-resource task discard.
 
+### 8.4 Match dispatch và PENDING recovery
+- Celery task nội bộ `match.calculate` nhận đúng 5 trường ở mục 8.3; không gửi scoring context hoặc embedding qua queue.
+- API startup/periodic sweep chọn Match `PENDING`, `updated_at` quá configurable grace window, algorithm được worker hiện tại hỗ trợ, snapshots khớp linked revisions và cả Resume/JD chưa soft-delete.
+- Sweep chỉ đọc DB; đóng selection session trước khi enqueue lại nguyên generation, snapshots và algorithm đã lưu. Không tăng generation/revision, không đổi status, payload hoặc `updated_at`.
+- Duplicate delivery hoặc mutation/delete sau selection vẫn phải qua exclusive claim/terminal CAS ở mục 8.3. Không giữ DB lock trong lúc gọi broker.
+- Broker chưa cấu hình thì dispatch là no-op và recovery không chạy. Lỗi một publication không dừng phần còn lại của batch; lỗi sweep được retry ở interval sau.
+- Chỉ recovery work chưa được claim; không reset `PROCESSING` khi chưa có lease/attempt token.
+
 ## 9. Idempotent creation, request fingerprint và parse dispatch recovery
 ### 9.1 Stable application namespace
 Hai create endpoint dùng **một application UUIDv5 namespace cố định**, literal trong code/config source và không thay đổi theo deployment:
