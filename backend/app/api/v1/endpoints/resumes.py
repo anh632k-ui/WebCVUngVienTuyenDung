@@ -1,8 +1,10 @@
 import uuid
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Header, Query, Response, UploadFile, status
 
+from app.ai.vector_embedding import BgeM3EmbeddingProvider, EmbeddingProvider
 from app.api.dependencies import ApplicationSettings, CurrentUser, DatabaseSession, require_roles
 from app.models.user import User
 from app.schemas.auth_schema import UserRole
@@ -15,6 +17,7 @@ from app.schemas.resume_schema import (
     ParsingStatus,
     ResumeDetailData,
     ResumeDetailResponse,
+    ResumeParsedDataUpdate,
     ResumeSkillData,
     ResumeStatusData,
     ResumeStatusResponse,
@@ -29,6 +32,7 @@ from app.services.resume_service import (
     get_resume_aggregate,
     list_resumes,
     soft_delete_resume,
+    update_resume_parsed_data,
     upload_resume,
 )
 from app.storage.resume_storage import LocalResumeStorage, ResumeStorage
@@ -43,6 +47,14 @@ def get_resume_storage(settings: ApplicationSettings) -> ResumeStorage:
 
 ResumeStorageDependency = Annotated[ResumeStorage, Depends(get_resume_storage)]
 ResumeDispatcherDependency = Annotated[ResumeParseDispatcher, Depends(get_resume_parse_dispatcher)]
+
+
+@lru_cache
+def get_resume_embedding_provider() -> EmbeddingProvider:
+    return BgeM3EmbeddingProvider()
+
+
+ResumeEmbeddingDependency = Annotated[EmbeddingProvider, Depends(get_resume_embedding_provider)]
 
 
 @router.post("/upload", response_model=ResumeUploadResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -114,6 +126,36 @@ async def read_resume(
     current_user: CurrentUser,
 ) -> ResumeDetailResponse:
     aggregate = await get_resume_aggregate(session, current_user=current_user, resume_id=id)
+    return ResumeDetailResponse(
+        data=ResumeDetailData(
+            resume=ResumeSummary.model_validate(aggregate.resume),
+            candidate_profile=(
+                CandidateProfileData.model_validate(aggregate.candidate_profile)
+                if aggregate.candidate_profile is not None
+                else None
+            ),
+            skills=[ResumeSkillData.model_validate(item) for item in aggregate.skills],
+            experiences=[ExperienceData.model_validate(item) for item in aggregate.experiences],
+            educations=[EducationData.model_validate(item) for item in aggregate.educations],
+        )
+    )
+
+
+@router.put("/{id}/parsed-data", response_model=ResumeDetailResponse)
+async def replace_resume_parsed_data(
+    id: uuid.UUID,
+    payload: ResumeParsedDataUpdate,
+    session: DatabaseSession,
+    current_user: CurrentUser,
+    embedding_provider: ResumeEmbeddingDependency,
+) -> ResumeDetailResponse:
+    aggregate = await update_resume_parsed_data(
+        session,
+        current_user=current_user,
+        resume_id=id,
+        payload=payload,
+        embedding_provider=embedding_provider,
+    )
     return ResumeDetailResponse(
         data=ResumeDetailData(
             resume=ResumeSummary.model_validate(aggregate.resume),
