@@ -119,6 +119,7 @@ async def _prepare_match_batch(
     job = await session.scalar(
         select(JobDescription)
         .where(JobDescription.id == payload.job_id, JobDescription.is_deleted.is_(False))
+        .execution_options(populate_existing=True)
         .with_for_update()
     )
     if job is None:
@@ -131,6 +132,7 @@ async def _prepare_match_batch(
                 select(Resume)
                 .where(Resume.id.in_(ordered_resume_ids), Resume.is_deleted.is_(False))
                 .order_by(Resume.id.asc())
+                .execution_options(populate_existing=True)
                 .with_for_update()
             )
         ).all()
@@ -157,6 +159,7 @@ async def _prepare_match_batch(
                     MatchResult.resume_id.in_(ordered_resume_ids),
                 )
                 .order_by(MatchResult.id.asc())
+                .execution_options(populate_existing=True)
                 .with_for_update()
             )
         ).all()

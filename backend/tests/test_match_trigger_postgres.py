@@ -62,6 +62,32 @@ class RecordingDispatcher:
             raise RuntimeError("broker unavailable with secret details")
 
 
+@dataclass
+class GatedDispatcher:
+    entered: asyncio.Event = field(default_factory=asyncio.Event)
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+    calls: list[tuple[uuid.UUID, int, int, int, str]] = field(default_factory=list)
+
+    async def dispatch(
+        self,
+        match_id: uuid.UUID,
+        expected_generation: int,
+        expected_resume_revision: int,
+        expected_job_revision: int,
+        algorithm_version: str,
+    ) -> None:
+        payload = (
+            match_id,
+            expected_generation,
+            expected_resume_revision,
+            expected_job_revision,
+            algorithm_version,
+        )
+        self.entered.set()
+        await self.release.wait()
+        self.calls.append(payload)
+
+
 @dataclass(frozen=True)
 class MatchTriggerHarness:
     session_factory: async_sessionmaker[AsyncSession]
@@ -275,6 +301,21 @@ async def _wait_for_database_blocker(
             )
             if blocker_pid in blockers:
                 return
+
+
+async def _wait_for_any_database_blocker(
+    observer: AsyncSession,
+    *,
+    waiter_pid: int,
+) -> tuple[int, ...]:
+    async with asyncio.timeout(5):
+        while True:
+            blockers = await observer.scalar(
+                text("SELECT pg_blocking_pids(:pid)"),
+                {"pid": waiter_pid},
+            )
+            if blockers:
+                return tuple(blockers)
 
 
 @pytest.mark.asyncio
@@ -710,6 +751,244 @@ async def test_real_postgres_authorization_active_and_embedding_readiness(
 
 
 @pytest.mark.asyncio
+async def test_real_postgres_locking_reads_refresh_cached_job_and_match_state(
+    match_trigger_postgres: MatchTriggerHarness,
+) -> None:
+    harness = match_trigger_postgres
+    resume = harness.hr_resumes[0]
+    existing = _stale_match(harness.job, resume, "PENDING", 5)
+    existing.resume_revision = resume.revision
+    existing.job_revision = harness.job.revision
+    async with harness.session_factory() as setup:
+        setup.add(existing)
+        await setup.commit()
+
+    criteria = JobCriteriaRequest.model_validate(
+        {
+            "min_experience_years": 4.0,
+            "skills": [
+                {
+                    "skill_id": harness.skill_id,
+                    "importance": "MANDATORY",
+                    "min_years_required": 2.0,
+                }
+            ],
+        }
+    )
+    dispatcher = RecordingDispatcher()
+    async with harness.session_factory() as trigger_session:
+        cached_job = await trigger_session.get(JobDescription, harness.job.id)
+        cached_match = await trigger_session.get(MatchResult, existing.id)
+        assert cached_job is not None and cached_match is not None
+        assert (cached_job.revision, cached_match.generation) == (3, 5)
+
+        async with harness.session_factory() as mutation_session:
+            actor = await mutation_session.get(User, harness.hr.id)
+            assert actor is not None
+            await update_job_criteria(
+                mutation_session,
+                current_user=actor,
+                job_id=harness.job.id,
+                payload=criteria,
+            )
+
+        assert (cached_job.revision, cached_match.generation) == (3, 5)
+        ids = await calculate_matches(
+            trigger_session,
+            current_user=harness.hr,
+            payload=_request(harness.job, (resume,)),
+            dispatcher=dispatcher,
+        )
+
+    assert ids == [existing.id]
+    assert dispatcher.calls == [(existing.id, 7, resume.revision, 4, "hybrid-v1")]
+    async with harness.session_factory() as observer:
+        persisted = await observer.get(MatchResult, existing.id)
+    assert persisted is not None
+    assert (persisted.generation, persisted.resume_revision, persisted.job_revision) == (
+        7,
+        resume.revision,
+        4,
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_locking_reads_refresh_cached_resume_revision(
+    match_trigger_postgres: MatchTriggerHarness,
+) -> None:
+    harness = match_trigger_postgres
+    resume = harness.hr_resumes[0]
+    existing = _stale_match(harness.job, resume, "PENDING", 5)
+    existing.resume_revision = resume.revision
+    existing.job_revision = harness.job.revision
+    async with harness.session_factory() as setup:
+        setup.add(existing)
+        await setup.commit()
+
+    dispatcher = RecordingDispatcher()
+    async with harness.session_factory() as trigger_session:
+        cached_resume = await trigger_session.get(Resume, resume.id)
+        cached_match = await trigger_session.get(MatchResult, existing.id)
+        assert cached_resume is not None and cached_match is not None
+        assert (cached_resume.revision, cached_match.generation) == (2, 5)
+
+        async with harness.session_factory() as mutation_session:
+            current_resume = await mutation_session.get(Resume, resume.id)
+            current_match = await mutation_session.get(MatchResult, existing.id)
+            assert current_resume is not None and current_match is not None
+            current_resume.revision = 3
+            current_resume.updated_at = datetime.now(UTC)
+            current_match.generation = 6
+            current_match.resume_revision = 3
+            current_match.updated_at = datetime.now(UTC)
+            await mutation_session.commit()
+
+        assert (cached_resume.revision, cached_match.generation) == (2, 5)
+        await calculate_matches(
+            trigger_session,
+            current_user=harness.hr,
+            payload=_request(harness.job, (resume,)),
+            dispatcher=dispatcher,
+        )
+
+    assert dispatcher.calls == [(existing.id, 7, 3, harness.job.revision, "hybrid-v1")]
+    async with harness.session_factory() as observer:
+        persisted = await observer.get(MatchResult, existing.id)
+    assert persisted is not None
+    assert (persisted.generation, persisted.resume_revision) == (7, 3)
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_cached_ready_resume_rejects_current_not_ready_state(
+    match_trigger_postgres: MatchTriggerHarness,
+) -> None:
+    harness = match_trigger_postgres
+    resume = harness.hr_resumes[0]
+    existing = _stale_match(harness.job, resume, "COMPLETED", 5)
+    existing.resume_revision = resume.revision
+    existing.job_revision = harness.job.revision
+    async with harness.session_factory() as setup:
+        setup.add(existing)
+        await setup.commit()
+
+    dispatcher = RecordingDispatcher()
+    async with harness.session_factory() as trigger_session:
+        cached_resume = await trigger_session.get(Resume, resume.id)
+        cached_match = await trigger_session.get(MatchResult, existing.id)
+        assert cached_resume is not None and cached_match is not None
+        assert cached_resume.parsing_status == "PARSED"
+
+        async with harness.session_factory() as mutation_session:
+            current_resume = await mutation_session.get(Resume, resume.id)
+            current_match = await mutation_session.get(MatchResult, existing.id)
+            assert current_resume is not None and current_match is not None
+            current_resume.revision = 3
+            current_resume.parsing_status = "PENDING"
+            current_resume.raw_text = None
+            current_resume.resume_embedding = None
+            current_resume.embedding_model = None
+            current_resume.embedding_preprocessing_version = None
+            current_resume.parsed_at = None
+            current_resume.updated_at = datetime.now(UTC)
+            current_match.generation = 6
+            current_match.resume_revision = 3
+            current_match.status = "PENDING"
+            current_match.overall_score = None
+            current_match.skill_score = None
+            current_match.semantic_score = None
+            current_match.experience_score = None
+            current_match.matched_skills = []
+            current_match.missing_skills = []
+            current_match.gap_analysis_summary = None
+            current_match.embedding_model = None
+            current_match.embedding_preprocessing_version = None
+            current_match.error_message = None
+            current_match.calculated_at = None
+            current_match.updated_at = datetime.now(UTC)
+            await mutation_session.commit()
+
+        assert cached_resume.parsing_status == "PARSED"
+        with pytest.raises(APIError) as caught:
+            await calculate_matches(
+                trigger_session,
+                current_user=harness.hr,
+                payload=_request(harness.job, (resume,)),
+                dispatcher=dispatcher,
+            )
+
+    assert caught.value.code == "RESUME_NOT_READY"
+    assert dispatcher.calls == []
+    async with harness.session_factory() as observer:
+        persisted = await observer.get(MatchResult, existing.id)
+    assert persisted is not None
+    assert (persisted.generation, persisted.resume_revision, persisted.status) == (6, 3, "PENDING")
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_committed_payload_stays_immutable_during_later_retrigger(
+    match_trigger_postgres: MatchTriggerHarness,
+) -> None:
+    harness = match_trigger_postgres
+    resume = harness.hr_resumes[0]
+    first_dispatcher = GatedDispatcher()
+    first_task: asyncio.Task[list[uuid.UUID]] | None = None
+    try:
+
+        async def first_trigger() -> list[uuid.UUID]:
+            async with harness.session_factory() as session:
+                return await calculate_matches(
+                    session,
+                    current_user=harness.hr,
+                    payload=_request(harness.job, (resume,)),
+                    dispatcher=first_dispatcher,
+                )
+
+        first_task = asyncio.create_task(first_trigger())
+        await asyncio.wait_for(first_dispatcher.entered.wait(), timeout=5)
+
+        second_dispatcher = RecordingDispatcher()
+        async with harness.session_factory() as second_session:
+            second_ids = await asyncio.wait_for(
+                calculate_matches(
+                    second_session,
+                    current_user=harness.hr,
+                    payload=_request(harness.job, (resume,)),
+                    dispatcher=second_dispatcher,
+                ),
+                timeout=5,
+            )
+        assert second_dispatcher.calls == [
+            (second_ids[0], 2, resume.revision, harness.job.revision, "hybrid-v1")
+        ]
+
+        first_dispatcher.release.set()
+        first_ids = await asyncio.wait_for(first_task, timeout=5)
+    finally:
+        first_dispatcher.release.set()
+        if first_task is not None and not first_task.done():
+            first_task.cancel()
+            await asyncio.gather(first_task, return_exceptions=True)
+
+    assert first_ids == second_ids
+    assert first_dispatcher.calls == [
+        (first_ids[0], 1, resume.revision, harness.job.revision, "hybrid-v1")
+    ]
+    outcome = await match_worker.process_match_task(
+        first_ids[0],
+        1,
+        resume.revision,
+        harness.job.revision,
+        "hybrid-v1",
+        session_factory=harness.session_factory,
+    )
+    assert outcome is match_worker.MatchTaskOutcome.DISCARDED
+    async with harness.session_factory() as observer:
+        persisted = await observer.get(MatchResult, first_ids[0])
+    assert persisted is not None
+    assert (persisted.generation, persisted.status) == (2, "PENDING")
+
+
+@pytest.mark.asyncio
 async def test_real_postgres_concurrent_same_batch_reversed_order_is_serialized(
     match_trigger_postgres: MatchTriggerHarness,
     monkeypatch: pytest.MonkeyPatch,
@@ -784,27 +1063,206 @@ async def test_real_postgres_concurrent_different_jobs_with_overlapping_resume_c
     match_trigger_postgres: MatchTriggerHarness,
 ) -> None:
     harness = match_trigger_postgres
-    resume = harness.hr_resumes[0]
+    low, high = sorted(harness.hr_resumes[:2], key=lambda item: item.id.int)
+    async with (
+        harness.session_factory() as blocker,
+        harness.session_factory() as first_session,
+        harness.session_factory() as second_session,
+        harness.session_factory() as observer,
+    ):
+        locked = await blocker.scalar(select(Resume).where(Resume.id == low.id).with_for_update())
+        assert locked is not None
+        blocker_pid = await blocker.scalar(text("SELECT pg_backend_pid()"))
+        first_pid = await first_session.scalar(text("SELECT pg_backend_pid()"))
+        second_pid = await second_session.scalar(text("SELECT pg_backend_pid()"))
+        assert blocker_pid is not None and first_pid is not None and second_pid is not None
 
-    async def trigger(job: JobDescription) -> list[uuid.UUID]:
-        async with harness.session_factory() as session:
-            return await calculate_matches(
-                session,
+        first_task = asyncio.create_task(
+            calculate_matches(
+                first_session,
                 current_user=harness.hr,
-                payload=_request(job, (resume,)),
+                payload=_request(harness.job, (high, low)),
                 dispatcher=RecordingDispatcher(),
             )
-
-    results = await asyncio.wait_for(
-        asyncio.gather(trigger(harness.job), trigger(harness.other_job)),
-        timeout=10,
-    )
-    assert len({item[0] for item in results}) == 2
-    async with harness.session_factory() as observer:
-        count = await observer.scalar(
-            select(func.count()).select_from(MatchResult).where(MatchResult.resume_id == resume.id)
         )
-    assert count == 2
+        second_task: asyncio.Task[list[uuid.UUID]] | None = None
+        try:
+            await _wait_for_database_blocker(
+                observer,
+                waiter_pid=first_pid,
+                blocker_pid=blocker_pid,
+            )
+            second_task = asyncio.create_task(
+                calculate_matches(
+                    second_session,
+                    current_user=harness.hr,
+                    payload=_request(harness.other_job, (low, high)),
+                    dispatcher=RecordingDispatcher(),
+                )
+            )
+            second_blockers = await _wait_for_any_database_blocker(
+                observer,
+                waiter_pid=second_pid,
+            )
+            assert blocker_pid in second_blockers or first_pid in second_blockers
+            await blocker.commit()
+            results = await asyncio.wait_for(
+                asyncio.gather(first_task, second_task),
+                timeout=10,
+            )
+        finally:
+            if blocker.in_transaction():
+                await blocker.rollback()
+            tasks = [first_task, second_task]
+            for task in tasks:
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in tasks if task is not None), return_exceptions=True
+            )
+
+    assert all(len(ids) == 2 for ids in results)
+    assert len({match_id for ids in results for match_id in ids}) == 4
+    async with harness.session_factory() as observer:
+        rows = list(
+            (
+                await observer.scalars(
+                    select(MatchResult).where(
+                        MatchResult.job_id.in_((harness.job.id, harness.other_job.id)),
+                        MatchResult.resume_id.in_((low.id, high.id)),
+                    )
+                )
+            ).all()
+        )
+    assert len(rows) == 4
+    assert {row.generation for row in rows} == {1}
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_cross_job_trigger_and_criteria_use_same_resume_lock_order(
+    match_trigger_postgres: MatchTriggerHarness,
+) -> None:
+    harness = match_trigger_postgres
+    low, high = sorted(harness.hr_resumes[:2], key=lambda item: item.id.int)
+    match_ids = sorted((uuid.uuid4(), uuid.uuid4()), key=lambda item: item.int)
+    match_high = _stale_match(harness.other_job, high, "COMPLETED", 7)
+    match_low = _stale_match(harness.other_job, low, "COMPLETED", 11)
+    match_high.id = match_ids[0]
+    match_low.id = match_ids[1]
+    match_high.resume_revision = high.revision
+    match_low.resume_revision = low.revision
+    match_high.job_revision = harness.other_job.revision
+    match_low.job_revision = harness.other_job.revision
+    async with harness.session_factory() as setup:
+        setup.add_all((match_high, match_low))
+        await setup.commit()
+
+    criteria = JobCriteriaRequest.model_validate(
+        {
+            "min_experience_years": 4.0,
+            "skills": [
+                {
+                    "skill_id": harness.skill_id,
+                    "importance": "MANDATORY",
+                    "min_years_required": 2.0,
+                }
+            ],
+        }
+    )
+    async with (
+        harness.session_factory() as blocker,
+        harness.session_factory() as trigger_session,
+        harness.session_factory() as criteria_session,
+        harness.session_factory() as observer,
+    ):
+        actor = await criteria_session.get(User, harness.hr.id)
+        assert actor is not None
+        locked = await blocker.scalar(select(Resume).where(Resume.id == low.id).with_for_update())
+        assert locked is not None
+        blocker_pid = await blocker.scalar(text("SELECT pg_backend_pid()"))
+        trigger_pid = await trigger_session.scalar(text("SELECT pg_backend_pid()"))
+        criteria_pid = await criteria_session.scalar(text("SELECT pg_backend_pid()"))
+        assert blocker_pid is not None and trigger_pid is not None and criteria_pid is not None
+
+        trigger_task = asyncio.create_task(
+            calculate_matches(
+                trigger_session,
+                current_user=harness.hr,
+                payload=_request(harness.job, (high, low)),
+                dispatcher=RecordingDispatcher(),
+            )
+        )
+        criteria_task: asyncio.Task[Any] | None = None
+        try:
+            await _wait_for_database_blocker(
+                observer,
+                waiter_pid=trigger_pid,
+                blocker_pid=blocker_pid,
+            )
+            criteria_task = asyncio.create_task(
+                update_job_criteria(
+                    criteria_session,
+                    current_user=actor,
+                    job_id=harness.other_job.id,
+                    payload=criteria,
+                )
+            )
+            criteria_blockers = await _wait_for_any_database_blocker(
+                observer,
+                waiter_pid=criteria_pid,
+            )
+            assert blocker_pid in criteria_blockers or trigger_pid in criteria_blockers
+            await blocker.commit()
+            await asyncio.wait_for(
+                asyncio.gather(trigger_task, criteria_task),
+                timeout=10,
+            )
+        finally:
+            if blocker.in_transaction():
+                await blocker.rollback()
+            tasks = [trigger_task, criteria_task]
+            for task in tasks:
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in tasks if task is not None), return_exceptions=True
+            )
+
+    async with harness.session_factory() as observer:
+        job_b = await observer.get(JobDescription, harness.other_job.id)
+        job_a_matches = list(
+            (
+                await observer.scalars(
+                    select(MatchResult)
+                    .where(MatchResult.job_id == harness.job.id)
+                    .order_by(MatchResult.resume_id.asc())
+                )
+            ).all()
+        )
+        job_b_matches = list(
+            (
+                await observer.scalars(
+                    select(MatchResult)
+                    .where(MatchResult.job_id == harness.other_job.id)
+                    .order_by(MatchResult.resume_id.asc())
+                )
+            ).all()
+        )
+    assert job_b is not None and job_b.revision == 4
+    assert len(job_a_matches) == 2 and len(job_b_matches) == 2
+    assert {row.generation for row in job_a_matches} == {1}
+    assert {row.generation for row in job_b_matches} == {8, 12}
+    for row in (*job_a_matches, *job_b_matches):
+        assert row.status == "PENDING"
+        assert row.overall_score is None
+        assert row.matched_skills == [] and row.missing_skills == []
+        assert row.embedding_model is None and row.calculated_at is None
+    assert {row.job_revision for row in job_a_matches} == {harness.job.revision}
+    assert {row.job_revision for row in job_b_matches} == {4}
+    assert {row.resume_revision for row in (*job_a_matches, *job_b_matches)} == {
+        low.revision,
+        high.revision,
+    }
 
 
 @pytest.mark.asyncio

@@ -232,7 +232,10 @@ async def update_job_criteria(
     payload: JobCriteriaRequest,
 ) -> JobCriteriaRecord:
     job = await session.scalar(
-        select(JobDescription).where(*_managed_job_filters(current_user, job_id)).with_for_update()
+        select(JobDescription)
+        .where(*_managed_job_filters(current_user, job_id))
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
     if job is None:
         raise APIError(404, "JOB_NOT_FOUND", "Job not found")
@@ -256,15 +259,42 @@ async def update_job_criteria(
 
     now = datetime.now(UTC)
     try:
-        match_rows = (
-            await session.execute(
-                select(MatchResult, Resume.revision)
-                .join(Resume, Resume.id == MatchResult.resume_id)
-                .where(MatchResult.job_id == job.id)
-                .order_by(MatchResult.id.asc())
-                .with_for_update(of=(MatchResult, Resume))
+        resume_ids = tuple(
+            (
+                await session.scalars(
+                    select(MatchResult.resume_id)
+                    .where(MatchResult.job_id == job.id)
+                    .order_by(MatchResult.resume_id.asc())
+                )
+            ).all()
+        )
+        locked_resumes = (
+            tuple(
+                (
+                    await session.scalars(
+                        select(Resume)
+                        .where(Resume.id.in_(resume_ids))
+                        .order_by(Resume.id.asc())
+                        .execution_options(populate_existing=True)
+                        .with_for_update()
+                    )
+                ).all()
             )
-        ).all()
+            if resume_ids
+            else ()
+        )
+        resume_revisions = {resume.id: resume.revision for resume in locked_resumes}
+        matches = tuple(
+            (
+                await session.scalars(
+                    select(MatchResult)
+                    .where(MatchResult.job_id == job.id)
+                    .order_by(MatchResult.id.asc())
+                    .execution_options(populate_existing=True)
+                    .with_for_update()
+                )
+            ).all()
+        )
 
         await session.execute(delete(JobSkill).where(JobSkill.job_id == job.id))
         replacement_skills = tuple(
@@ -286,9 +316,9 @@ async def update_job_criteria(
         job.revision += 1
         job.updated_at = now
 
-        for match, resume_revision in match_rows:
+        for match in matches:
             match.generation += 1
-            match.resume_revision = resume_revision
+            match.resume_revision = resume_revisions[match.resume_id]
             match.job_revision = job.revision
             match.status = MatchStatus.PENDING.value
             match.overall_score = None
