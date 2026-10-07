@@ -14,10 +14,12 @@ import pytest
 
 from app.core.config import Settings
 from app.services.job_dispatcher import JOB_PARSE_TASK_NAME
+from app.services.match_dispatcher import MATCH_TASK_NAME
 from app.services.resume_dispatcher import RESUME_PARSE_TASK_NAME
 from app.tasks import celery_tasks, worker_runtime
 from app.tasks.celery_app import QueueRuntimeUnavailable, create_celery_app
 from app.workers.job_parse_worker import JobParseTaskOutcome
+from app.workers.match_worker import MatchTaskOutcome
 from app.workers.resume_parse_worker import ResumeParseTaskOutcome
 
 
@@ -25,6 +27,7 @@ class FakeRuntime:
     def __init__(self) -> None:
         self.resume_calls: list[tuple[uuid.UUID, int]] = []
         self.job_calls: list[tuple[uuid.UUID, int]] = []
+        self.match_calls: list[tuple[uuid.UUID, int, int, int, str]] = []
         self.closed = False
         self.close_calls = 0
 
@@ -39,6 +42,19 @@ class FakeRuntime:
     def close(self) -> None:
         self.close_calls += 1
         self.closed = True
+
+    def run_match(
+        self,
+        match_id: uuid.UUID,
+        generation: int,
+        resume_revision: int,
+        job_revision: int,
+        algorithm_version: str,
+    ) -> MatchTaskOutcome:
+        self.match_calls.append(
+            (match_id, generation, resume_revision, job_revision, algorithm_version)
+        )
+        return MatchTaskOutcome.COMPLETED
 
 
 class FakeSignal:
@@ -160,13 +176,17 @@ def test_tasks_validate_payload_and_delegate_to_same_runtime(
     monkeypatch.setattr(celery_tasks, "get_worker_runtime", lambda: runtime)
     resume_id = uuid.uuid4()
     job_id = uuid.uuid4()
+    match_id = uuid.uuid4()
 
     resume_result = celery_tasks.execute_resume_parse_task(str(resume_id), 3)
     job_result = celery_tasks.execute_job_parse_task(str(job_id), 5)
+    match_result = celery_tasks.execute_match_task(str(match_id), 9, 3, 5, "hybrid-v1")
 
     assert resume_result == job_result == "PARSED"
     assert runtime.resume_calls == [(resume_id, 3)]
     assert runtime.job_calls == [(job_id, 5)]
+    assert match_result == "COMPLETED"
+    assert runtime.match_calls == [(match_id, 9, 3, 5, "hybrid-v1")]
 
 
 @pytest.mark.parametrize(
@@ -208,6 +228,8 @@ def test_celery_app_uses_safe_json_no_result_configuration() -> None:
     assert application.configuration["enable_utc"] is True
     assert application.registered[RESUME_PARSE_TASK_NAME][1] is True
     assert application.registered[JOB_PARSE_TASK_NAME][1] is True
+    assert application.registered[MATCH_TASK_NAME][1] is True
+    assert application.registered[MATCH_TASK_NAME][0] is celery_tasks.execute_match_task
     assert len(signal.connections) == 1
 
 
@@ -244,7 +266,7 @@ def test_runtime_singleton_is_pid_aware_and_shutdown_is_idempotent(
     assert created[0].closed is False
 
 
-def test_shared_worker_runtime_reuses_runner_engine_and_provider_for_resume_job_resume(
+def test_shared_worker_runtime_reuses_runner_engine_for_resume_job_match_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resource_observations: list[tuple[str, int, int, int]] = []
@@ -281,10 +303,21 @@ def test_shared_worker_runtime_reuses_runner_engine_and_provider_for_resume_job_
         )
         return JobParseTaskOutcome.DISCARDED
 
+    match_id = uuid.uuid4()
+
+    async def process_match(*args: Any, **kwargs: Any) -> MatchTaskOutcome:
+        assert args == (match_id, 8, 3, 7, "hybrid-v1")
+        assert set(kwargs) == {"session_factory"}
+        resource_observations.append(
+            ("match", id(asyncio.get_running_loop()), id(kwargs["session_factory"]), 0)
+        )
+        return MatchTaskOutcome.DISCARDED
+
     engine = FakeEngine()
     embedding_provider = object()
     monkeypatch.setattr(worker_runtime, "process_resume_parse_task", process_resume)
     monkeypatch.setattr(worker_runtime, "process_job_parse_task", process_job)
+    monkeypatch.setattr(worker_runtime, "process_match_task", process_match)
     monkeypatch.setattr(worker_runtime, "async_sessionmaker", lambda *args, **kwargs: object())
     runtime = worker_runtime.ParseWorkerRuntime(
         Settings(_env_file=None),
@@ -295,13 +328,55 @@ def test_shared_worker_runtime_reuses_runner_engine_and_provider_for_resume_job_
 
     assert runtime.run_resume(uuid.uuid4(), 1) == ResumeParseTaskOutcome.DISCARDED
     assert runtime.run_job(uuid.uuid4(), 2) == JobParseTaskOutcome.DISCARDED
+    assert runtime.run_match(match_id, 8, 3, 7, "hybrid-v1") == MatchTaskOutcome.DISCARDED
     assert runtime.run_resume(uuid.uuid4(), 3) == ResumeParseTaskOutcome.DISCARDED
     runtime.close()
     runtime.close()
 
-    assert [observation[0] for observation in resource_observations] == ["resume", "job", "resume"]
+    assert [observation[0] for observation in resource_observations] == [
+        "resume",
+        "job",
+        "match",
+        "resume",
+    ]
     assert len({observation[1] for observation in resource_observations}) == 1
     assert len({observation[2] for observation in resource_observations}) == 1
-    assert {observation[3] for observation in resource_observations} == {id(embedding_provider)}
+    assert {item[3] for item in resource_observations if item[0] != "match"} == {
+        id(embedding_provider)
+    }
     assert disposal_loop_ids == [resource_observations[0][1]]
     assert engine.disposed is True
+    with pytest.raises(RuntimeError, match="closed"):
+        runtime.run_match(match_id, 8, 3, 7, "hybrid-v1")
+
+
+@pytest.mark.parametrize("index", [1, 2, 3])
+@pytest.mark.parametrize("invalid", [0, -1, True, "1", 1.0, None, 2**63])
+def test_match_task_rejects_invalid_versions_before_runtime_creation(
+    monkeypatch: pytest.MonkeyPatch, index: int, invalid: Any
+) -> None:
+    def unavailable() -> None:
+        raise AssertionError("Invalid payload initialized runtime")
+
+    monkeypatch.setattr(celery_tasks, "get_worker_runtime", unavailable)
+    payload: list[Any] = [str(uuid.uuid4()), 1, 2, 3, "hybrid-v1"]
+    payload[index] = invalid
+    with pytest.raises(ValueError):
+        celery_tasks.execute_match_task(*payload)
+
+
+@pytest.mark.parametrize(
+    ("index", "invalid"),
+    [(0, "invalid"), (0, None), (0, 123), (4, ""), (4, " "), (4, "x" * 51), (4, 1)],
+)
+def test_match_task_rejects_invalid_identity_or_algorithm_before_runtime_creation(
+    monkeypatch: pytest.MonkeyPatch, index: int, invalid: Any
+) -> None:
+    def unavailable() -> None:
+        raise AssertionError("Invalid payload initialized runtime")
+
+    monkeypatch.setattr(celery_tasks, "get_worker_runtime", unavailable)
+    payload: list[Any] = [str(uuid.uuid4()), 1, 2, 3, "hybrid-v1"]
+    payload[index] = invalid
+    with pytest.raises(ValueError):
+        celery_tasks.execute_match_task(*payload)
