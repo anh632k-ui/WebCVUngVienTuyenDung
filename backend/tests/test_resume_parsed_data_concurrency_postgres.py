@@ -643,6 +643,10 @@ async def test_manual_edit_commits_while_download_waits_without_extra_revision_o
         harness.session_factory() as downloader,
         harness.session_factory() as editor,
     ):
+        downloader_pid = await downloader.scalar(text("SELECT pg_backend_pid()"))
+        editor_pid = await editor.scalar(text("SELECT pg_backend_pid()"))
+        assert downloader_pid is not None and editor_pid is not None
+        assert downloader_pid != editor_pid
         download_actor = await _actor(downloader, harness.candidate_id)
         edit_actor = await _actor(editor, harness.candidate_id)
         download_task = asyncio.create_task(
@@ -683,8 +687,19 @@ async def test_manual_edit_commits_while_download_waits_without_extra_revision_o
         match = await verify.get(MatchResult, harness.match_id)
     assert resume is not None and profile is not None and match is not None
     assert resume.revision == 2
+    assert resume.is_manually_edited
+    assert resume.embedding_model == BGE_M3_MODEL_NAME
+    assert resume.embedding_preprocessing_version == "resume-text-v1"
+    assert all(abs(value - 0.44) < 1e-6 for value in (resume.resume_embedding or []))
     assert profile.full_name == "edited-during-download"
-    assert (match.generation, match.resume_revision) == (2, 2)
+    assert (match.generation, match.resume_revision, match.job_revision) == (2, 2, 1)
+    assert match.status == "PENDING"
+    assert match.overall_score is None and match.skill_score is None
+    assert match.semantic_score is None and match.experience_score is None
+    assert match.matched_skills == [] and match.missing_skills == []
+    assert match.gap_analysis_summary is None and match.error_message is None
+    assert match.embedding_model is None and match.embedding_preprocessing_version is None
+    assert match.calculated_at is None
 
 
 @pytest.mark.asyncio

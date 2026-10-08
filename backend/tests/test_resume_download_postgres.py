@@ -4,12 +4,15 @@ import asyncio
 import hashlib
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, text, update
+from sqlalchemy import delete, event, inspect, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -64,6 +67,8 @@ class GatedStorage(TransactionCheckingStorage):
 
 
 class CacheAfterReadStorage(GatedStorage):
+    """Test-only injector for attached stale ORM state after the real initial guard."""
+
     def __init__(self, content: bytes, *, session: AsyncSession, resume_id: uuid.UUID) -> None:
         super().__init__(content)
         self.session = session
@@ -81,12 +86,51 @@ class CacheAfterReadStorage(GatedStorage):
         assert self.session is not None and not self.session.in_transaction()
         self.strong_reference = await self.session.get(Resume, self.resume_id)
         assert self.strong_reference is not None
-        self.session.expunge(self.strong_reference)
-        await self.session.rollback()
+        await self.session.commit()
+        assert inspect(self.strong_reference).persistent
+        assert self.strong_reference in self.session
+        assert not self.session.in_transaction()
         self.calls += 1
         self.entered.set()
         await self.release.wait()
         return self.content
+
+
+class PendingMutationStorage(TransactionCheckingStorage):
+    def __init__(self, content: bytes, *, session: AsyncSession, duplicate: User) -> None:
+        super().__init__(content)
+        self.session = session
+        self.duplicate = duplicate
+
+    async def read_bytes_bounded(
+        self,
+        key: str,
+        *,
+        expected_size: int,
+        maximum_size: int,
+    ) -> bytes:
+        result = await super().read_bytes_bounded(
+            key,
+            expected_size=expected_size,
+            maximum_size=maximum_size,
+        )
+        assert self.session is not None
+        self.session.add(self.duplicate)
+        return result
+
+
+class AutoflushEnabledSession:
+    """Negative-control proxy that disables only SQLAlchemy's no-autoflush guard."""
+
+    def __init__(self, delegate: AsyncSession) -> None:
+        self.delegate = delegate
+
+    @property
+    def no_autoflush(self) -> Any:
+        return nullcontext()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.delegate, name)
 
 
 @dataclass(frozen=True)
@@ -105,6 +149,20 @@ def make_user(unique: str, name: str, role: str) -> User:
         password_hash="not-used",
         full_name=f"Download {name}",
         role=role,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def duplicate_user(source: User, marker: str) -> User:
+    now = datetime.now(UTC)
+    return User(
+        id=uuid.uuid4(),
+        email=source.email,
+        password_hash="not-used",
+        full_name=f"Autoflush negative control {marker}",
+        role="CANDIDATE",
         is_active=True,
         created_at=now,
         updated_at=now,
@@ -369,6 +427,11 @@ async def test_final_guard_ignores_stale_identity_created_after_initial_transact
         harness.session_factory() as downloader,
         harness.session_factory() as deleter,
     ):
+        downloader_pid = await downloader.scalar(text("SELECT pg_backend_pid()"))
+        deleter_pid = await deleter.scalar(text("SELECT pg_backend_pid()"))
+        await deleter.rollback()
+        assert downloader_pid is not None and deleter_pid is not None
+        assert downloader_pid != deleter_pid
         storage = CacheAfterReadStorage(
             harness.content,
             session=downloader,
@@ -392,6 +455,11 @@ async def test_final_guard_ignores_stale_identity_created_after_initial_transact
             )
             await deleter.commit()
             assert not storage.strong_reference.is_deleted
+            assert inspect(storage.strong_reference).persistent
+            assert storage.strong_reference in downloader
+            bad_identity_map_decision = await downloader.get(Resume, resume_id)
+            assert bad_identity_map_decision is storage.strong_reference
+            assert not bad_identity_map_decision.is_deleted
             storage.release.set()
             with pytest.raises(APIError) as captured:
                 await asyncio.wait_for(task, timeout=5)
@@ -405,32 +473,141 @@ async def test_final_guard_ignores_stale_identity_created_after_initial_transact
 
 
 @pytest.mark.asyncio
-async def test_visibility_read_does_not_autoflush_unrelated_pending_mutation(
+async def test_initial_visibility_read_does_not_flush_pending_duplicate_user(
     download_postgres: DownloadHarness,
 ) -> None:
     harness = download_postgres
-    original_name = "Download other"
     async with harness.session_factory() as downloader:
         current_user = await actor(downloader, harness.users["owner"])
-        unrelated = await downloader.get(User, harness.users["other"])
-        assert unrelated is not None and unrelated.full_name == original_name
-        unrelated.full_name = "must-not-be-flushed"
+        existing = await downloader.get(User, harness.users["other"])
+        assert existing is not None
+        await downloader.commit()
+        downloader.add(duplicate_user(existing, "initial"))
         storage = TransactionCheckingStorage(harness.content)
-        with pytest.raises(APIError):
-            await download_resume_source(
-                downloader,
-                current_user=current_user,
-                resume_id=uuid.uuid4(),
-                storage=storage,  # type: ignore[arg-type]
-            )
+        flushes = 0
+
+        def record_flush(*_: object) -> None:
+            nonlocal flushes
+            flushes += 1
+
+        event.listen(downloader.sync_session, "before_flush", record_flush)
+        try:
+            with pytest.raises(APIError) as captured:
+                await download_resume_source(
+                    downloader,
+                    current_user=current_user,
+                    resume_id=uuid.uuid4(),
+                    storage=storage,  # type: ignore[arg-type]
+                )
+        finally:
+            event.remove(downloader.sync_session, "before_flush", record_flush)
+        assert captured.value.status_code == 404
+        assert flushes == 0
         assert storage.calls == 0
 
-    async with harness.session_factory() as verify:
-        persisted_name = await verify.scalar(
-            text("SELECT full_name FROM users WHERE id = :id"),
-            {"id": harness.users["other"]},
+
+@pytest.mark.asyncio
+async def test_initial_no_autoflush_negative_control_reaches_real_constraint(
+    download_postgres: DownloadHarness,
+) -> None:
+    harness = download_postgres
+    async with harness.session_factory() as downloader:
+        current_user = await actor(downloader, harness.users["owner"])
+        existing = await downloader.get(User, harness.users["other"])
+        assert existing is not None
+        await downloader.commit()
+        downloader.add(duplicate_user(existing, "initial-negative"))
+        flushes = 0
+
+        def record_flush(*_: object) -> None:
+            nonlocal flushes
+            flushes += 1
+
+        event.listen(downloader.sync_session, "before_flush", record_flush)
+        try:
+            with pytest.raises(IntegrityError):
+                await download_resume_source(
+                    AutoflushEnabledSession(downloader),  # type: ignore[arg-type]
+                    current_user=current_user,
+                    resume_id=uuid.uuid4(),
+                    storage=TransactionCheckingStorage(harness.content),  # type: ignore[arg-type]
+                )
+        finally:
+            event.remove(downloader.sync_session, "before_flush", record_flush)
+            await downloader.rollback()
+        assert flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_final_visibility_read_does_not_flush_mutation_added_after_initial_rollback(
+    download_postgres: DownloadHarness,
+) -> None:
+    harness = download_postgres
+    async with harness.session_factory() as downloader:
+        current_user = await actor(downloader, harness.users["owner"])
+        existing = await downloader.get(User, harness.users["other"])
+        assert existing is not None
+        duplicate = duplicate_user(existing, "final")
+        storage = PendingMutationStorage(
+            harness.content,
+            session=downloader,
+            duplicate=duplicate,
         )
-    assert persisted_name == original_name
+        flushes = 0
+
+        def record_flush(*_: object) -> None:
+            nonlocal flushes
+            flushes += 1
+
+        event.listen(downloader.sync_session, "before_flush", record_flush)
+        try:
+            result = await download_resume_source(
+                downloader,
+                current_user=current_user,
+                resume_id=harness.resumes["PENDING"],
+                storage=storage,  # type: ignore[arg-type]
+            )
+        finally:
+            event.remove(downloader.sync_session, "before_flush", record_flush)
+        assert result.content == harness.content
+        assert storage.calls == 1
+        assert flushes == 0
+
+
+@pytest.mark.asyncio
+async def test_final_no_autoflush_negative_control_reaches_real_constraint(
+    download_postgres: DownloadHarness,
+) -> None:
+    harness = download_postgres
+    async with harness.session_factory() as downloader:
+        current_user = await actor(downloader, harness.users["owner"])
+        existing = await downloader.get(User, harness.users["other"])
+        assert existing is not None
+        storage = PendingMutationStorage(
+            harness.content,
+            session=downloader,
+            duplicate=duplicate_user(existing, "final-negative"),
+        )
+        flushes = 0
+
+        def record_flush(*_: object) -> None:
+            nonlocal flushes
+            flushes += 1
+
+        event.listen(downloader.sync_session, "before_flush", record_flush)
+        try:
+            with pytest.raises(IntegrityError):
+                await download_resume_source(
+                    AutoflushEnabledSession(downloader),  # type: ignore[arg-type]
+                    current_user=current_user,
+                    resume_id=harness.resumes["PENDING"],
+                    storage=storage,  # type: ignore[arg-type]
+                )
+        finally:
+            event.remove(downloader.sync_session, "before_flush", record_flush)
+            await downloader.rollback()
+        assert storage.calls == 1
+        assert flushes == 1
 
 
 @pytest.mark.asyncio
