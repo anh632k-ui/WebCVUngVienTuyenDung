@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -31,8 +32,14 @@ from app.schemas.resume_schema import ResumeParsedDataUpdate
 from app.services.job_service import update_job_criteria
 from app.services.match_recovery import select_match_recovery_candidates
 from app.services.match_service import calculate_matches
-from app.services.resume_service import soft_delete_resume, update_resume_parsed_data
+from app.services.resume_service import (
+    download_resume_source,
+    soft_delete_resume,
+    update_resume_parsed_data,
+)
 from app.workers import match_worker, resume_parse_worker
+
+DOWNLOAD_SOURCE = b"%PDF-1.7\n" + (b"original-source-byte" * 6) + b"!"
 
 
 class ConstantProvider:
@@ -59,6 +66,28 @@ class GatedProvider(ConstantProvider):
         self.entered.set()
         await self.release.wait()
         return [self.value] * self.dimension
+
+
+class GatedDownloadStorage:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def read_bytes_bounded(
+        self,
+        key: str,
+        *,
+        expected_size: int,
+        maximum_size: int,
+    ) -> bytes:
+        assert key.endswith("/source")
+        assert expected_size == len(DOWNLOAD_SOURCE)
+        assert maximum_size == 5_242_880
+        self.calls += 1
+        self.entered.set()
+        await self.release.wait()
+        return DOWNLOAD_SOURCE
 
 
 class RecordingMatchDispatcher:
@@ -260,10 +289,10 @@ async def parsed_data_race() -> AsyncIterator[ParsedDataRaceHarness]:
         id=uuid.uuid4(),
         owner_user_id=candidate.id,
         file_name="race.pdf",
-        storage_key=f"parsed-race/{unique}/source",
-        file_size=128,
+        storage_key="placeholder",
+        file_size=len(DOWNLOAD_SOURCE),
         mime_type="application/pdf",
-        create_request_fingerprint=uuid.uuid4().hex * 2,
+        create_request_fingerprint=hashlib.sha256(DOWNLOAD_SOURCE).hexdigest(),
         revision=1,
         parsing_status="PARSED",
         raw_text="original source text",
@@ -278,6 +307,7 @@ async def parsed_data_race() -> AsyncIterator[ParsedDataRaceHarness]:
         parsed_at=now,
         deleted_at=None,
     )
+    resume.storage_key = f"resumes/{resume.id}/source"
     job = _job(unique, "primary", hr.id)
     second_job = _job(unique, "second", hr.id)
     match = MatchResult(
@@ -530,6 +560,146 @@ async def _create_criteria_topology(
         secondary_resume_match_id,
         second_job_match_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_matched_job_owner_still_cannot_download_candidate_resume(
+    parsed_data_race: ParsedDataRaceHarness,
+) -> None:
+    harness = parsed_data_race
+    storage = GatedDownloadStorage()
+    storage.release.set()
+    async with harness.session_factory() as session:
+        with pytest.raises(APIError) as captured:
+            await download_resume_source(
+                session,
+                current_user=await _actor(session, harness.hr_id),
+                resume_id=harness.resume_id,
+                storage=storage,  # type: ignore[arg-type]
+            )
+    assert (captured.value.status_code, captured.value.code) == (404, "RESUME_NOT_FOUND")
+    assert storage.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_download_is_read_only_for_resume_aggregate_and_match(
+    parsed_data_race: ParsedDataRaceHarness,
+) -> None:
+    harness = parsed_data_race
+
+    async def snapshot(session: AsyncSession) -> tuple[object, ...]:
+        resume = await session.get(Resume, harness.resume_id)
+        profile = await session.scalar(
+            select(CandidateProfile).where(CandidateProfile.resume_id == harness.resume_id)
+        )
+        match = await session.get(MatchResult, harness.match_id)
+        assert resume is not None and profile is not None and match is not None
+        return (
+            resume.revision,
+            resume.parsing_status,
+            resume.updated_at,
+            resume.is_manually_edited,
+            profile.full_name,
+            match.generation,
+            match.status,
+            match.updated_at,
+            match.resume_revision,
+            match.job_revision,
+        )
+
+    async with harness.session_factory() as observer:
+        before = await snapshot(observer)
+    storage = GatedDownloadStorage()
+    storage.release.set()
+    async with harness.session_factory() as downloader:
+        first = await download_resume_source(
+            downloader,
+            current_user=await _actor(downloader, harness.candidate_id),
+            resume_id=harness.resume_id,
+            storage=storage,  # type: ignore[arg-type]
+        )
+        repeat_actor = await _actor(downloader, harness.candidate_id)
+        second = await download_resume_source(
+            downloader,
+            current_user=repeat_actor,
+            resume_id=harness.resume_id,
+            storage=storage,  # type: ignore[arg-type]
+        )
+    async with harness.session_factory() as observer:
+        after = await snapshot(observer)
+
+    assert first.content == second.content == DOWNLOAD_SOURCE
+    assert storage.calls == 2
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_manual_edit_commits_while_download_waits_without_extra_revision_or_generation(
+    parsed_data_race: ParsedDataRaceHarness,
+) -> None:
+    harness = parsed_data_race
+    storage = GatedDownloadStorage()
+    async with (
+        harness.session_factory() as downloader,
+        harness.session_factory() as editor,
+    ):
+        downloader_pid = await downloader.scalar(text("SELECT pg_backend_pid()"))
+        editor_pid = await editor.scalar(text("SELECT pg_backend_pid()"))
+        assert downloader_pid is not None and editor_pid is not None
+        assert downloader_pid != editor_pid
+        download_actor = await _actor(downloader, harness.candidate_id)
+        edit_actor = await _actor(editor, harness.candidate_id)
+        download_task = asyncio.create_task(
+            download_resume_source(
+                downloader,
+                current_user=download_actor,
+                resume_id=harness.resume_id,
+                storage=storage,  # type: ignore[arg-type]
+            )
+        )
+        try:
+            await asyncio.wait_for(storage.entered.wait(), timeout=5)
+            edited = await asyncio.wait_for(
+                update_resume_parsed_data(
+                    editor,
+                    current_user=edit_actor,
+                    resume_id=harness.resume_id,
+                    payload=_payload("edited-during-download", harness.skill_id),
+                    embedding_provider=ConstantProvider(0.44),
+                ),
+                timeout=10,
+            )
+            assert edited.resume.revision == 2
+            storage.release.set()
+            downloaded = await asyncio.wait_for(download_task, timeout=5)
+        finally:
+            storage.release.set()
+            if not download_task.done():
+                download_task.cancel()
+            await asyncio.gather(download_task, return_exceptions=True)
+
+    assert downloaded.content == DOWNLOAD_SOURCE
+    async with harness.session_factory() as verify:
+        resume = await verify.get(Resume, harness.resume_id)
+        profile = await verify.scalar(
+            select(CandidateProfile).where(CandidateProfile.resume_id == harness.resume_id)
+        )
+        match = await verify.get(MatchResult, harness.match_id)
+    assert resume is not None and profile is not None and match is not None
+    assert resume.revision == 2
+    assert resume.is_manually_edited
+    assert resume.embedding_model == BGE_M3_MODEL_NAME
+    assert resume.embedding_preprocessing_version == "resume-text-v1"
+    assert all(abs(value - 0.44) < 1e-6 for value in (resume.resume_embedding or []))
+    assert profile.full_name == "edited-during-download"
+    assert (match.generation, match.resume_revision, match.job_revision) == (2, 2, 1)
+    assert match.status == "PENDING"
+    assert match.overall_score is None and match.skill_score is None
+    assert match.semantic_score is None and match.experience_score is None
+    assert match.matched_skills == [] and match.missing_skills == []
+    assert match.gap_analysis_summary is None and match.error_message is None
+    assert match.embedding_model is None and match.embedding_preprocessing_version is None
+    assert match.calculated_at is None
 
 
 @pytest.mark.asyncio

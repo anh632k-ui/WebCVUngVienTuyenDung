@@ -9,6 +9,7 @@ EXPECTED_METHODS = {
     "/api/v1/admin/users/{id}": {"patch"},
     "/api/v1/resumes": {"get"},
     "/api/v1/resumes/{id}": {"get", "delete"},
+    "/api/v1/resumes/{id}/download": {"get"},
     "/api/v1/resumes/{id}/status": {"get"},
     "/api/v1/jobs": {"get", "post"},
     "/api/v1/jobs/{id}": {"get", "delete"},
@@ -29,6 +30,11 @@ def test_integrated_openapi_contains_every_completed_feature_route() -> None:
 
     assert paths["/api/v1/jobs/{id}"]["get"]["tags"] == ["Jobs"]
     assert paths["/api/v1/jobs/{id}/leaderboard"]["get"]["tags"] == ["Matching"]
+    download = paths["/api/v1/resumes/{id}/download"]["get"]
+    assert set(download["responses"]["200"]["content"]) == {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
 
 
 def test_integrated_app_has_no_duplicate_method_path_registrations() -> None:

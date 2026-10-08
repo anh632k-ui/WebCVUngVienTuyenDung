@@ -1,6 +1,6 @@
 import uuid
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Header, Query, Response, UploadFile, status
 
@@ -27,7 +27,10 @@ from app.schemas.resume_schema import (
 )
 from app.services.resume_dispatcher import ResumeParseDispatcher, get_resume_parse_dispatcher
 from app.services.resume_service import (
+    DOCX_MIME_TYPE,
     MAX_RESUME_FILE_SIZE,
+    PDF_MIME_TYPE,
+    download_resume_source,
     get_resume,
     get_resume_aggregate,
     list_resumes,
@@ -55,6 +58,17 @@ def get_resume_embedding_provider() -> EmbeddingProvider:
 
 
 ResumeEmbeddingDependency = Annotated[EmbeddingProvider, Depends(get_resume_embedding_provider)]
+
+DOWNLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "description": "Original resume file",
+        "content": {
+            PDF_MIME_TYPE: {"schema": {"type": "string", "format": "binary"}},
+            DOCX_MIME_TYPE: {"schema": {"type": "string", "format": "binary"}},
+        },
+    },
+    404: {"description": "Resume not found"},
+}
 
 
 @router.post("/upload", response_model=ResumeUploadResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -138,6 +152,35 @@ async def read_resume(
             experiences=[ExperienceData.model_validate(item) for item in aggregate.experiences],
             educations=[EducationData.model_validate(item) for item in aggregate.educations],
         )
+    )
+
+
+@router.get(
+    "/{id}/download",
+    response_class=Response,
+    responses=DOWNLOAD_RESPONSES,
+)
+async def download_resume(
+    id: uuid.UUID,
+    session: DatabaseSession,
+    current_user: CurrentUser,
+    storage: ResumeStorageDependency,
+) -> Response:
+    download = await download_resume_source(
+        session,
+        current_user=current_user,
+        resume_id=id,
+        storage=storage,
+    )
+    return Response(
+        content=download.content,
+        media_type=download.media_type,
+        headers={
+            "Content-Disposition": download.content_disposition,
+            "Content-Length": str(len(download.content)),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

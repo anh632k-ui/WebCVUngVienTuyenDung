@@ -20,7 +20,7 @@ from app.models.resume import CandidateProfile, Resume, ResumeEducation, ResumeE
 from app.models.skill import ResumeSkill
 from app.models.user import User
 from app.schemas.resume_schema import ParsingStatus
-from app.services.resume_service import ResumeAggregate
+from app.services.resume_service import PDF_MIME_TYPE, ResumeAggregate, ResumeDownload
 from main import app
 
 TEST_SECRET = "resume-read-unit-test-jwt-secret"
@@ -209,12 +209,32 @@ async def resume_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[ResumeAPI
         resume.deleted_at = now
         resume.updated_at = now
 
+    async def fake_download_resume(
+        _: Any,
+        *,
+        current_user: User,
+        resume_id: uuid.UUID,
+        storage: Any,
+    ) -> ResumeDownload:
+        del storage
+        resume = await fake_get_resume(session, current_user=current_user, resume_id=resume_id)
+        content = f"download:{resume.id}".encode()
+        return ResumeDownload(
+            content=content,
+            media_type=resume.mime_type,
+            content_disposition=(
+                f"attachment; filename=\"{resume.file_name}\"; filename*=UTF-8''{resume.file_name}"
+            ),
+        )
+
     monkeypatch.setattr(resume_endpoint, "list_resumes", fake_list_resumes)
     monkeypatch.setattr(resume_endpoint, "get_resume", fake_get_resume)
     monkeypatch.setattr(resume_endpoint, "get_resume_aggregate", fake_get_aggregate)
     monkeypatch.setattr(resume_endpoint, "soft_delete_resume", fake_soft_delete_resume)
+    monkeypatch.setattr(resume_endpoint, "download_resume_source", fake_download_resume)
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[resume_endpoint.get_resume_storage] = lambda: object()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         context = ResumeAPIContext(client, candidate, settings, resumes, resumes[3].id)
@@ -229,12 +249,66 @@ async def resume_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[ResumeAPI
         "/api/v1/resumes",
         f"/api/v1/resumes/{uuid.uuid4()}",
         f"/api/v1/resumes/{uuid.uuid4()}/status",
+        f"/api/v1/resumes/{uuid.uuid4()}/download",
     ],
 )
 async def test_resume_reads_require_authentication(resume_api: ResumeAPIContext, path: str) -> None:
     response = await resume_api.client.get(path)
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_resume_download_returns_exact_bytes_and_private_headers(
+    resume_api: ResumeAPIContext,
+) -> None:
+    target = resume_api.resumes[0]
+    response = await resume_api.client.get(
+        f"/api/v1/resumes/{target.id}/download",
+        headers=resume_api.headers,
+    )
+
+    assert response.status_code == 200
+    assert response.content == f"download:{target.id}".encode()
+    assert response.headers["content-type"] == PDF_MIME_TYPE
+    assert response.headers["content-length"] == str(len(response.content))
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-disposition"].startswith("attachment;")
+
+
+@pytest.mark.asyncio
+async def test_resume_download_validates_uuid(resume_api: ResumeAPIContext) -> None:
+    response = await resume_api.client.get(
+        "/api/v1/resumes/not-a-uuid/download",
+        headers=resume_api.headers,
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_hr_owner_downloads_docx_and_admin_downloads_another_users_resume(
+    resume_api: ResumeAPIContext,
+) -> None:
+    hr_owned = resume_api.resumes[3]
+    hr_owned.mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    resume_api.actor.id = hr_owned.owner_user_id
+    resume_api.actor.role = "HR"
+    hr_response = await resume_api.client.get(
+        f"/api/v1/resumes/{hr_owned.id}/download",
+        headers=resume_api.headers,
+    )
+    assert hr_response.status_code == 200
+    assert hr_response.headers["content-type"] == hr_owned.mime_type
+
+    resume_api.actor.id = uuid.uuid4()
+    resume_api.actor.role = "ADMIN"
+    admin_response = await resume_api.client.get(
+        f"/api/v1/resumes/{hr_owned.id}/download",
+        headers=resume_api.headers,
+    )
+    assert admin_response.status_code == 200
+    assert admin_response.content == f"download:{hr_owned.id}".encode()
 
 
 @pytest.mark.asyncio
