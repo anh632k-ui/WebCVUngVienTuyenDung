@@ -19,7 +19,13 @@ from app.models.resume import CandidateProfile, Resume
 from app.models.skill import JobSkill, Skill
 from app.models.user import User
 from app.schemas.auth_schema import UserRole
-from app.schemas.job_schema import JobCreateRequest, JobCriteriaRequest, JobStatus, ParsingStatus
+from app.schemas.job_schema import (
+    JobCreateRequest,
+    JobCriteriaRequest,
+    JobStatus,
+    JobUpdateRequest,
+    ParsingStatus,
+)
 from app.schemas.match_schema import MatchStatus
 from app.services.job_create_payload import job_create_fingerprint
 from app.services.job_dispatcher import JobParseDispatcher
@@ -121,6 +127,152 @@ async def create_job(
         raise
 
     await _dispatch_if_pending(dispatcher, job)
+    return job
+
+
+async def update_job(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    job_id: uuid.UUID,
+    payload: JobUpdateRequest,
+    dispatcher: JobParseDispatcher,
+) -> JobDescription:
+    actor_id = current_user.id
+    actor_role = current_user.role
+    if actor_role not in {UserRole.HR.value, UserRole.ADMIN.value}:
+        raise APIError(403, "INSUFFICIENT_PERMISSIONS", "Insufficient permissions")
+
+    filters: list[ColumnElement[bool]] = [
+        JobDescription.id == job_id,
+        JobDescription.is_deleted.is_(False),
+    ]
+    if actor_role == UserRole.HR.value:
+        filters.append(JobDescription.recruiter_id == actor_id)
+
+    publication: tuple[uuid.UUID, int] | None = None
+    try:
+        with session.no_autoflush:
+            job = await session.scalar(
+                select(JobDescription)
+                .where(*filters)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        if job is None:
+            raise APIError(404, "JOB_NOT_FOUND", "Job not found")
+
+        supplied = payload.model_fields_set
+        raw_changed = "raw_content" in supplied and payload.raw_content != job.raw_content
+        metadata_changes: dict[str, str | None] = {}
+        for field in ("title", "job_level", "location"):
+            if field in supplied:
+                value = getattr(payload, field)
+                if value != getattr(job, field):
+                    metadata_changes[field] = value
+
+        if not raw_changed and not metadata_changes:
+            session.expunge(job)
+            await session.rollback()
+            return job
+
+        if raw_changed:
+            with session.no_autoflush:
+                resume_ids = tuple(
+                    (
+                        await session.scalars(
+                            select(MatchResult.resume_id)
+                            .where(MatchResult.job_id == job.id)
+                            .order_by(MatchResult.resume_id.asc())
+                        )
+                    ).all()
+                )
+                locked_resumes = (
+                    tuple(
+                        (
+                            await session.scalars(
+                                select(Resume)
+                                .where(Resume.id.in_(resume_ids))
+                                .order_by(Resume.id.asc())
+                                .execution_options(populate_existing=True)
+                                .with_for_update()
+                            )
+                        ).all()
+                    )
+                    if resume_ids
+                    else ()
+                )
+                matches = tuple(
+                    (
+                        await session.scalars(
+                            select(MatchResult)
+                            .where(MatchResult.job_id == job.id)
+                            .order_by(MatchResult.id.asc())
+                            .execution_options(populate_existing=True)
+                            .with_for_update()
+                        )
+                    ).all()
+                )
+
+            resume_revisions = {resume.id: resume.revision for resume in locked_resumes}
+            now = datetime.now(UTC)
+            for field, value in metadata_changes.items():
+                setattr(job, field, value)
+            job.raw_content = payload.raw_content
+            job.revision += 1
+            job.status = JobStatus.DRAFT.value
+            job.parsing_status = ParsingStatus.PENDING.value
+            job.is_criteria_verified = False
+            job.job_embedding = None
+            job.embedding_model = None
+            job.embedding_preprocessing_version = None
+            job.parsed_at = None
+            job.parsing_error_message = None
+            job.updated_at = now
+
+            for match in matches:
+                match.generation += 1
+                match.resume_revision = resume_revisions[match.resume_id]
+                match.job_revision = job.revision
+                match.status = MatchStatus.PENDING.value
+                match.overall_score = None
+                match.skill_score = None
+                match.semantic_score = None
+                match.experience_score = None
+                match.matched_skills = []
+                match.missing_skills = []
+                match.gap_analysis_summary = None
+                match.error_message = None
+                match.embedding_model = None
+                match.embedding_preprocessing_version = None
+                match.calculated_at = None
+                match.updated_at = now
+            publication = (job.id, job.revision)
+        elif metadata_changes:
+            for field, value in metadata_changes.items():
+                setattr(job, field, value)
+            job.updated_at = datetime.now(UTC)
+
+        await session.flush()
+        await session.commit()
+    except APIError:
+        await session.rollback()
+        raise
+    except Exception:  # noqa: BLE001 - atomic Job/Match mutation must fully rollback
+        await session.rollback()
+        raise
+
+    if publication is not None:
+        published_job_id, published_revision = publication
+        try:
+            await dispatcher.dispatch(published_job_id, published_revision)
+        except Exception as error:  # noqa: BLE001 - committed PENDING revision is recoverable
+            logger.error(
+                "job_parse_dispatch_failed job_id=%s revision=%s error_type=%s",
+                published_job_id,
+                published_revision,
+                type(error).__name__,
+            )
     return job
 
 

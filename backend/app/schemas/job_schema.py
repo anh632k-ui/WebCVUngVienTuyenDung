@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 from unicodedata import normalize
 
 from pydantic import (
@@ -133,6 +133,57 @@ class JobCreateRequest(BaseModel):
     def validate_weight_sum(self) -> JobCreateRequest:
         if self.w_skill + self.w_semantic + self.w_experience != Decimal("1.000"):
             raise ValueError("Job weights must sum exactly to 1.000")
+        return self
+
+
+def _omitted_update_string() -> str:
+    # A default factory keeps the property optional in JSON Schema while the
+    # non-nullable annotation still rejects an explicit JSON null.
+    return cast(str, None)
+
+
+class JobUpdateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        validate_default=False,
+        json_schema_extra={"minProperties": 1},
+    )
+
+    title: str = Field(default_factory=_omitted_update_string, max_length=200)
+    job_level: str = Field(default_factory=_omitted_update_string, max_length=50)
+    location: str | None = Field(default=None, max_length=150)
+    raw_content: str = Field(default_factory=_omitted_update_string, min_length=1)
+
+    @field_validator("title", "job_level", mode="before")
+    @classmethod
+    def normalize_trimmed_text(cls, value: object) -> object:
+        return normalize("NFC", value).strip() if isinstance(value, str) else value
+
+    @field_validator("location", mode="before")
+    @classmethod
+    def normalize_location(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = normalize("NFC", value).strip()
+        return normalized or None
+
+    @field_validator("raw_content", mode="before")
+    @classmethod
+    def normalize_update_raw_content(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized_lines = value.replace("\r\n", "\n").replace("\r", "\n")
+        return normalize("NFC", normalized_lines)
+
+    @field_validator("title", "job_level", "location", "raw_content", mode="after")
+    @classmethod
+    def validate_update_text(cls, value: str | None) -> str | None:
+        return validate_job_create_text(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def require_at_least_one_field(self) -> JobUpdateRequest:
+        if not self.model_fields_set:
+            raise ValueError("At least one Job update field is required")
         return self
 
 

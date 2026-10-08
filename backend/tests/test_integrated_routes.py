@@ -12,7 +12,7 @@ EXPECTED_METHODS = {
     "/api/v1/resumes/{id}/download": {"get"},
     "/api/v1/resumes/{id}/status": {"get"},
     "/api/v1/jobs": {"get", "post"},
-    "/api/v1/jobs/{id}": {"get", "delete"},
+    "/api/v1/jobs/{id}": {"get", "put", "delete"},
     "/api/v1/jobs/{id}/status": {"patch"},
     "/api/v1/jobs/{id}/leaderboard": {"get"},
     "/api/v1/matching": {"get"},

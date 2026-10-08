@@ -16,6 +16,7 @@ from app.schemas.job_schema import (
     JobSkillCriterion,
     JobStatus,
     JobStatusRequest,
+    JobUpdateRequest,
     PaginatedJobsResponse,
     PaginationMeta,
     ParsingStatus,
@@ -29,6 +30,7 @@ from app.services.job_service import (
     get_job_criteria,
     list_jobs,
     soft_delete_job,
+    update_job,
     update_job_criteria,
 )
 
@@ -93,6 +95,24 @@ async def read_job(
     current_user: CurrentUser,
 ) -> JobResponse:
     job = await get_job(session, current_user=current_user, job_id=id)
+    return JobResponse(data=JobData.model_validate(job))
+
+
+@router.put("/{id}", response_model=JobResponse)
+async def replace_job_fields(
+    id: uuid.UUID,
+    payload: JobUpdateRequest,
+    session: DatabaseSession,
+    current_user: JobManager,
+    dispatcher: JobDispatcherDependency,
+) -> JobResponse:
+    job = await update_job(
+        session,
+        current_user=current_user,
+        job_id=id,
+        payload=payload,
+        dispatcher=dispatcher,
+    )
     return JobResponse(data=JobData.model_validate(job))
 
 
