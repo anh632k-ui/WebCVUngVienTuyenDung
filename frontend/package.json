@@ -11,9 +11,10 @@
     "test:unit": "node --experimental-strip-types --test tests/*.test.mts",
     "test:production": "node tests/production-http-smoke.mjs",
     "test:auth": "node tests/auth-http-smoke.mjs",
-    "test": "npm run test:unit && npm run test:production && npm run test:auth && npm run test:resume && npm run test:jobs",
+    "test": "npm run test:unit && npm run test:production && npm run test:auth && npm run test:resume && npm run test:jobs && npm run test:matching",
     "test:resume": "node tests/resume-http-smoke.mjs",
-    "test:jobs": "node tests/jobs-http-smoke.mjs"
+    "test:jobs": "node tests/jobs-http-smoke.mjs",
+    "test:matching": "node tests/matching-http-smoke.mjs"
   },
   "dependencies": {
     "next": "16.3.7",
