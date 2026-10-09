@@ -35,8 +35,8 @@ export function ResumeDetailClient({ id }: { id: string }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    void reload(controller.signal);
-    return () => controller.abort();
+    const timer = window.setTimeout(() => { if (!controller.signal.aborted) void reload(controller.signal); }, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
   }, [reload]);
 
   useEffect(() => {

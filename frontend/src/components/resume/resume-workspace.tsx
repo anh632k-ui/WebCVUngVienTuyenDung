@@ -42,8 +42,8 @@ export function ResumeWorkspace() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal);
-    return () => controller.abort();
+    const timer = window.setTimeout(() => { if (!controller.signal.aborted) void refresh(controller.signal); }, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
   }, [refresh]);
 
   useEffect(() => {
