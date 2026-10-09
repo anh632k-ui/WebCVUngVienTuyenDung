@@ -423,3 +423,15 @@ svg { flex: 0 0 auto; }
 .resume-hint { color: var(--muted); font-size: 12px; }
 @media (max-width: 768px) { .resume-panel { padding: 20px; } .resume-detail-grid { grid-template-columns: 1fr; } .resume-section-head { flex-direction: column; } }
 @media (max-width: 520px) { .resume-edit-grid { grid-template-columns: 1fr; } .resume-action-row .button { width: 100%; } }
+
+
+/* HR JD workspace: F04 */
+.job-heading { max-width: 830px; margin-bottom: 30px; }
+.job-heading h1 { color: var(--navy); font-size: clamp(30px, 4vw, 45px); line-height: 1.15; letter-spacing: -1.2px; margin: 5px 0 12px; }
+.job-heading p, .job-create-form p { color: var(--muted); font-size: 14px; }
+.job-workspace { display: grid; gap: 22px; }
+.job-create-form { margin-top: 18px; display: grid; gap: 16px; }
+.job-create-form > label { display: flex; flex-direction: column; gap: 7px; color: var(--navy); font-size: 13px; font-weight: 650; }
+.job-create-form input, .job-create-form select, .job-create-form textarea { border: 1px solid var(--border); border-radius: 9px; background: white; color: var(--text); padding: 10px 12px; font: inherit; min-height: 44px; max-width: 100%; }
+.job-create-form textarea { min-height: 200px; resize: vertical; }
+.job-create-form .resume-edit-row select { width: 100%; }
