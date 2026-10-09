@@ -450,3 +450,11 @@ svg { flex: 0 0 auto; }
 .match-summary { grid-column: 1/-1; }
 .match-summary p { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 640px) { .match-breakdown { grid-template-columns: 1fr; } }
+
+
+/* F05 Admin user management */
+.admin-row-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.admin-row-actions select { background: white; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; min-height: 38px; }
+.admin-row-actions button { background: white; border: 1px solid var(--border); color: var(--blue); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.admin-row-actions button:hover { background: #eff6ff; }
+.admin-row-actions button:disabled { opacity: .5; cursor: not-allowed; }
