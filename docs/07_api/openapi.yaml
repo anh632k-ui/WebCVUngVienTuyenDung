@@ -331,7 +331,7 @@ paths:
     put:
       tags: [Jobs]
       summary: Cập nhật trọng số
-      description: Direct mutation revision++ và invalidate Match; recalculate chỉ quyết định dispatch.
+      description: Chỉ Job current PARSED. Direct mutation revision++ và invalidate toàn bộ Match; recalculate chỉ quyết định best-effort dispatch sau commit. Persistence thành công luôn trả 200 dù publication lỗi.
       parameters: [{$ref: '#/components/parameters/UuidId'}]
       requestBody:
         required: true
@@ -808,6 +808,7 @@ components:
 
     WeightsRequest:
       type: object
+      additionalProperties: false
       required: [w_skill, w_semantic, w_experience]
       properties:
         w_skill: {type: number, minimum: 0, maximum: 1}

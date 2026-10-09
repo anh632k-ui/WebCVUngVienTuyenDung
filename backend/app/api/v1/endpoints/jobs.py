@@ -17,6 +17,7 @@ from app.schemas.job_schema import (
     JobStatus,
     JobStatusRequest,
     JobUpdateRequest,
+    JobWeightsRequest,
     PaginatedJobsResponse,
     PaginationMeta,
     ParsingStatus,
@@ -32,12 +33,15 @@ from app.services.job_service import (
     soft_delete_job,
     update_job,
     update_job_criteria,
+    update_job_weights,
 )
+from app.services.match_dispatcher import MatchDispatcher, get_match_dispatcher
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 JobManager = Annotated[User, Depends(require_roles(UserRole.HR, UserRole.ADMIN))]
 JobCreator = Annotated[User, Depends(require_roles(UserRole.HR))]
 JobDispatcherDependency = Annotated[JobParseDispatcher, Depends(get_job_parse_dispatcher)]
+MatchDispatcherDependency = Annotated[MatchDispatcher, Depends(get_match_dispatcher)]
 
 
 @router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
@@ -162,6 +166,24 @@ async def replace_job_criteria(
         payload=payload,
     )
     return _criteria_response(record)
+
+
+@router.put("/{id}/weights", response_model=JobResponse)
+async def replace_job_weights(
+    id: uuid.UUID,
+    payload: JobWeightsRequest,
+    session: DatabaseSession,
+    current_user: JobManager,
+    dispatcher: MatchDispatcherDependency,
+) -> JobResponse:
+    job = await update_job_weights(
+        session,
+        current_user=current_user,
+        job_id=id,
+        payload=payload,
+        dispatcher=dispatcher,
+    )
+    return JobResponse(data=job)
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)

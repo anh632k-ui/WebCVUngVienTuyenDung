@@ -16,13 +16,18 @@ if (Xem leaderboard?) then (Có)
   :200 LeaderboardResponse;
 else (Cập nhật weights)
   :PUT /jobs/{id}/weights;
-  :Require JD is_deleted=FALSE;
-  :Validate mỗi weight [0,1], tổng=1;
+  :Validate strict JSON numbers,
+fit NUMERIC(4,3), tổng Decimal=1.000;
   if (invalid?) then (Có)
     :422;
     stop
   endif
+  :Require owner/Admin;
   :BEGIN TRANSACTION;
+  :Lock non-deleted owned/current JD
+and require current PARSED;
+  :Lock Resume UUID ASC;
+  :Lock Match ID ASC;
   :Update weights;
   :job.revision++;
   :Invalidate related Match:
@@ -30,7 +35,8 @@ generation++, refresh revision snapshots,
 PENDING, clear stale payload;
   :COMMIT;
   if (recalculate=true?) then (Có)
-    :Dispatch task với generation/revision mới;
+    :Best-effort dispatch immutable tasks;
+    :Continue after individual publication failure;
   endif
   :200 JobResponse;
 endif

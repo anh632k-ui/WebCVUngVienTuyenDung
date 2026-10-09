@@ -19,7 +19,7 @@
 | UC15 Matching | FR-25..31,34..36,46 | act_uc15_matching | seq_matching | POST /matching/calculate | match_results generation/revisions/status CAS + linked delete state |
 | UC16 Results/Gap | FR-32,37,40,46 | act_uc16_gap_analysis | seq_gap_leaderboard | GET /matching + detail + gap | match_results + linked active resources |
 | UC17 Leaderboard | FR-33,46 | act_uc17_18_leaderboard_weights | seq_gap_leaderboard | GET /jobs/{id}/leaderboard | match_results + ownership + is_deleted joins |
-| UC18 Weights | FR-22,34 | act_uc17_18_leaderboard_weights | seq_job_criteria_weights | PUT /jobs/{id}/weights | job revision + match generation |
+| UC18 Weights | FR-22,34,45 | act_uc17_18_leaderboard_weights | seq_job_criteria_weights | PUT /jobs/{id}/weights | PARSED guard + job revision + match generation + post-commit best-effort publication/recovery |
 | UC19 Export [Advanced] | FR-39 | act_uc19_export_report | — | not OpenAPI MVP | read-only analytics |
 
 ## Cross-cutting

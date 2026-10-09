@@ -22,13 +22,16 @@ from app.schemas.auth_schema import UserRole
 from app.schemas.job_schema import (
     JobCreateRequest,
     JobCriteriaRequest,
+    JobData,
     JobStatus,
     JobUpdateRequest,
+    JobWeightsRequest,
     ParsingStatus,
 )
 from app.schemas.match_schema import MatchStatus
 from app.services.job_create_payload import job_create_fingerprint
 from app.services.job_dispatcher import JobParseDispatcher
+from app.services.match_dispatcher import MatchDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +377,138 @@ async def get_job_criteria(
         ).all()
     )
     return JobCriteriaRecord(job=job, skills=skills)
+
+
+async def update_job_weights(
+    session: AsyncSession,
+    *,
+    current_user: User,
+    job_id: uuid.UUID,
+    payload: JobWeightsRequest,
+    dispatcher: MatchDispatcher,
+) -> JobData:
+    actor_id = current_user.id
+    actor_role = current_user.role
+    if actor_role not in {UserRole.HR.value, UserRole.ADMIN.value}:
+        raise APIError(403, "INSUFFICIENT_PERMISSIONS", "Insufficient permissions")
+
+    filters: list[ColumnElement[bool]] = [
+        JobDescription.id == job_id,
+        JobDescription.is_deleted.is_(False),
+    ]
+    if actor_role == UserRole.HR.value:
+        filters.append(JobDescription.recruiter_id == actor_id)
+
+    publications: tuple[tuple[uuid.UUID, int, int, int, str], ...] = ()
+    response_data: JobData | None = None
+    try:
+        with session.no_autoflush:
+            job = await session.scalar(
+                select(JobDescription)
+                .where(*filters)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        if job is None:
+            raise APIError(404, "JOB_NOT_FOUND", "Job not found")
+        if job.parsing_status != ParsingStatus.PARSED.value:
+            raise APIError(422, "JOB_NOT_READY", "Job must be PARSED before weights can change")
+
+        with session.no_autoflush:
+            resume_ids = tuple(
+                (
+                    await session.scalars(
+                        select(MatchResult.resume_id)
+                        .where(MatchResult.job_id == job.id)
+                        .order_by(MatchResult.resume_id.asc())
+                    )
+                ).all()
+            )
+            locked_resumes = (
+                tuple(
+                    (
+                        await session.scalars(
+                            select(Resume)
+                            .where(Resume.id.in_(resume_ids))
+                            .order_by(Resume.id.asc())
+                            .execution_options(populate_existing=True)
+                            .with_for_update()
+                        )
+                    ).all()
+                )
+                if resume_ids
+                else ()
+            )
+            matches = tuple(
+                (
+                    await session.scalars(
+                        select(MatchResult)
+                        .where(MatchResult.job_id == job.id)
+                        .order_by(MatchResult.id.asc())
+                        .execution_options(populate_existing=True)
+                        .with_for_update()
+                    )
+                ).all()
+            )
+
+        resume_revisions = {resume.id: resume.revision for resume in locked_resumes}
+        now = datetime.now(UTC)
+        job.w_skill = payload.w_skill
+        job.w_semantic = payload.w_semantic
+        job.w_experience = payload.w_experience
+        job.revision += 1
+        job.updated_at = now
+
+        for match in matches:
+            match.generation += 1
+            match.resume_revision = resume_revisions[match.resume_id]
+            match.job_revision = job.revision
+            match.status = MatchStatus.PENDING.value
+            match.overall_score = None
+            match.skill_score = None
+            match.semantic_score = None
+            match.experience_score = None
+            match.matched_skills = []
+            match.missing_skills = []
+            match.gap_analysis_summary = None
+            match.error_message = None
+            match.embedding_model = None
+            match.embedding_preprocessing_version = None
+            match.calculated_at = None
+            match.updated_at = now
+
+        await session.flush()
+        if payload.recalculate:
+            publications = tuple(
+                (
+                    match.id,
+                    match.generation,
+                    match.resume_revision,
+                    match.job_revision,
+                    match.algorithm_version,
+                )
+                for match in matches
+            )
+        response_data = JobData.model_validate(job)
+        await session.commit()
+    except APIError:
+        await session.rollback()
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+
+    for publication in publications:
+        try:
+            await dispatcher.dispatch(*publication)
+        except Exception:  # noqa: BLE001 - committed Matches remain recoverable
+            logger.error(
+                "job_weights_match_dispatch_failed match_id=%s generation=%s",
+                publication[0],
+                publication[1],
+            )
+    assert response_data is not None
+    return response_data
 
 
 async def update_job_criteria(

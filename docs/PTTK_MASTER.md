@@ -126,6 +126,7 @@ Terminal COMPLETED/FAILED chỉ hợp lệ từ `PROCESSING` với cùng generat
 - Sweep chỉ đọc DB; đóng selection session trước khi enqueue lại nguyên generation, snapshots và algorithm đã lưu. Không tăng generation/revision, không đổi status, payload hoặc `updated_at`.
 - Duplicate delivery hoặc mutation/delete sau selection vẫn phải qua exclusive claim/terminal CAS ở mục 8.3. Không giữ DB lock trong lúc gọi broker.
 - Broker chưa cấu hình thì dispatch là no-op và recovery không chạy. Lỗi một publication không dừng phần còn lại của batch; lỗi sweep được retry ở interval sau.
+- UC18 weights chỉ mutate Job current `PARSED` sau locking read. Một transaction khóa Job -> Resume UUID ASC -> Match ID ASC, tăng Job revision và invalidate toàn bộ Match. `recalculate=true` publish immutable Match payload sau commit theo best-effort; publication lỗi không rollback và không đổi response 200. Policy 503 của atomic Matching Trigger không đổi.
 - Chỉ recovery work chưa được claim; không reset `PROCESSING` khi chưa có lease/attempt token.
 
 ## 9. Idempotent creation, request fingerprint và parse dispatch recovery

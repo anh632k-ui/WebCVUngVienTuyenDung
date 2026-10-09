@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    StrictBool,
     WithJsonSchema,
     field_validator,
     model_validator,
@@ -184,6 +185,21 @@ class JobUpdateRequest(BaseModel):
     def require_at_least_one_field(self) -> JobUpdateRequest:
         if not self.model_fields_set:
             raise ValueError("At least one Job update field is required")
+        return self
+
+
+class JobWeightsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    w_skill: JobCreateWeight
+    w_semantic: JobCreateWeight
+    w_experience: JobCreateWeight
+    recalculate: StrictBool = False
+
+    @model_validator(mode="after")
+    def validate_weight_sum(self) -> JobWeightsRequest:
+        if self.w_skill + self.w_semantic + self.w_experience != Decimal("1.000"):
+            raise ValueError("Job weights must sum exactly to 1.000")
         return self
 
 
