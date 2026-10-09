@@ -22,6 +22,7 @@ from app.schemas.job_schema import (
     PaginationMeta,
     ParsingStatus,
 )
+from app.schemas.match_schema import ErrorResponse
 from app.services.job_dispatcher import JobParseDispatcher, get_job_parse_dispatcher
 from app.services.job_service import (
     JobCriteriaRecord,
@@ -168,7 +169,24 @@ async def replace_job_criteria(
     return _criteria_response(record)
 
 
-@router.put("/{id}/weights", response_model=JobResponse)
+@router.put(
+    "/{id}/weights",
+    response_model=JobResponse,
+    description=(
+        "Replace all matching weights for a non-deleted Job whose current parsing state is "
+        "PARSED. The caller must be the owning HR user or an Admin; other parse states return "
+        "422 JOB_NOT_READY. Every accepted PUT atomically increments the Job revision and "
+        "invalidates every linked Match by advancing its generation and refreshing its revision "
+        "snapshots. `recalculate` defaults to false and controls only immediate, immutable, "
+        "post-commit best-effort Match publication. Once persistence succeeds, broker publication "
+        "failures do not roll back the transaction and the endpoint still returns 200."
+    ),
+    responses={
+        403: {"model": ErrorResponse, "description": "Forbidden"},
+        404: {"model": ErrorResponse, "description": "Job not found or hidden"},
+        422: {"model": ErrorResponse, "description": "Validation error or JOB_NOT_READY"},
+    },
+)
 async def replace_job_weights(
     id: uuid.UUID,
     payload: JobWeightsRequest,
