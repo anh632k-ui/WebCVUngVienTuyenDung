@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { BRAND_NAME } from "@/lib/site-config";
 import { Icon } from "./icons";
+import { MobileNavigation } from "./mobile-navigation";
 
 const navigation = [
   { href: "/tinh-nang", label: "Tính năng" },
@@ -29,15 +30,7 @@ export function SiteHeader() {
         <Link className="header-action" href="/tinh-nang">
           Khám phá nền tảng <Icon name="arrow-up-right" size={16} />
         </Link>
-        <details className="mobile-navigation">
-          <summary aria-label="Mở hoặc đóng menu điều hướng">
-            <Icon name="menu" size={22} /><span className="sr-only">Menu</span>
-          </summary>
-          <nav aria-label="Điều hướng trên điện thoại">
-            {navigation.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
-            <Link className="mobile-nav-cta" href="/tinh-nang">Khám phá nền tảng</Link>
-          </nav>
-        </details>
+        <MobileNavigation items={navigation} />
       </div>
     </header>
   );

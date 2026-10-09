@@ -3,12 +3,9 @@ import { Icon, type IconName } from "@/components/marketing/icons";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { SiteHeader } from "@/components/marketing/site-header";
 import { createPageMetadata } from "@/lib/metadata";
+import { PUBLIC_PAGES } from "@/lib/site-config";
 
-export const metadata = createPageMetadata({
-  title: "Tính năng phân tích CV và đối chiếu JD",
-  description: "Khám phá phạm vi MVP: phân tích CV, tiêu chí JD, hybrid matching, Skill Gap, leaderboard và phân quyền Candidate, HR, Admin.",
-  path: "/tinh-nang",
-});
+export const metadata = createPageMetadata(PUBLIC_PAGES.features);
 
 const modules: { tag: string; icon: IconName; title: string; text: string; points: string[] }[] = [
   { tag: "01 / ỨNG VIÊN", icon: "file-check", title: "CV và self-matching riêng tư", text: "Candidate quản lý CV của mình, kiểm tra và chỉnh sửa dữ liệu trích xuất, sau đó tự đối chiếu với JD đang hoạt động. Các thao tác này thuộc dashboard ở giai đoạn tiếp theo.", points: ["PDF/DOCX tối đa 5 MB", "Human-in-the-loop cho dữ liệu trích xuất", "Kết quả self-match không tự động chia sẻ cho HR"] },

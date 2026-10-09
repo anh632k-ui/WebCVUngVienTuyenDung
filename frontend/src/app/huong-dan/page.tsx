@@ -3,12 +3,9 @@ import { Icon } from "@/components/marketing/icons";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { SiteHeader } from "@/components/marketing/site-header";
 import { createPageMetadata } from "@/lib/metadata";
+import { PUBLIC_PAGES } from "@/lib/site-config";
 
-export const metadata = createPageMetadata({
-  title: "Hướng dẫn chuẩn bị CV và đọc kết quả matching",
-  description: "Cách chuẩn bị CV PDF/DOCX, hiểu quy trình trích xuất, ba nhóm điểm, Skill Gap và nguyên tắc quyền riêng tư trên CVInsight.",
-  path: "/huong-dan",
-});
+export const metadata = createPageMetadata(PUBLIC_PAGES.guide);
 
 const faq = [
   { question: "Điểm phù hợp cao có nghĩa chắc chắn được tuyển?", answer: "Không. Điểm matching là kết quả tham khảo theo dữ liệu và trọng số hiện có, không phải xác suất trúng tuyển. Quyết định tuyển dụng luôn cần con người đánh giá thêm." },

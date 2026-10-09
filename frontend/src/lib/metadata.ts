@@ -1,5 +1,11 @@
 import type { Metadata } from "next";
-import { absoluteUrl, BRAND_NAME, siteConfig } from "./site-config";
+import {
+  absoluteUrl,
+  BRAND_NAME,
+  PUBLIC_PAGES,
+  siteConfig,
+  type SiteConfig,
+} from "./site-config.ts";
 
 type PageMetadata = {
   title: string;
@@ -11,15 +17,15 @@ export function createPageMetadata({
   title,
   description,
   path,
-}: PageMetadata): Metadata {
-  const canonical = absoluteUrl(path);
-  const socialImage = absoluteUrl("/og");
+}: PageMetadata, config: SiteConfig = siteConfig): Metadata {
+  const canonical = absoluteUrl(path, config.siteUrl);
+  const socialImage = absoluteUrl("/og", config.siteUrl);
 
   return {
     title,
     description,
     alternates: canonical ? { canonical } : undefined,
-    robots: siteConfig.indexingEnabled
+    robots: config.indexingEnabled
       ? { index: true, follow: true }
       : { index: false, follow: true, googleBot: { index: false, follow: true } },
     openGraph: {
@@ -40,4 +46,17 @@ export function createPageMetadata({
       images: socialImage ? [socialImage] : undefined,
     },
   };
+}
+
+export function createWebsiteJsonLd(config: SiteConfig = siteConfig) {
+  if (!config.indexingEnabled || !config.siteUrl) return null;
+
+  return {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: BRAND_NAME,
+    url: absoluteUrl("/", config.siteUrl),
+    inLanguage: "vi",
+    description: PUBLIC_PAGES.home.description,
+  } as const;
 }

@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.mts"
+    "test:unit": "node --experimental-strip-types --test tests/*.test.mts",
+    "test:production": "node tests/production-http-smoke.mjs",
+    "test": "npm run test:unit && npm run test:production"
   },
   "dependencies": {
     "next": "16.3.7",

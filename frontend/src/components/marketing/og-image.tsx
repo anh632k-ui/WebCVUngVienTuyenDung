@@ -1,11 +1,7 @@
-import { ImageResponse } from "next/og";
+export const OG_IMAGE_SIZE = { width: 1200, height: 630 } as const;
 
-export const alt = "CVInsight — Phân tích CV và mức độ phù hợp công việc";
-export const size = { width: 1200, height: 630 };
-export const contentType = "image/png";
-
-export function GET() {
-  return new ImageResponse(
+export function OgImageArtwork() {
+  return (
     <div style={{ alignItems: "center", background: "#f8fafc", color: "#0f172a", display: "flex", fontFamily: "Arial, sans-serif", height: "100%", justifyContent: "center", padding: "72px", width: "100%" }}>
       <div style={{ background: "white", border: "2px solid #e2e8f0", borderRadius: "40px", display: "flex", flexDirection: "column", height: "100%", justifyContent: "space-between", padding: "64px", width: "100%" }}>
         <div style={{ alignItems: "center", display: "flex", fontSize: 34, fontWeight: 700 }}>
@@ -18,7 +14,6 @@ export function GET() {
         </div>
         <div style={{ color: "#475569", display: "flex", fontSize: 24 }}>Phân tích CV · Đối chiếu JD · Nhận diện Skill Gap</div>
       </div>
-    </div>,
-    size,
+    </div>
   );
 }

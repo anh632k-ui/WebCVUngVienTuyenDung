@@ -3,11 +3,10 @@ import { Icon, type IconName } from "@/components/marketing/icons";
 import { ScorePreview } from "@/components/marketing/score-preview";
 import { SiteFooter } from "@/components/marketing/site-footer";
 import { SiteHeader } from "@/components/marketing/site-header";
-import { createPageMetadata } from "@/lib/metadata";
-import { absoluteUrl, siteConfig } from "@/lib/site-config";
+import { createPageMetadata, createWebsiteJsonLd } from "@/lib/metadata";
+import { PUBLIC_PAGES } from "@/lib/site-config";
 
-const description = "Phân tích CV, đối chiếu mô tả công việc và nhận diện khoảng cách kỹ năng bằng AI/NLP trong một quy trình minh bạch.";
-export const metadata = createPageMetadata({ title: "Phân tích CV và mức độ phù hợp công việc", description, path: "/" });
+export const metadata = createPageMetadata(PUBLIC_PAGES.home);
 
 const features: { icon: IconName; title: string; description: string; label: string }[] = [
   { icon: "file-check", title: "Hiểu rõ hồ sơ CV", description: "Trích xuất thông tin từ CV PDF/DOCX và chuẩn hóa dữ liệu kỹ năng, học vấn, kinh nghiệm để người dùng kiểm tra.", label: "PHÂN TÍCH CV" },
@@ -23,14 +22,7 @@ const steps: { step: string; icon: IconName; title: string; text: string }[] = [
 ];
 
 export default function HomePage() {
-  const websiteJsonLd = siteConfig.siteUrl ? {
-    "@context": "https://schema.org",
-    "@type": "WebSite",
-    name: "CVInsight",
-    url: absoluteUrl("/"),
-    inLanguage: "vi",
-    description,
-  } : null;
+  const websiteJsonLd = createWebsiteJsonLd();
 
   return (
     <>
