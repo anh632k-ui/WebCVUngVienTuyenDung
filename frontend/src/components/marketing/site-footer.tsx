@@ -1,15 +1,12 @@
 import Link from "next/link";
-import { Icon } from "./icons";
+import { BrandLink } from "./site-header";
 
 export function SiteFooter() {
   return (
     <footer className="site-footer">
       <div className="container footer-main">
         <div className="footer-brand-column">
-          <Link className="brand" href="/" aria-label="CVInsight - Về trang chủ">
-            <span className="brand-mark"><Icon name="sparkles" size={20} /></span>
-            <span>CV<span className="brand-accent">Insight</span></span>
-          </Link>
+          <BrandLink />
           <p>Phân tích hồ sơ và hỗ trợ đánh giá mức độ tương thích công việc bằng AI/NLP.</p>
           <span className="footer-research">Dự án nghiên cứu và phát triển phần mềm.</span>
         </div>
@@ -18,6 +15,7 @@ export function SiteFooter() {
           <Link href="/tinh-nang">Tính năng</Link>
           <Link href="/huong-dan">Hướng dẫn</Link>
           <Link href="/#quy-trinh">Quy trình phân tích</Link>
+          <Link href="/#bao-mat">Quyền riêng tư</Link>
         </nav>
         <div className="footer-note">
           <p className="footer-heading">Lưu ý quan trọng</p>
@@ -26,7 +24,7 @@ export function SiteFooter() {
       </div>
       <div className="container footer-bottom">
         <span>© {new Date().getFullYear()} CVInsight. Bản thử nghiệm học thuật.</span>
-        <span>Thiết kế cho trải nghiệm đọc rõ ràng và quyền riêng tư.</span>
+        <span>Thiết kế cho trải nghiệm rõ ràng và quyền riêng tư.</span>
       </div>
     </footer>
   );
