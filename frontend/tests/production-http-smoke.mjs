@@ -59,9 +59,17 @@ async function withProductionServer(port, environment, verify) {
   }
 }
 
+function verifyHeaders(response) {
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.equal(response.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+  assert.match(response.headers.get("permissions-policy") ?? "", /camera=\(\)/);
+}
+
 async function readText(baseUrl, route, expectedStatus = 200) {
   const response = await fetch(`${baseUrl}${route}`);
   assert.equal(response.status, expectedStatus, `${route} phải trả ${expectedStatus}`);
+  if (["/", "/tinh-nang", "/huong-dan"].includes(route)) verifyHeaders(response);
   return { response, text: await response.text() };
 }
 
