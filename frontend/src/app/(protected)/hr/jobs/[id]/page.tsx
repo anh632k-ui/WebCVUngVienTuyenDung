@@ -13,5 +13,5 @@ export default async function HrJobDetailPage({ params }: { params: Promise<{ id
   const user = await requireRole("HR");
   const { id } = await params;
   if (!validJobId(id)) notFound();
-  return <DashboardShell user={user}><Link className="resume-back" href="/hr/jobs">← Danh sách JD</Link><HrJobDetail id={id} /></DashboardShell>;
+  return <DashboardShell user={user}><Link className="resume-back" href="/hr/jobs">← Danh sách JD</Link><Link className="button button-secondary" href={`/hr/jobs/${id}/leaderboard`}>Xem bảng xếp hạng CV →</Link><HrJobDetail id={id} /></DashboardShell>;
 }
