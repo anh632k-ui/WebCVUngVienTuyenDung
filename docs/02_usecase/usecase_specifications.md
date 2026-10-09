@@ -143,9 +143,9 @@ Current Match queries phải join/filter Resume và JD chưa soft-delete. COMPLE
 HR owner JD/Admin. Chỉ Match COMPLETED, JD chưa xóa và Resume chưa xóa; HR chỉ CV kho mình; sort overall DESC.
 
 ## UC18 — Trọng số
-HR owner/Admin. Validate từng weight [0,1], tổng=1; JD phải chưa xóa.
-Trong transaction: update weights, `job.revision += 1`, invalidate Match + generation++ + refresh snapshots.
-`recalculate=true` chỉ dispatch ngay; false để PENDING.
+HR owner/Admin. Validate đủ ba JSON numbers, từng weight [0,1], fit chính xác `NUMERIC(4,3)`, tổng Decimal đúng `1.000`; JD phải chưa xóa và current `parsing_status=PARSED` sau locking read. PENDING/PROCESSING/FAILED trả `422 JOB_NOT_READY` và không mutation/publication.
+Trong một transaction theo Job -> Resume UUID -> Match ID: update weights, `job.revision += 1`, invalidate toàn bộ Match + generation++ + refresh cả hai snapshots + clear stale payload. Request lặp weights vẫn là accepted mutation mới.
+`recalculate=true` chỉ immediate publish immutable Match tasks sau commit; lỗi từng publication là best-effort, tiếp tục batch và vẫn trả `200 JobResponse`. False không immediate publish nhưng không thay recovery. Weights không tạo Match hoặc reparse/regenerate embedding.
 
 ## UC19 — Export [Advanced]
 PDF/Excel dự kiến; không nằm OpenAPI MVP.

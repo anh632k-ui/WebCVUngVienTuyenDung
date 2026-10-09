@@ -17,10 +17,12 @@ from app.schemas.job_schema import (
     JobStatus,
     JobStatusRequest,
     JobUpdateRequest,
+    JobWeightsRequest,
     PaginatedJobsResponse,
     PaginationMeta,
     ParsingStatus,
 )
+from app.schemas.match_schema import ErrorResponse
 from app.services.job_dispatcher import JobParseDispatcher, get_job_parse_dispatcher
 from app.services.job_service import (
     JobCriteriaRecord,
@@ -32,12 +34,15 @@ from app.services.job_service import (
     soft_delete_job,
     update_job,
     update_job_criteria,
+    update_job_weights,
 )
+from app.services.match_dispatcher import MatchDispatcher, get_match_dispatcher
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 JobManager = Annotated[User, Depends(require_roles(UserRole.HR, UserRole.ADMIN))]
 JobCreator = Annotated[User, Depends(require_roles(UserRole.HR))]
 JobDispatcherDependency = Annotated[JobParseDispatcher, Depends(get_job_parse_dispatcher)]
+MatchDispatcherDependency = Annotated[MatchDispatcher, Depends(get_match_dispatcher)]
 
 
 @router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
@@ -162,6 +167,41 @@ async def replace_job_criteria(
         payload=payload,
     )
     return _criteria_response(record)
+
+
+@router.put(
+    "/{id}/weights",
+    response_model=JobResponse,
+    description=(
+        "Replace all matching weights for a non-deleted Job whose current parsing state is "
+        "PARSED. The caller must be the owning HR user or an Admin; other parse states return "
+        "422 JOB_NOT_READY. Every accepted PUT atomically increments the Job revision and "
+        "invalidates every linked Match by advancing its generation and refreshing its revision "
+        "snapshots. `recalculate` defaults to false and controls only immediate, immutable, "
+        "post-commit best-effort Match publication. Once persistence succeeds, broker publication "
+        "failures do not roll back the transaction and the endpoint still returns 200."
+    ),
+    responses={
+        403: {"model": ErrorResponse, "description": "Forbidden"},
+        404: {"model": ErrorResponse, "description": "Job not found or hidden"},
+        422: {"model": ErrorResponse, "description": "Validation error or JOB_NOT_READY"},
+    },
+)
+async def replace_job_weights(
+    id: uuid.UUID,
+    payload: JobWeightsRequest,
+    session: DatabaseSession,
+    current_user: JobManager,
+    dispatcher: MatchDispatcherDependency,
+) -> JobResponse:
+    job = await update_job_weights(
+        session,
+        current_user=current_user,
+        job_id=id,
+        payload=payload,
+        dispatcher=dispatcher,
+    )
+    return JobResponse(data=job)
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)

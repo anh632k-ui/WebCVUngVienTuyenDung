@@ -211,9 +211,9 @@ HR owner/Admin, JD chưa xóa. PUT requires PARSED, >=1 skill, valid taxonomy, n
 Transaction: save criteria, verified=true, revision++, invalidate Match generation++ + refresh snapshots.
 
 ## PUT `/jobs/{id}/weights`
-HR owner/Admin, JD chưa xóa. Each [0,1], sum=1.
-Transaction: weights, revision++, invalidate Match generation++ + refresh snapshots.
-`recalculate=true` dispatches tasks after commit.
+HR owner/Admin, JD chưa xóa và current `PARSED`; trạng thái parse khác trả `422 JOB_NOT_READY`. Cả ba JSON-number weights bắt buộc, mỗi số [0,1], fit chính xác `NUMERIC(4,3)`, tổng Decimal đúng `1.000`; `recalculate` là strict boolean, mặc định false.
+Transaction khóa Job -> Resume UUID -> Match ID: weights, revision++, invalidate toàn bộ Match generation++ + refresh snapshots + clear stale payload. Mỗi accepted PUT luôn là mutation kể cả cùng weights; không tạo Match, reparse hoặc đổi embedding/criteria/status/fingerprint.
+`recalculate=true` best-effort dispatches immutable five-field tasks after commit. Publication failure được log generic, không rollback, không dừng batch và response vẫn `200 JobResponse`; false chỉ tắt immediate publication. Policy này không đổi `POST /matching/calculate` 503.
 
 ### JD parse worker contract
 Exclusive claim chỉ:

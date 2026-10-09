@@ -38,9 +38,9 @@
 - **BR-JOB-04** HR chỉ sửa JD mình; Admin override quản trị.
 - **BR-JOB-05** `importance=MANDATORY|OPTIONAL`.
 - **BR-JOB-06** Raw content đổi: tăng `revision` trước reparse, status DRAFT, parse PENDING, verified=false, clear embedding/model/preprocessing/parsed_at, invalidate Match rồi enqueue parse với `expected_revision=new_revision`. Worker commit kết quả không tăng revision thêm.
-- **BR-JOB-07** Weights mỗi số [0,1], tổng 1.
+- **BR-JOB-07** Weights mỗi số [0,1], fit chính xác `NUMERIC(4,3)`, tổng Decimal đúng `1.000`. Mỗi PUT weights được chấp nhận tăng revision/invalidate kể cả khi giá trị lặp lại; Job phải đang `PARSED` theo current locked state.
 - **BR-JOB-08** ACTIVE/matching cần PARSED + verified + embedding/model/preprocessing hợp lệ + >=1 job_skill.
-- **BR-JOB-09** Criteria/weights/direct re-embedding mutation làm scoring input đổi phải tăng JD revision và invalidate Match.
+- **BR-JOB-09** Criteria/weights/direct re-embedding mutation làm scoring input đổi phải tăng JD revision và invalidate toàn bộ Match trong cùng transaction, theo lock order Job -> Resume UUID -> Match ID. UC18 `recalculate=true` publish immutable Match payload sau commit theo best-effort; lỗi một publication không rollback/đổi response 200 và không dừng publication còn lại. `POST /matching/calculate` vẫn giữ policy 503 riêng.
 - **BR-JOB-10** Status transitions qua API: DRAFT->ACTIVE; ACTIVE->DRAFT|CLOSED; CLOSED->DRAFT|ACTIVE; same-state idempotent. DRAFT->CLOSED invalid (`422`).
 - **BR-JOB-11** Parse task mang `expected_revision`. Claim độc quyền chỉ khi `revision=expected_revision AND parsing_status='PENDING' AND is_deleted=false`; terminal SUCCESS/FAILED chỉ từ `PROCESSING` của cùng revision và vẫn `is_deleted=false`. `rowcount=0` => stale/duplicate/deleted task discard.
 - **BR-JOB-12** `POST /jobs` bắt buộc `Idempotency-Key` UUID và cùng stable UUIDv5 namespace như Resume. `job_descriptions.create_request_fingerprint` persist SHA-256 của canonical validated create payload sau defaults.

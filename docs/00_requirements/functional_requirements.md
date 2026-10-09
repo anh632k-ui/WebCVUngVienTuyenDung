@@ -26,7 +26,7 @@
 - **FR-19** Parse JD: experience/education/skill + MANDATORY/OPTIONAL.
 - **FR-20** Sinh embedding model + preprocessing version.
 - **FR-21** Review criteria; direct mutation tăng revision trước input version mới + invalidate Match.
-- **FR-22** Update weights; mutation tăng revision + invalidate Match.
+- **FR-22** HR owner/Admin update đủ ba weights cho Job non-deleted, current `PARSED`; mỗi accepted PUT tăng revision + invalidate toàn bộ Match atomically. `recalculate=true` best-effort publish immutable tasks sau commit; persistence thành công luôn trả 200.
 - **FR-23** Enforce status transition matrix và readiness trước ACTIVE.
 - **FR-24** JD parse worker dùng `expected_revision`; claim độc quyền PENDING->PROCESSING, terminal chỉ từ PROCESSING cùng revision; cả claim/terminal yêu cầu JD chưa soft-delete; worker terminal commit không tăng revision.
 

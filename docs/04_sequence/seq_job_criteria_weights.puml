@@ -33,13 +33,22 @@ Service -> Service : validate [0,1] and sum=1
 alt invalid
   Service --> API : 422
 else valid
-  Service -> DB : BEGIN
+  Service -> DB : BEGIN + lock current Job
+  alt Job not PARSED
+    Service -> DB : ROLLBACK
+    Service --> API : 422 JOB_NOT_READY
+  else PARSED
+  Service -> DB : lock Resume UUID ASC, Match ID ASC
   Service -> DB : update weights + job.revision++
   Service -> DB : invalidate Matches:\ngeneration++; refresh resume_revision/job_revision snapshots;\nPENDING + clear stale payload
   Service -> DB : COMMIT
   opt recalculate=true
-    Service -> Dispatcher : dispatch tasks with committed generation/revisions
+    loop each immutable payload
+      Service -> Dispatcher : best-effort dispatch committed generation/revisions
+      note right: failure logged; continue; no rollback/503
+    end
   end
   Service --> API : 200 JobResponse
+  end
 end
 @enduml
