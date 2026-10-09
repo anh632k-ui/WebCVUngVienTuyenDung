@@ -12,7 +12,7 @@ SITE_URL=https://your-production-domain.example
 SEO_INDEXING_ENABLED=false
 ```
 
-`BACKEND_API_URL` chỉ được đọc ở server, không dùng tiền tố `NEXT_PUBLIC_`. Chạy FastAPI tại cổng 8000 theo hướng dẫn của backend, sau đó:
+`BACKEND_API_URL` chỉ được đọc ở server, không dùng tiền tố `NEXT_PUBLIC_`. Giá trị phải là HTTP/HTTPS origin thuần, không kèm `/api/v1`, pathname, thông tin đăng nhập, query hoặc fragment. Chạy FastAPI tại cổng 8000 theo hướng dẫn của backend, sau đó:
 
 ```powershell
 cd frontend

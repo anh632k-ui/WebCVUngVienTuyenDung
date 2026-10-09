@@ -12,6 +12,7 @@ const frontendPort = 3221;
 const backendUrl = `http://127.0.0.1:${backendPort}`;
 const frontendUrl = `http://localhost:${frontendPort}`;
 const received = [];
+let recoveringChecks = 0;
 
 const baseUser = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -59,6 +60,16 @@ const backend = createServer(async (request, response) => {
     return json(response, 200, { success: true, data: { access_token: token, token_type: "bearer", expires_in: 900, user } });
   }
   if (request.url === "/api/v1/users/me" && request.method === "GET") {
+    const token = request.headers.authorization?.replace(/^Bearer /, "");
+    if (token === "inactive-token") return json(response, 403, { success: false, error: { code: "ACCOUNT_INACTIVE", message: "Account is inactive" } });
+    if (token === "unavailable-token") return json(response, 503, { success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Unavailable" } });
+    if (token === "bad-gateway-token") return json(response, 502, { success: false, error: { code: "BAD_GATEWAY", message: "Bad gateway" } });
+    if (token === "malformed-token") return json(response, 200, { success: true, data: { unexpected: true } });
+    if (token === "recovering-token") {
+      recoveringChecks += 1;
+      if (recoveringChecks === 1) return json(response, 503, { success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Unavailable" } });
+      return json(response, 200, { success: true, data: baseUser });
+    }
     const user = tokenUser(request.headers.authorization);
     return user
       ? json(response, 200, { success: true, data: user })
@@ -205,10 +216,49 @@ async function verify() {
   const logout = await mutation("/api/session/logout", {}, { cookie: candidateCookie });
   assert.equal(logout.status, 200);
   assert.match(logout.headers.get("set-cookie") ?? "", /Max-Age=0/i);
+  assert.doesNotMatch(JSON.stringify(await logout.json()), /revoke|thu hồi/i);
 
   const guest = await fetch(`${frontendUrl}/dashboard/candidate`, { redirect: "manual" });
   assert.equal(guest.status, 307);
   assert.equal(new URL(guest.headers.get("location"), frontendUrl).pathname, "/dang-nhap");
+  assert.doesNotMatch(await guest.text(), /self-matching/);
+
+  const expiredPage = await fetch(`${frontendUrl}/dashboard/candidate`, { headers: { cookie: "cvinsight_session=expired-token" }, redirect: "manual" });
+  const expiredLocation = new URL(expiredPage.headers.get("location"), frontendUrl);
+  assert.equal(expiredPage.status, 307);
+  assert.equal(expiredLocation.pathname, "/dang-nhap");
+  assert.equal(expiredLocation.searchParams.get("reason"), "expired");
+
+  for (const [token, reason, message] of [
+    ["inactive-token", "inactive", "Tài khoản không được phép sử dụng"],
+    ["unavailable-token", "unavailable", "Dịch vụ xác thực tạm thời gián đoạn"],
+    ["bad-gateway-token", "upstream", "Không thể xác minh phiên đăng nhập"],
+    ["malformed-token", "upstream", "Không thể xác minh phiên đăng nhập"],
+  ]) {
+    const denied = await fetch(`${frontendUrl}/dashboard/candidate`, { headers: { cookie: `cvinsight_session=${token}` }, redirect: "manual" });
+    const location = new URL(denied.headers.get("location"), frontendUrl);
+    assert.equal(denied.status, 307);
+    assert.equal(location.pathname, "/trang-thai-phien");
+    assert.equal(location.searchParams.get("reason"), reason);
+    if (reason !== "inactive") assert.equal(denied.headers.get("set-cookie"), null);
+    assert.doesNotMatch(await denied.text(), /self-matching|Candidate Test/);
+    const statusPage = await fetch(location);
+    const statusHtml = await statusPage.text();
+    assert.equal(statusPage.status, 200);
+    assert.match(statusHtml, new RegExp(message));
+    assert.match(statusHtml, /noindex, nofollow/);
+    assert.doesNotMatch(statusHtml, new RegExp(`${token}|self-matching|Candidate Test`));
+    if (reason !== "inactive") assert.doesNotMatch(statusHtml, /Phiên đăng nhập không còn hợp lệ/);
+  }
+
+  const recoveringCookie = "cvinsight_session=recovering-token";
+  const duringOutage = await fetch(`${frontendUrl}/dashboard/candidate`, { headers: { cookie: recoveringCookie }, redirect: "manual" });
+  assert.equal(new URL(duringOutage.headers.get("location"), frontendUrl).searchParams.get("reason"), "unavailable");
+  assert.equal(duringOutage.headers.get("set-cookie"), null);
+  const afterRecovery = await fetch(`${frontendUrl}/dashboard/candidate`, { headers: { cookie: recoveringCookie } });
+  assert.equal(afterRecovery.status, 200);
+  assert.match(await afterRecovery.text(), /self-matching/);
+
   const candidatePage = await fetch(`${frontendUrl}/dashboard/candidate`, { headers: { cookie: candidateCookie } });
   const candidateHtml = await candidatePage.text();
   assert.equal(candidatePage.status, 200);
@@ -234,7 +284,7 @@ async function verify() {
   assert.match(loginHtml, /noindex, nofollow/);
   assert.doesNotMatch(loginHtml, /href="https:\/\/evil\.example/);
   const sitemap = await (await fetch(`${frontendUrl}/sitemap.xml`)).text();
-  assert.doesNotMatch(sitemap, /dang-nhap|dang-ky|dashboard|tai-khoan|doi-mat-khau/);
+  assert.doesNotMatch(sitemap, /dang-nhap|dang-ky|dashboard|tai-khoan|doi-mat-khau|trang-thai-phien/);
 }
 
 const environment = { BACKEND_API_URL: backendUrl, SITE_URL: "https://auth-fixture.test", SEO_INDEXING_ENABLED: "true" };

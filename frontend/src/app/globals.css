@@ -281,6 +281,8 @@ svg { flex: 0 0 auto; }
 .settings-card dl div { border-bottom: 1px solid var(--border); padding: 12px 0; }
 .settings-card dt { color: var(--muted); font-size: 11px; }
 .settings-card dd { color: var(--navy); font-size: 13px; margin: 2px 0 0; overflow-wrap: anywhere; }
+.session-status-card { max-width: 680px; }
+.session-status-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 24px; }
 
 @media (max-width: 1024px) {
   .desktop-navigation { gap: 18px; }

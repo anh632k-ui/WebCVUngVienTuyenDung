@@ -6,6 +6,7 @@ import { backendRequest } from "./backend";
 import { parseUser } from "./contracts.ts";
 import { dashboardForRole } from "./roles.ts";
 import { SESSION_COOKIE } from "./security.ts";
+import { sessionFailurePath } from "./session-errors.ts";
 import type { CurrentUser, UserRole } from "./types.ts";
 
 export async function readSessionToken() {
@@ -24,7 +25,7 @@ export async function verifySession(): Promise<{ user: CurrentUser | null; statu
 
 export async function requireUser() {
   const session = await verifySession();
-  if (!session.user) redirect("/dang-nhap?reason=expired");
+  if (!session.user) redirect(sessionFailurePath(session.status));
   return session.user;
 }
 

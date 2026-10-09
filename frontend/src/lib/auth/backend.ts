@@ -1,5 +1,7 @@
 import "server-only";
 
+import { parseBackendOrigin } from "./backend-config.ts";
+
 const API_PREFIX = "/api/v1";
 const REQUEST_TIMEOUT_MS = 8_000;
 
@@ -9,20 +11,11 @@ export type BackendResult = {
   body: unknown;
 };
 
-function backendOrigin() {
-  const raw = process.env.BACKEND_API_URL?.trim() || "http://127.0.0.1:8000";
-  const url = new URL(raw);
-  if (!(["http:", "https:"] as string[]).includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-    throw new Error("BACKEND_API_URL is invalid");
-  }
-  return url.origin;
-}
-
 export async function backendRequest(path: string, init: RequestInit = {}): Promise<BackendResult> {
   if (!path.startsWith("/") || path.includes("..")) throw new Error("Invalid backend path");
 
   try {
-    const response = await fetch(`${backendOrigin()}${API_PREFIX}${path}`, {
+    const response = await fetch(`${parseBackendOrigin(process.env.BACKEND_API_URL)}${API_PREFIX}${path}`, {
       ...init,
       cache: "no-store",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
