@@ -632,5 +632,5 @@ def test_generated_openapi_matches_canonical_create_contract() -> None:
         assert weight_schema["maximum"] == 1
         assert weight_schema["default"] == default
     assert set(schema["paths"]["/api/v1/jobs"]) == {"get", "post"}
-    assert set(schema["paths"]["/api/v1/jobs/{id}"]) == {"get", "delete"}
+    assert set(schema["paths"]["/api/v1/jobs/{id}"]) == {"get", "put", "delete"}
     assert set(schema["paths"]["/api/v1/jobs/{id}/status"]) == {"patch"}
