@@ -17,7 +17,8 @@ export function MobileNavigation({ items }: { items: readonly NavigationItem[] }
       </summary>
       <nav aria-label="Điều hướng trên điện thoại">
         {items.map((item) => <Link key={item.href} href={item.href} onClick={closeMenu}>{item.label}</Link>)}
-        <Link className="mobile-nav-cta" href="/tinh-nang" onClick={closeMenu}>Khám phá nền tảng</Link>
+        <Link href="/dang-nhap" onClick={closeMenu}>Đăng nhập</Link>
+        <Link className="mobile-nav-cta" href="/dang-ky" onClick={closeMenu}>Đăng ký</Link>
       </nav>
     </details>
   );

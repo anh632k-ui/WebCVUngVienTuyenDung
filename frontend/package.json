@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test:unit": "node --experimental-strip-types --test tests/*.test.mts",
     "test:production": "node tests/production-http-smoke.mjs",
-    "test": "npm run test:unit && npm run test:production"
+    "test:auth": "node tests/auth-http-smoke.mjs",
+    "test": "npm run test:unit && npm run test:production && npm run test:auth"
   },
   "dependencies": {
     "next": "16.3.7",
