@@ -458,3 +458,28 @@ svg { flex: 0 0 auto; }
 .admin-row-actions button { background: white; border: 1px solid var(--border); color: var(--blue); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
 .admin-row-actions button:hover { background: #eff6ff; }
 .admin-row-actions button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* F06 dashboard UX and accessibility */
+.dashboard-nav a[aria-current="page"] { background: #dbeafe; color: #1d4ed8; font-weight: 750; box-shadow: inset 3px 0 0 #2563eb; }
+.dashboard-nav a[aria-current="page"]:hover { background: #dbeafe; }
+.dashboard-shortcuts { margin-top: 42px; }
+.dashboard-shortcuts > h2 { color: var(--navy); font-size: 24px; margin-bottom: 4px; letter-spacing: -.5px; }
+.dashboard-shortcuts > p { color: var(--muted); font-size: 14px; margin-top: 0; }
+.dashboard-shortcut-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; margin-top: 24px; }
+.dashboard-shortcut { display: flex; flex-direction: column; justify-content: flex-start; gap: 10px; min-height: 140px; border: 1px solid var(--border); border-radius: var(--radius-md); background: white; box-shadow: var(--shadow-sm); padding: 24px; }
+.dashboard-shortcut:hover { border-color: #93c5fd; box-shadow: var(--shadow-lg); }
+.dashboard-shortcut:focus-visible { outline: 3px solid #60a5fa; outline-offset: 3px; }
+.dashboard-shortcut strong { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 17px; line-height: 1.4; color: var(--navy); }
+.dashboard-shortcut strong span { color: var(--blue); }
+.dashboard-shortcut > span { font-size: 13px; color: var(--muted); line-height: 1.6; }
+@media (max-width: 768px) {
+  .dashboard-sidebar { gap: 8px; }
+  .dashboard-sidebar .dashboard-nav { display: flex; flex-direction: row; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; padding: 5px 0 10px; }
+  .dashboard-sidebar .dashboard-nav a { flex: 0 0 auto; min-height: 42px; white-space: nowrap; text-align: center; scroll-snap-align: start; }
+  .dashboard-sidebar .dashboard-nav a[aria-current="page"] { box-shadow: inset 0 -3px 0 #2563eb; }
+  .dashboard-shortcut-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .dashboard-sidebar .dashboard-nav { display: flex; flex-direction: row; }
+  .dashboard-shortcut { padding: 20px; min-height: auto; }
+}
