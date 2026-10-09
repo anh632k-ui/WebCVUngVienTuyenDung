@@ -15,9 +15,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: frontend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend-ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -25,6 +30,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check whitespace in changed files
+        working-directory: .
+        run: git diff --check HEAD^ HEAD
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -39,7 +50,7 @@ jobs:
       - name: Run lint
         run: npm run lint
 
-      - name: Run SEO configuration tests
+      - name: Run frontend unit and production HTTP regression
         run: npm test
 
       - name: Build frontend and generate Next.js types

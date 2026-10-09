@@ -75,6 +75,9 @@ async function verify() {
 
   const page = await get("/admin/users", { headers: { cookie } });
   assert.equal(page.status, 200);
+  assert.match(page.headers.get("cache-control") || "", /private.*no-store/);
+  assert.equal(page.headers.get("x-frame-options"), "DENY");
+  assert.equal(page.headers.get("x-content-type-options"), "nosniff");
   const html = await page.text();
   assert.match(html, /noindex, nofollow/);
   assert.doesNotMatch(html, /admin-token/);
