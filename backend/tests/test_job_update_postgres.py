@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, event, select, text, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.ai.vector_embedding import BGE_M3_EMBEDDING_DIMENSION, BGE_M3_MODEL_NAME
@@ -172,6 +172,93 @@ class ExistingSessionFactory:
 
     def __call__(self) -> Any:
         return self.context()
+
+
+class InspectingCommitGateSession(AsyncSession):
+    """Pause an actual transaction after its terminal write and before commit."""
+
+    def __init__(
+        self,
+        *args: Any,
+        commit_entered: asyncio.Event,
+        commit_release: asyncio.Event,
+        inspect: Callable[[AsyncSession], Awaitable[Any]],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.commit_entered = commit_entered
+        self.commit_release = commit_release
+        self.inspect = inspect
+        self.pid: int | None = None
+        self.snapshot: Any = None
+
+    async def commit(self) -> None:
+        self.pid = await self.scalar(text("SELECT pg_backend_pid()"))
+        assert self.pid is not None
+        self.snapshot = await self.inspect(self)
+        self.commit_entered.set()
+        await self.commit_release.wait()
+        await super().commit()
+
+
+class TerminalCommitGateFactory:
+    """Gate only the worker's terminal session, not claim/context sessions."""
+
+    def __init__(
+        self,
+        bind: Any,
+        *,
+        terminal_call: int,
+        entered: asyncio.Event,
+        release: asyncio.Event,
+        inspect: Callable[[AsyncSession], Awaitable[Any]],
+    ) -> None:
+        self.bind = bind
+        self.terminal_call = terminal_call
+        self.entered = entered
+        self.release = release
+        self.inspect = inspect
+        self.calls = 0
+        self.terminal_session: InspectingCommitGateSession | None = None
+
+    def __call__(self) -> AsyncSession:
+        self.calls += 1
+        if self.calls == self.terminal_call:
+            self.terminal_session = InspectingCommitGateSession(
+                bind=self.bind,
+                expire_on_commit=False,
+                commit_entered=self.entered,
+                commit_release=self.release,
+                inspect=self.inspect,
+            )
+            return self.terminal_session
+        return AsyncSession(bind=self.bind, expire_on_commit=False)
+
+
+class TrackedTerminalFactory:
+    """Expose the PID of the worker session that performs the terminal CAS."""
+
+    def __init__(self, bind: Any, *, terminal_call: int) -> None:
+        self.bind = bind
+        self.terminal_call = terminal_call
+        self.calls = 0
+        self.entered = asyncio.Event()
+        self.pid: int | None = None
+
+    @asynccontextmanager
+    async def tracked(self, session: AsyncSession) -> AsyncIterator[AsyncSession]:
+        async with session:
+            self.pid = await session.scalar(text("SELECT pg_backend_pid()"))
+            assert self.pid is not None
+            self.entered.set()
+            yield session
+
+    def __call__(self) -> Any:
+        self.calls += 1
+        session = AsyncSession(bind=self.bind, expire_on_commit=False)
+        if self.calls == self.terminal_call:
+            return self.tracked(session)
+        return session
 
 
 @dataclass(frozen=True)
@@ -743,6 +830,36 @@ async def wait_for_blocker(
                 return tuple(blockers)
 
 
+async def wait_graph_reaches(
+    observer: AsyncSession,
+    *,
+    waiter_pid: int,
+    blocker_pid: int,
+) -> dict[int, tuple[int, ...]]:
+    """Observe direct or queued PostgreSQL blockers until the chain reaches blocker_pid."""
+
+    async with asyncio.timeout(5):
+        while True:
+            graph: dict[int, tuple[int, ...]] = {}
+            pending = [waiter_pid]
+            visited: set[int] = set()
+            while pending:
+                pid = pending.pop()
+                if pid in visited:
+                    continue
+                visited.add(pid)
+                blockers = tuple(
+                    await observer.scalar(
+                        text("SELECT pg_blocking_pids(:waiter_pid)"),
+                        {"waiter_pid": pid},
+                    )
+                )
+                graph[pid] = blockers
+                if blocker_pid in blockers:
+                    return graph
+                pending.extend(blockers)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("same_raw", [False, True], ids=["different-raw", "same-raw"])
 async def test_concurrent_raw_updates_wait_on_actual_job_lock_and_serialize_current_state(
@@ -1020,49 +1137,119 @@ async def test_soft_delete_and_raw_update_serialize_both_job_lock_orders(
 async def test_claimed_old_parse_worker_cannot_terminal_write_after_raw_update(
     job_update_postgres: JobUpdateHarness,
     terminal: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     harness = job_update_postgres
     job_id = harness.jobs["pending"]
+    match_id = uuid.uuid4()
+    async with harness.factory() as setup:
+        job = await setup.get(JobDescription, job_id)
+        resume = await setup.get(Resume, harness.resumes[0])
+        assert job is not None and resume is not None
+        match = make_match(job, resume, 70, "COMPLETED")
+        match.id = match_id
+        setup.add(match)
+        await setup.commit()
+        initial_generation = match.generation
+
+    bind = harness.factory.kw["bind"]
+    db_errors: list[BaseException] = []
+
+    def record_db_error(exception_context: Any) -> None:
+        db_errors.append(exception_context.original_exception)
+
+    event.listen(bind.sync_engine, "handle_error", record_db_error)
+    terminal_factory = TrackedTerminalFactory(bind, terminal_call=3)
     provider = GatedEmbeddingProvider(fail=terminal == "failed")
+    updater_entered = asyncio.Event()
+    updater_release = asyncio.Event()
+    updater = CommitGateSession(
+        bind=bind,
+        expire_on_commit=False,
+        commit_entered=updater_entered,
+        commit_release=updater_release,
+    )
+    observer = harness.factory()
+    dispatcher = RecordingDispatcher()
     worker = asyncio.create_task(
         process_job_parse_task(
             job_id,
             7,
-            session_factory=harness.factory,
+            session_factory=terminal_factory,
             embedding_provider=provider,
         )
     )
+    update_task: asyncio.Task[JobDescription] | None = None
+    caplog.set_level("ERROR", logger="app.workers.job_parse_worker")
     try:
         await asyncio.wait_for(provider.entered.wait(), timeout=5)
         async with harness.factory() as claimed_session:
             claimed = await claimed_session.get(JobDescription, job_id)
             assert claimed is not None
             assert (claimed.revision, claimed.parsing_status) == (7, "PROCESSING")
-        updated = await harness.client.put(
-            f"/api/v1/jobs/{job_id}",
-            headers=harness.headers("hr"),
-            json={"raw_content": f"new source while old {terminal} is running"},
+        actor = await load_actor(updater, harness.users["hr"])
+        updater_pid = await updater.scalar(text("SELECT pg_backend_pid()"))
+        assert isinstance(updater_pid, int)
+        update_task = asyncio.create_task(
+            update_job(
+                updater,
+                current_user=actor,
+                job_id=job_id,
+                payload=JobUpdateRequest(raw_content=f"new source while old {terminal} is running"),
+                dispatcher=dispatcher,
+            )
         )
-        assert updated.status_code == 200
-        assert updated.json()["data"]["revision"] == 8
+        await asyncio.wait_for(updater_entered.wait(), timeout=5)
         provider.release.set()
+        await asyncio.wait_for(terminal_factory.entered.wait(), timeout=5)
+        assert terminal_factory.pid is not None and terminal_factory.pid != updater_pid
+        assert await wait_for_blocker(
+            observer,
+            waiter_pid=terminal_factory.pid,
+            blocker_pid=updater_pid,
+        ) == (updater_pid,)
+        updater_release.set()
+        updated = await asyncio.wait_for(update_task, timeout=5)
+        assert updated.revision == 8
         outcome = await asyncio.wait_for(worker, timeout=10)
     finally:
         provider.release.set()
+        updater_release.set()
+        if update_task is not None and not update_task.done():
+            update_task.cancel()
         if not worker.done():
             worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
+        await asyncio.gather(
+            *([worker] if update_task is None else [worker, update_task]),
+            return_exceptions=True,
+        )
+        await updater.close()
+        await observer.close()
+        event.remove(bind.sync_engine, "handle_error", record_db_error)
 
     assert outcome is JobParseTaskOutcome.DISCARDED
+    assert dispatcher.calls == [(job_id, 8)]
+    assert not any(
+        record.message.startswith("job_parse_failure_cas_error") for record in caplog.records
+    )
+    assert db_errors == []
     async with harness.factory() as verify:
         job = await verify.get(JobDescription, job_id)
+        match = await verify.get(MatchResult, match_id)
         assert job is not None
+        assert match is not None
         assert (job.revision, job.parsing_status, job.parsing_error_message) == (
             8,
             "PENDING",
             None,
         )
         assert job.job_embedding is None and job.is_criteria_verified is False
+        assert (match.generation, match.job_revision, match.status) == (
+            initial_generation + 1,
+            8,
+            "PENDING",
+        )
+        assert match.overall_score is None and match.error_message is None
 
 
 @pytest.mark.asyncio
@@ -1103,6 +1290,142 @@ async def test_parse_terminal_commit_then_raw_update_prepares_exact_next_revisio
         assert job is not None
         assert (job.revision, job.status, job.parsing_status) == (8, "DRAFT", "PENDING")
         assert job.parsing_error_message is None and job.job_embedding is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["success", "failed"])
+async def test_parse_terminal_first_holds_job_lock_while_raw_update_waits(
+    job_update_postgres: JobUpdateHarness,
+    terminal: str,
+) -> None:
+    harness = job_update_postgres
+    job_id = harness.jobs["pending"]
+    match_id = uuid.uuid4()
+    async with harness.factory() as setup:
+        job = await setup.get(JobDescription, job_id)
+        resume = await setup.get(Resume, harness.resumes[0])
+        assert job is not None and resume is not None
+        match = make_match(job, resume, 71, "FAILED")
+        match.id = match_id
+        setup.add(match)
+        await setup.commit()
+        initial_generation = match.generation
+
+    async def inspect_terminal(session: AsyncSession) -> tuple[Any, ...]:
+        row = (
+            await session.execute(
+                select(
+                    JobDescription.parsing_status,
+                    JobDescription.parsing_error_message,
+                    JobDescription.job_embedding.is_not(None),
+                    JobDescription.parsed_at.is_not(None),
+                ).where(JobDescription.id == job_id)
+            )
+        ).one()
+        return tuple(row)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    bind = harness.factory.kw["bind"]
+    db_errors: list[BaseException] = []
+
+    def record_db_error(exception_context: Any) -> None:
+        db_errors.append(exception_context.original_exception)
+
+    event.listen(bind.sync_engine, "handle_error", record_db_error)
+    terminal_factory = TerminalCommitGateFactory(
+        bind,
+        terminal_call=3,
+        entered=entered,
+        release=release,
+        inspect=inspect_terminal,
+    )
+    updater = harness.factory()
+    observer = harness.factory()
+    dispatcher = RecordingDispatcher()
+    provider = (
+        ControlledEmbeddingProvider() if terminal == "success" else FailingEmbeddingProvider()
+    )
+    worker = asyncio.create_task(
+        process_job_parse_task(
+            job_id,
+            7,
+            session_factory=terminal_factory,
+            embedding_provider=provider,
+        )
+    )
+    update_task: asyncio.Task[JobDescription] | None = None
+    try:
+        actor = await load_actor(updater, harness.users["hr"])
+        updater_pid = await updater.scalar(text("SELECT pg_backend_pid()"))
+        assert isinstance(updater_pid, int)
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        terminal_session = terminal_factory.terminal_session
+        assert terminal_session is not None and terminal_session.pid is not None
+        assert terminal_session.pid != updater_pid
+        expected_snapshot = (
+            ("PARSED", None, True, True)
+            if terminal == "success"
+            else ("FAILED", "Job embedding failed", False, False)
+        )
+        assert terminal_session.snapshot == expected_snapshot
+        update_task = asyncio.create_task(
+            update_job(
+                updater,
+                current_user=actor,
+                job_id=job_id,
+                payload=JobUpdateRequest(raw_content=f"raw after overlapping {terminal}"),
+                dispatcher=dispatcher,
+            )
+        )
+        assert await wait_for_blocker(
+            observer,
+            waiter_pid=updater_pid,
+            blocker_pid=terminal_session.pid,
+        ) == (terminal_session.pid,)
+        release.set()
+        outcome, updated = await asyncio.wait_for(
+            asyncio.gather(worker, update_task),
+            timeout=10,
+        )
+    finally:
+        release.set()
+        tasks = [worker] + ([] if update_task is None else [update_task])
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await updater.close()
+        await observer.close()
+        event.remove(bind.sync_engine, "handle_error", record_db_error)
+
+    assert outcome is (
+        JobParseTaskOutcome.PARSED if terminal == "success" else JobParseTaskOutcome.FAILED
+    )
+    assert updated.revision == 8
+    assert dispatcher.calls == [(job_id, 8)]
+    assert db_errors == []
+    async with harness.factory() as verify:
+        job = await verify.get(JobDescription, job_id)
+        match = await verify.get(MatchResult, match_id)
+        resume = await verify.get(Resume, harness.resumes[0])
+        assert job is not None and match is not None and resume is not None
+        assert (job.revision, job.status, job.parsing_status, job.is_criteria_verified) == (
+            8,
+            "DRAFT",
+            "PENDING",
+            False,
+        )
+        assert job.job_embedding is None and job.embedding_model is None
+        assert job.embedding_preprocessing_version is None and job.parsed_at is None
+        assert job.parsing_error_message is None
+        assert (match.generation, match.resume_revision, match.job_revision, match.status) == (
+            initial_generation + 1,
+            resume.revision,
+            8,
+            "PENDING",
+        )
+        assert match.overall_score is None and match.error_message is None
 
 
 @pytest.mark.asyncio
@@ -1530,31 +1853,108 @@ async def test_match_terminal_and_raw_update_serialize_with_claimed_current_payl
 
     values = terminal_values(status)
     if terminal_first:
-        assert await _terminal_update(
-            harness.factory,
-            match_id=payload[0],
-            expected_generation=payload[1],
-            expected_resume_revision=payload[2],
-            expected_job_revision=payload[3],
-            algorithm_version=payload[4],
-            values=values,
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        bind = harness.factory.kw["bind"]
+
+        async def inspect_terminal(session: AsyncSession) -> tuple[Any, ...]:
+            row = (
+                await session.execute(
+                    select(
+                        MatchResult.status,
+                        MatchResult.overall_score,
+                        MatchResult.matched_skills,
+                        MatchResult.error_message,
+                        MatchResult.embedding_model,
+                        MatchResult.calculated_at.is_not(None),
+                    ).where(MatchResult.id == match_id)
+                )
+            ).one()
+            return tuple(row)
+
+        terminal_session = InspectingCommitGateSession(
+            bind=bind,
+            expire_on_commit=False,
+            commit_entered=entered,
+            commit_release=release,
+            inspect=inspect_terminal,
         )
-        async with harness.factory() as terminal_verify:
-            terminal_match = await terminal_verify.get(MatchResult, match_id)
-            assert terminal_match is not None and terminal_match.status == status
+        terminal_factory = ExistingSessionFactory(terminal_session)
+        updater = harness.factory()
+        observer = harness.factory()
+        dispatcher = RecordingDispatcher()
+        terminal_task: asyncio.Task[bool] | None = None
+        update_task: asyncio.Task[JobDescription] | None = None
+        try:
+            actor = await load_actor(updater, harness.users["hr"])
+            updater_pid = await updater.scalar(text("SELECT pg_backend_pid()"))
+            assert isinstance(updater_pid, int)
+            terminal_task = asyncio.create_task(
+                _terminal_update(
+                    terminal_factory,
+                    match_id=payload[0],
+                    expected_generation=payload[1],
+                    expected_resume_revision=payload[2],
+                    expected_job_revision=payload[3],
+                    algorithm_version=payload[4],
+                    values=values,
+                )
+            )
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert terminal_session.pid is not None and terminal_session.pid != updater_pid
+            terminal_snapshot = terminal_session.snapshot
+            assert terminal_snapshot[0] == status
             if status == "COMPLETED":
-                assert terminal_match.overall_score == Decimal("80.00")
-                assert terminal_match.embedding_model == BGE_M3_MODEL_NAME
-                assert terminal_match.calculated_at is not None
+                assert terminal_snapshot[1:] == (
+                    Decimal("80.00"),
+                    [{"skill_id": 1}],
+                    None,
+                    BGE_M3_MODEL_NAME,
+                    True,
+                )
             else:
-                assert terminal_match.error_message == "controlled terminal failure"
-                assert terminal_match.overall_score is None
-        response = await harness.client.put(
-            f"/api/v1/jobs/{job_id}",
-            headers=harness.headers("hr"),
-            json={"raw_content": f"raw after match terminal {status}"},
-        )
-        assert response.status_code == 200
+                assert terminal_snapshot[1:] == (
+                    None,
+                    [],
+                    "controlled terminal failure",
+                    None,
+                    False,
+                )
+            update_task = asyncio.create_task(
+                update_job(
+                    updater,
+                    current_user=actor,
+                    job_id=job_id,
+                    payload=JobUpdateRequest(
+                        raw_content=f"raw after overlapping match terminal {status}"
+                    ),
+                    dispatcher=dispatcher,
+                )
+            )
+            assert await wait_for_blocker(
+                observer,
+                waiter_pid=updater_pid,
+                blocker_pid=terminal_session.pid,
+            ) == (terminal_session.pid,)
+            release.set()
+            terminal_result, updated = await asyncio.wait_for(
+                asyncio.gather(terminal_task, update_task),
+                timeout=10,
+            )
+            assert terminal_result is True
+            assert updated.revision == 8
+            assert dispatcher.calls == [(job_id, 8)]
+        finally:
+            release.set()
+            tasks = [task for task in (terminal_task, update_task) if task is not None]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await terminal_session.close()
+            await updater.close()
+            await observer.close()
     else:
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -1806,6 +2206,20 @@ async def test_cross_job_operations_share_ordered_resumes_without_deadlock_or_lo
                 await setup.scalars(select(Resume).where(Resume.id.in_(shared_resumes)))
             ).all()
         }
+        resume_source_snapshots = {
+            resume.id: (
+                resume.file_name,
+                resume.storage_key,
+                resume.file_size,
+                resume.mime_type,
+                resume.create_request_fingerprint,
+                resume.raw_text,
+                resume.revision,
+                resume.parsing_status,
+                resume.is_deleted,
+            )
+            for resume in resume_rows.values()
+        }
         b_matches = (
             make_match(persisted_b, resume_rows[shared_resumes[1]], 50, "PENDING"),
             make_match(persisted_b, resume_rows[shared_resumes[0]], 51, "PENDING"),
@@ -1823,19 +2237,13 @@ async def test_cross_job_operations_share_ordered_resumes_without_deadlock_or_lo
             ).all()
         }
 
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    bind = harness.factory.kw["bind"]
-    winner = CommitGateSession(
-        bind=bind,
-        expire_on_commit=False,
-        commit_entered=entered,
-        commit_release=release,
-    )
-    waiter = harness.factory()
+    blocker = harness.factory()
+    first = harness.factory()
+    second = harness.factory()
     observer = harness.factory()
-    winner_task: asyncio.Task[Any] | None = None
-    waiter_task: asyncio.Task[Any] | None = None
+    first_task: asyncio.Task[Any] | None = None
+    second_task: asyncio.Task[Any] | None = None
+    blocker_released = False
     criteria = JobCriteriaRequest.model_validate(
         {
             "skills": [
@@ -1884,35 +2292,51 @@ async def test_cross_job_operations_share_ordered_resumes_without_deadlock_or_lo
         )
 
     try:
-        winner_actor = await load_actor(winner, harness.users["admin"])
-        waiter_actor = await load_actor(waiter, harness.users["admin"])
-        winner_pid = await winner.scalar(text("SELECT pg_backend_pid()"))
-        waiter_pid = await waiter.scalar(text("SELECT pg_backend_pid()"))
-        assert isinstance(winner_pid, int) and isinstance(waiter_pid, int)
-        winner_task = asyncio.create_task(
-            run_a(winner, winner_actor) if job_a_first else run_b(winner, winner_actor)
+        first_actor = await load_actor(first, harness.users["admin"])
+        second_actor = await load_actor(second, harness.users["admin"])
+        blocker_pid = await blocker.scalar(text("SELECT pg_backend_pid()"))
+        first_pid = await first.scalar(text("SELECT pg_backend_pid()"))
+        second_pid = await second.scalar(text("SELECT pg_backend_pid()"))
+        assert all(isinstance(pid, int) for pid in (blocker_pid, first_pid, second_pid))
+        assert len({blocker_pid, first_pid, second_pid}) == 3
+        await blocker.scalar(
+            select(Resume)
+            .where(Resume.id == shared_resumes[0])
+            .execution_options(populate_existing=True)
+            .with_for_update()
         )
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        waiter_task = asyncio.create_task(
-            run_b(waiter, waiter_actor) if job_a_first else run_a(waiter, waiter_actor)
+        first_task = asyncio.create_task(
+            run_a(first, first_actor) if job_a_first else run_b(first, first_actor)
         )
         assert await wait_for_blocker(
             observer,
-            waiter_pid=waiter_pid,
-            blocker_pid=winner_pid,
-        ) == (winner_pid,)
-        release.set()
-        await asyncio.wait_for(asyncio.gather(winner_task, waiter_task), timeout=10)
+            waiter_pid=first_pid,
+            blocker_pid=blocker_pid,
+        )
+        second_task = asyncio.create_task(
+            run_b(second, second_actor) if job_a_first else run_a(second, second_actor)
+        )
+        second_graph = await wait_graph_reaches(
+            observer,
+            waiter_pid=second_pid,
+            blocker_pid=blocker_pid,
+        )
+        assert second_graph[second_pid]
+        await blocker.commit()
+        blocker_released = True
+        await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=10)
     finally:
-        release.set()
-        tasks = [task for task in (winner_task, waiter_task) if task is not None]
+        if not blocker_released:
+            await blocker.rollback()
+        tasks = [task for task in (first_task, second_task) if task is not None]
         for task in tasks:
             if not task.done():
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        await winner.close()
-        await waiter.close()
+        await blocker.close()
+        await first.close()
+        await second.close()
         await observer.close()
 
     async with harness.factory() as verify:
@@ -1934,6 +2358,7 @@ async def test_cross_job_operations_share_ordered_resumes_without_deadlock_or_lo
                 await verify.scalars(select(Resume).where(Resume.id.in_(affected_resume_ids)))
             ).all()
         }
+        assert {row.id for row in rows} == set(initial_generations)
         assert jobs[job_a].revision == 8
         expected_b_revision = 8 if competitor in {"criteria", "raw"} else 7
         assert jobs[job_b].revision == expected_b_revision
@@ -1942,6 +2367,177 @@ async def test_cross_job_operations_share_ordered_resumes_without_deadlock_or_lo
             assert row.job_revision == jobs[row.job_id].revision
             assert row.resume_revision == resumes[row.resume_id].revision
             assert row.status == "PENDING"
+            assert row.overall_score is None and row.skill_score is None
+            assert row.semantic_score is None and row.experience_score is None
+            assert row.matched_skills == [] and row.missing_skills == []
+            assert row.gap_analysis_summary is None and row.error_message is None
+            assert row.embedding_model is None
+            assert row.embedding_preprocessing_version is None
+            assert row.calculated_at is None
+        for resume_id in shared_resumes:
+            resume = resumes[resume_id]
+            assert (
+                resume.file_name,
+                resume.storage_key,
+                resume.file_size,
+                resume.mime_type,
+                resume.create_request_fingerprint,
+                resume.raw_text,
+                resume.revision,
+                resume.parsing_status,
+                resume.is_deleted,
+            ) == resume_source_snapshots[resume_id]
+
+
+@pytest.mark.asyncio
+async def test_cross_job_interleaving_detects_reversed_raw_resume_lock_order(
+    job_update_postgres: JobUpdateHarness,
+) -> None:
+    """Intentional negative control: only raw-update Resume locking is reversed."""
+
+    harness = job_update_postgres
+    job_a = harness.jobs["parsed"]
+    job_b = harness.jobs["other"]
+    shared_resumes = tuple(sorted(harness.resumes[:2], key=lambda item: item.int))
+    async with harness.factory() as setup:
+        persisted_b = await setup.get(JobDescription, job_b)
+        assert persisted_b is not None
+        setup.add(
+            JobSkill(
+                job_id=job_b,
+                skill_id=harness.skill_id,
+                importance="MANDATORY",
+                min_years_required=Decimal("1.0"),
+            )
+        )
+        resumes = {
+            row.id: row
+            for row in (
+                await setup.scalars(select(Resume).where(Resume.id.in_(shared_resumes)))
+            ).all()
+        }
+        setup.add_all(
+            (
+                make_match(persisted_b, resumes[shared_resumes[1]], 60, "PENDING"),
+                make_match(persisted_b, resumes[shared_resumes[0]], 61, "PENDING"),
+            )
+        )
+        await setup.commit()
+
+    blocker = harness.factory()
+    criteria_session = harness.factory()
+    raw_session = harness.factory()
+    observer = harness.factory()
+    criteria_task: asyncio.Task[Any] | None = None
+    raw_task: asyncio.Task[Any] | None = None
+    blocker_released = False
+    listener_installed = False
+    raw_sync_connection: Any = None
+
+    def reverse_only_raw_resume_locks(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> tuple[str, Any]:
+        if (
+            "FROM resumes" in statement
+            and "FOR UPDATE" in statement
+            and "ORDER BY resumes.id ASC" in statement
+        ):
+            statement = statement.replace(
+                "ORDER BY resumes.id ASC",
+                "ORDER BY resumes.id DESC",
+            )
+        return statement, parameters
+
+    criteria = JobCriteriaRequest.model_validate(
+        {
+            "skills": [
+                {
+                    "skill_id": harness.skill_id,
+                    "importance": "MANDATORY",
+                    "min_years_required": 2,
+                }
+            ]
+        }
+    )
+    try:
+        criteria_actor = await load_actor(criteria_session, harness.users["admin"])
+        raw_actor = await load_actor(raw_session, harness.users["admin"])
+        blocker_pid = await blocker.scalar(text("SELECT pg_backend_pid()"))
+        criteria_pid = await criteria_session.scalar(text("SELECT pg_backend_pid()"))
+        raw_pid = await raw_session.scalar(text("SELECT pg_backend_pid()"))
+        assert len({blocker_pid, criteria_pid, raw_pid}) == 3
+        raw_connection = await raw_session.connection()
+        raw_sync_connection = raw_connection.sync_connection
+        event.listen(
+            raw_sync_connection,
+            "before_cursor_execute",
+            reverse_only_raw_resume_locks,
+            retval=True,
+        )
+        listener_installed = True
+        await blocker.scalar(select(Resume).where(Resume.id == shared_resumes[0]).with_for_update())
+        criteria_task = asyncio.create_task(
+            update_job_criteria(
+                criteria_session,
+                current_user=criteria_actor,
+                job_id=job_b,
+                payload=criteria,
+            )
+        )
+        assert await wait_for_blocker(
+            observer,
+            waiter_pid=criteria_pid,
+            blocker_pid=blocker_pid,
+        )
+        raw_task = asyncio.create_task(
+            update_job(
+                raw_session,
+                current_user=raw_actor,
+                job_id=job_a,
+                payload=JobUpdateRequest(raw_content="negative reversed Resume order"),
+                dispatcher=RecordingDispatcher(),
+            )
+        )
+        assert await wait_graph_reaches(
+            observer,
+            waiter_pid=raw_pid,
+            blocker_pid=blocker_pid,
+        )
+        await blocker.commit()
+        blocker_released = True
+        results = await asyncio.wait_for(
+            asyncio.gather(criteria_task, raw_task, return_exceptions=True),
+            timeout=10,
+        )
+        failures = [result for result in results if isinstance(result, BaseException)]
+        assert len(failures) == 1
+        assert isinstance(failures[0], DBAPIError)
+        assert getattr(failures[0].orig, "sqlstate", None) == "40P01"
+        assert len([result for result in results if not isinstance(result, BaseException)]) == 1
+    finally:
+        if not blocker_released:
+            await blocker.rollback()
+        tasks = [task for task in (criteria_task, raw_task) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if listener_installed:
+            event.remove(
+                raw_sync_connection,
+                "before_cursor_execute",
+                reverse_only_raw_resume_locks,
+            )
+        await blocker.close()
+        await criteria_session.close()
+        await raw_session.close()
+        await observer.close()
 
 
 @pytest.mark.asyncio
