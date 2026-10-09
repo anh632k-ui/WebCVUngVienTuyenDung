@@ -27,9 +27,10 @@ export function SiteHeader() {
         <nav className="desktop-navigation" aria-label="Điều hướng chính">
           {navigation.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
         </nav>
-        <Link className="header-action" href="/tinh-nang">
-          Khám phá nền tảng <Icon name="arrow-up-right" size={16} />
-        </Link>
+        <div className="header-auth-actions">
+          <Link className="header-login" href="/dang-nhap">Đăng nhập</Link>
+          <Link className="header-action" href="/dang-ky">Đăng ký <Icon name="arrow-up-right" size={16} /></Link>
+        </div>
         <MobileNavigation items={navigation} />
       </div>
     </header>
