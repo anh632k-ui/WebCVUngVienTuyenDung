@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import builtins
 import math
+import sys
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from app.ai.vector_embedding import (
     BGE_M3_EMBEDDING_DIMENSION,
     BGE_M3_MODEL_NAME,
+    BGE_M3_MODEL_REVISION,
     BgeM3EmbeddingProvider,
     EmbeddingProviderError,
     validate_dense_embedding,
@@ -31,6 +34,32 @@ class RecordingModel:
     def encode(self, text: str, **kwargs: Any) -> ArrayLike:
         self.calls.append((text, kwargs))
         return ArrayLike(self.values)
+
+
+def test_bge_loader_pins_official_safetensors_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded_model = object()
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_sentence_transformer(model_name: str, **kwargs: Any) -> object:
+        calls.append((model_name, kwargs))
+        return loaded_model
+
+    fake_module = ModuleType("sentence_transformers")
+    fake_module.SentenceTransformer = fake_sentence_transformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+
+    assert BgeM3EmbeddingProvider._load_sentence_transformer() is loaded_model
+    assert calls == [
+        (
+            BGE_M3_MODEL_NAME,
+            {
+                "revision": BGE_M3_MODEL_REVISION,
+                "trust_remote_code": False,
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -105,6 +134,17 @@ async def test_bge_provider_wraps_inference_failure_without_runtime_details() ->
     with pytest.raises(EmbeddingProviderError) as raised:
         await provider.embed("resume")
     assert str(raised.value) == "BGE-M3 inference failed"
+
+
+@pytest.mark.asyncio
+async def test_bge_provider_wraps_model_load_failure_without_runtime_details() -> None:
+    def fail_model_load() -> None:
+        raise RuntimeError("C:/secret/model-cache/private-path")
+
+    provider = BgeM3EmbeddingProvider(model_loader=fail_model_load)
+    with pytest.raises(EmbeddingProviderError) as raised:
+        await provider.embed("resume")
+    assert str(raised.value) == "BGE-M3 model initialization failed"
 
 
 @pytest.mark.asyncio
