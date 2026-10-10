@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 
 from app.ai.schemas import ParsedProfile
-from app.core.email_validation import normalize_untrusted_profile_email
 from app.ai.sections import ResumeSection, ResumeSections, identify_section_heading
+from app.core.email_validation import normalize_untrusted_profile_email
 
 MAX_SUMMARY_CHARS = 2_000
 
