@@ -4,6 +4,7 @@ import re
 
 from app.ai.schemas import ParsedProfile
 from app.ai.sections import ResumeSection, ResumeSections, identify_section_heading
+from app.core.email_validation import normalize_untrusted_profile_email
 
 MAX_SUMMARY_CHARS = 2_000
 
@@ -39,6 +40,14 @@ _JOB_TITLE_PHRASES = {
 def _first_match(pattern: re.Pattern[str], text: str) -> str | None:
     match = pattern.search(text)
     return match.group(0).strip(" \t,;()[]<>") if match else None
+
+
+def _first_valid_email(text: str) -> str | None:
+    for match in _EMAIL.finditer(text):
+        email = normalize_untrusted_profile_email(match.group(0))
+        if email is not None:
+            return email
+    return None
 
 
 def _labeled_value(pattern: re.Pattern[str], text: str) -> str | None:
@@ -86,7 +95,7 @@ def extract_profile(text: str, sections: ResumeSections) -> ParsedProfile:
         phone = re.sub(r"\s+", " ", phone)
     return ParsedProfile(
         full_name=_extract_full_name(sections),
-        email=_first_match(_EMAIL, text),
+        email=_first_valid_email(text),
         phone_number=phone,
         current_title=_labeled_value(_TITLE_LABEL, sections.preamble),
         location=_labeled_value(_LOCATION_LABEL, sections.preamble),

@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.core.email_validation import normalize_untrusted_profile_email
+
 
 class ParsingStatus(StrEnum):
     PENDING = "PENDING"
@@ -136,6 +138,13 @@ class CandidateProfileData(BaseModel):
     linkedin_url: str | None = None
     github_url: str | None = None
     professional_summary: str | None = None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_legacy_parsed_email(cls, value: object) -> str | None:
+        # Older parsed profiles may contain emails rejected by EmailStr.
+        # Keep the rest of the CV readable; do not mutate persisted data.
+        return normalize_untrusted_profile_email(value)
 
 
 class ResumeSkillData(BaseModel):
