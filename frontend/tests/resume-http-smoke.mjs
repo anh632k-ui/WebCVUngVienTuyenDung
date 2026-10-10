@@ -95,6 +95,34 @@ async function check() {
   assert.equal(received.filter((i) => i.path === "/api/v1/resumes/upload").length, before);
   const invalidUpload = await req("/api/candidate/resumes", { method: "POST", headers: { cookie, origin, "idempotency-key": "bad" }, body: form });
   assert.equal(invalidUpload.status, 422);
+
+  // Regression: multipart boundary overhead must not change the 5 MiB *file* limit.
+  // The BFF must reject oversized files with 413 before forwarding to FastAPI.
+  const oversized = new FormData();
+  oversized.set("file", new Blob([new Uint8Array(5 * 1024 * 1024 + 1)], { type: "application/pdf" }), "oversized.pdf");
+  const uploadsBeforeOversized = received.filter((i) => i.path === "/api/v1/resumes/upload").length;
+  const oversizedRes = await req("/api/candidate/resumes", {
+    method: "POST", headers: { cookie, origin, "sec-fetch-site": "same-origin", "idempotency-key": "c33d3333-3333-4333-8333-333333333334" }, body: oversized,
+  });
+  assert.equal(oversizedRes.status, 413, await oversizedRes.clone().text());
+  assert.equal((await oversizedRes.json()).error.code, "FILE_TOO_LARGE");
+  assert.equal(received.filter((i) => i.path === "/api/v1/resumes/upload").length, uploadsBeforeOversized);
+
+  // Empty PDF is still a validation error, not a payload-too-large error.
+  const empty = new FormData();
+  empty.set("file", new Blob([], { type: "application/pdf" }), "empty.pdf");
+  const emptyRes = await req("/api/candidate/resumes", {
+    method: "POST", headers: { cookie, origin, "sec-fetch-site": "same-origin", "idempotency-key": "c33d3333-3333-4333-8333-333333333335" }, body: empty,
+  });
+  assert.equal(emptyRes.status, 422, await emptyRes.clone().text());
+
+  // Exactly 5 MiB is accepted by the BFF; mock FastAPI returns 202.
+  const maxSize = new FormData();
+  maxSize.set("file", new Blob([new Uint8Array(5 * 1024 * 1024)], { type: "application/pdf" }), "max-size.pdf");
+  const maxRes = await req("/api/candidate/resumes", {
+    method: "POST", headers: { cookie, origin, "sec-fetch-site": "same-origin", "idempotency-key": "c33d3333-3333-4333-8333-333333333336" }, body: maxSize,
+  });
+  assert.equal(maxRes.status, 202, await maxRes.clone().text());
   const update = await req(`/api/candidate/resumes/${cvId}/parsed-data`, { method: "PUT", headers: { ...headers, cookie }, body: JSON.stringify({ candidate_profile: null, skills: [], experiences: [], educations: [] }) });
   assert.equal(update.status, 200, await update.clone().text());
   const escalation = await req(`/api/candidate/resumes/${cvId}/parsed-data`, { method: "PUT", headers: { ...headers, cookie }, body: JSON.stringify({ candidate_profile: null, skills: [], experiences: [], educations: [], role: "ADMIN" }) });
