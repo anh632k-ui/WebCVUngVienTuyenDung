@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 BGE_M3_MODEL_NAME = "BAAI/bge-m3"
+BGE_M3_MODEL_REVISION = "31e47391fcbda65be526abe98e646b3c6cd845a8"
 BGE_M3_EMBEDDING_DIMENSION = 1024
 
 
@@ -56,7 +57,11 @@ class BgeM3EmbeddingProvider:
                 "BGE-M3 runtime dependency is not installed; install the ai extra"
             ) from error
         try:
-            return SentenceTransformer(BGE_M3_MODEL_NAME)
+            return SentenceTransformer(
+                BGE_M3_MODEL_NAME,
+                revision=BGE_M3_MODEL_REVISION,
+                trust_remote_code=False,
+            )
         except Exception as error:
             raise EmbeddingProviderError("BGE-M3 model initialization failed") from error
 
