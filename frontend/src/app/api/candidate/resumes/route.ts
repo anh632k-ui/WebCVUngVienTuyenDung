@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { candidateGate, resumeBackend, resumeJson, sameOriginUpload, uploadToBackend } from "@/lib/resume/gateway";
-import { isParsingStatus, isResumeFile, isUuid } from "@/lib/resume/contracts";
+import { MAX_RESUME_BYTES, isParsingStatus, isResumeFile, isUuid } from "@/lib/resume/contracts";
 import { jsonNoStore } from "@/lib/auth/route-utils";
 
 export async function GET(request: NextRequest) {
@@ -32,6 +32,11 @@ export async function POST(request: Request) {
   let body: FormData;
   try { body = await request.formData(); } catch { return jsonNoStore({ success: false, error: { code: "VALIDATION_ERROR", message: "Không thể đọc file tải lên." } }, 422); }
   const file = body.get("file");
+  // FormData overhead is variable; enforce the canonical 5 MiB FILE limit separately.
+  // Oversized valid multipart uploads must return 413, not a generic 422.
+  if (file instanceof File && file.size > MAX_RESUME_BYTES) {
+    return jsonNoStore({ success: false, error: { code: "FILE_TOO_LARGE", message: "CV tối đa 5 MB." } }, 413);
+  }
   if (!(file instanceof File) || !isResumeFile(file) || [...body.keys()].some((k) => k !== "file")) {
     return jsonNoStore({ success: false, error: { code: "INVALID_RESUME_FILE", message: "Chỉ nhận PDF/DOCX, dung lượng tối đa 5 MB." } }, 422);
   }
