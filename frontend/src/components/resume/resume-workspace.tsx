@@ -69,7 +69,7 @@ export function ResumeWorkspace({ area = "candidate" }: { area?: ResumeArea }) {
     try {
       const form = new FormData();
       form.set("file", file);
-      const response = await fetch("${config.api}", {
+      const response = await fetch(`${config.api}`, {
         method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: form,
       });
       const body = await response.json() as ErrorEnvelope & { data?: { resume_id?: string; parsing_status?: string } };
