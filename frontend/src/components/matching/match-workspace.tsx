@@ -93,7 +93,7 @@ export function MatchWorkspace({ role }: { role: WorkspaceRole }) {
     finally { setWorking(false); }
   }
 
-  return <div className="job-workspace">
+  return <div className="job-workspace matching-workspace">
     <section className="resume-panel">
       <h2>{role === "CANDIDATE" ? "Tự kiểm tra mức độ phù hợp" : "Batch matching talent pool"}</h2>
       <p>Chỉ chọn CV/JD đã PARSED; backend sẽ từ chối trường hợp chưa đủ điều kiện, không thuộc quyền sở hữu hoặc đã bị xóa.</p>
