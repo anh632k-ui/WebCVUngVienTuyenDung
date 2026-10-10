@@ -168,7 +168,8 @@ async function check() {
   const forbiddenCandidateHrPage = await req("/hr/talent-pool", { headers: { cookie }, redirect: "manual" });
   assert.equal(forbiddenCandidateHrPage.status, 307);
   const forbiddenGuestHrPage = await req("/hr/talent-pool");
-  assert.equal(forbiddenGuestHrPage.status, 200); // follows redirect to login; no protected data
+  assert.equal(forbiddenGuestHrPage.status, 307); // redirect: manual; never serve protected HTML
+  assert.equal(new URL(forbiddenGuestHrPage.headers.get("location"), origin).pathname, "/dang-nhap");
   assert.doesNotMatch(await forbiddenGuestHrPage.text(), /Talent pool của tôi/);
   const hrDetailPage = await req(`/hr/talent-pool/${hrCvId}`, { headers: { cookie: hrCookie } });
   assert.equal(hrDetailPage.status, 200);
