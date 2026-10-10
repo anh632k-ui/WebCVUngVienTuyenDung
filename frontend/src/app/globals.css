@@ -68,6 +68,7 @@ svg { flex: 0 0 auto; }
 .eyebrow-spark { align-items: center; background: #dbeafe; border-radius: 8px; display: inline-flex; height: 27px; justify-content: center; width: 27px; }
 .hero h1, .subpage-hero h1 { color: var(--navy); font-size: clamp(42px, 5vw, 68px); letter-spacing: -2.8px; line-height: 1.06; margin: 0; }
 .hero h1 span, .subpage-hero h1 span, .section-heading h2 span, .privacy-copy h2 span { color: var(--blue); }
+.hero h1 span { display: block; }
 .hero-description { color: #475569; font-size: 18px; margin: 26px 0 30px; max-width: 650px; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; }
 .hero-assurances { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 12px; gap: 18px; margin-top: 24px; }
@@ -473,8 +474,8 @@ svg { flex: 0 0 auto; }
 .dashboard-shortcut strong span { color: var(--blue); }
 .dashboard-shortcut > span { font-size: 13px; color: var(--muted); line-height: 1.6; }
 @media (max-width: 768px) {
-  .dashboard-sidebar { gap: 8px; }
-  .dashboard-sidebar .dashboard-nav { display: flex; flex-direction: row; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; padding: 5px 0 10px; }
+  .dashboard-sidebar { gap: 8px; max-width: 100%; min-width: 0; }
+  .dashboard-sidebar .dashboard-nav { display: flex; flex-direction: row; gap: 8px; max-width: 100%; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; padding: 5px 0 10px; width: 100%; }
   .dashboard-sidebar .dashboard-nav a { flex: 0 0 auto; min-height: 42px; white-space: nowrap; text-align: center; scroll-snap-align: start; }
   .dashboard-sidebar .dashboard-nav a[aria-current="page"] { box-shadow: inset 0 -3px 0 #2563eb; }
   .dashboard-shortcut-grid { grid-template-columns: 1fr; }
