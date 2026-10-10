@@ -16,7 +16,7 @@ const profileFields: { name: keyof CandidateProfile; label: string; max: number 
 function nullableString(text: string) { return text.trim() || null; }
 function nullableNumber(text: string) { return text.trim() === "" ? null : Number(text); }
 
-export function ParsedDataEditor({ detail, id, onSaved }: { detail: ResumeDetail; id: string; onSaved: (detail: ResumeDetail) => void }) {
+export function ParsedDataEditor({ detail, id, apiBase = "/api/candidate/resumes", onSaved }: { detail: ResumeDetail; id: string; apiBase?: string; onSaved: (detail: ResumeDetail) => void }) {
   const [profile, setProfile] = useState<CandidateProfile | null>(detail.candidate_profile);
   const [skills, setSkills] = useState<ResumeSkill[]>(detail.skills);
   const [experiences, setExperiences] = useState<Experience[]>(detail.experiences);
@@ -42,7 +42,7 @@ export function ParsedDataEditor({ detail, id, onSaved }: { detail: ResumeDetail
     const payload: ParsedDataUpdate = { candidate_profile: profile, skills, experiences, educations };
     setSaving(true);
     try {
-      const response = await fetch(`/api/candidate/resumes/${id}/parsed-data`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const response = await fetch(`${apiBase}/${id}/parsed-data`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const body = await response.json() as ResumeDataResponse & { error?: { message?: string } };
       if (!response.ok) throw new Error(body.error?.message || "Không thể cập nhật dữ liệu trích xuất.");
       onSaved(body.data);

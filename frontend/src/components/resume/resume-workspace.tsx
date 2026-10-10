@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isResumeFile, type ParsingStatus, type ResumePage, type ResumeSummary } from "@/lib/resume/contracts";
+import { RESUME_AREAS, type ResumeArea } from "@/lib/resume/areas";
 
 const statusNames: Record<ParsingStatus, string> = {
   PENDING: "Đang chờ", PROCESSING: "Đang phân tích", PARSED: "Đã phân tích", FAILED: "Thất bại",
@@ -13,7 +14,8 @@ function apiError(body: ErrorEnvelope, fallback: string) {
   return body.error?.message || fallback;
 }
 
-export function ResumeWorkspace() {
+export function ResumeWorkspace({ area = "candidate" }: { area?: ResumeArea }) {
+  const config = RESUME_AREAS[area];
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState("");
   const [filter, setFilter] = useState<ParsingStatus | "">("");
@@ -31,14 +33,14 @@ export function ResumeWorkspace() {
     if (keyword.trim()) params.set("keyword", keyword.trim());
     if (filter) params.set("parsing_status", filter);
     try {
-      const response = await fetch(`/api/candidate/resumes?${params}`, { cache: "no-store", signal });
+      const response = await fetch(`${config.api}?${params}`, { cache: "no-store", signal });
       const body = await response.json() as ResumePage & ErrorEnvelope;
       if (!response.ok) throw new Error(apiError(body, "Không thể tải danh sách CV."));
       if (!signal?.aborted) { setData(body); setError(""); }
     } catch (cause) {
       if (!signal?.aborted) setError(cause instanceof Error ? cause.message : "Không thể tải CV.");
     } finally { if (!signal?.aborted) setLoading(false); }
-  }, [page, keyword, filter]);
+  }, [page, keyword, filter, config.api]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -67,7 +69,7 @@ export function ResumeWorkspace() {
     try {
       const form = new FormData();
       form.set("file", file);
-      const response = await fetch("/api/candidate/resumes", {
+      const response = await fetch("${config.api}", {
         method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: form,
       });
       const body = await response.json() as ErrorEnvelope & { data?: { resume_id?: string; parsing_status?: string } };
@@ -80,8 +82,8 @@ export function ResumeWorkspace() {
 
   return <div className="resume-workspace">
     <section className="resume-panel">
-      <h2>Tải CV mới</h2>
-      <p>Hỗ trợ PDF và DOCX, dung lượng tối đa 5 MB. Ảnh scan không được đảm bảo trích xuất trong MVP.</p>
+      <h2>{area === "hr" ? "Thêm CV vào talent pool" : "Tải CV mới"}</h2>
+      <p>Hỗ trợ PDF/DOCX, tối đa 5 MB. Ảnh scan không đảm bảo trích xuất trong MVP. {area === "hr" ? "CV do HR tải lên chỉ thuộc kho của HR hiện tại, không lấy tự động từ ứng viên." : ""}</p>
       <div className="resume-upload-row">
         <label className="resume-file-input"><span>Chọn tệp CV</span>
           <input type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -98,7 +100,7 @@ export function ResumeWorkspace() {
 
     <section className="resume-panel">
       <div className="resume-section-head">
-        <div><h2>Danh sách CV</h2><p>Dữ liệu thuộc tài khoản hiện tại, không tự động chia sẻ với nhà tuyển dụng.</p></div>
+        <div><h2>{area === "hr" ? "CV trong talent pool của tôi" : "Danh sách CV"}</h2><p>{area === "hr" ? "CV do tài khoản HR này sở hữu; chọn CV đã PARSED để batch matching với JD của bạn." : "Dữ liệu thuộc tài khoản hiện tại, không tự động chia sẻ với nhà tuyển dụng."}</p></div>
         <button className="button button-secondary" type="button" onClick={() => void refresh()} disabled={loading}>Làm mới</button>
       </div>
       <form className="resume-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); void refresh(); }}>
@@ -117,7 +119,7 @@ export function ResumeWorkspace() {
           <td>{(item.file_size / 1024 / 1024).toFixed(2)} MB</td>
           <td><span className={`resume-status resume-status-${item.parsing_status.toLowerCase()}`}>{statusNames[item.parsing_status]}</span></td>
           <td>{new Date(item.created_at).toLocaleDateString("vi-VN")}</td>
-          <td><Link className="inline-link" href={`/cv/${item.id}`}>Xem CV →</Link></td>
+          <td><Link className="inline-link" href={`${config.page}/${item.id}`}>Xem CV →</Link></td>
         </tr>)}</tbody>
       </table></div>}
       {data && data.meta.total_pages > 1 && <div className="resume-pagination">
