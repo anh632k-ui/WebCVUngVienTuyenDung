@@ -15,6 +15,7 @@ const user = { id: "00000000-0000-4000-8000-000000000001", email: "candidate@exa
 const detail = { resume: summary, candidate_profile: null, skills: [], experiences: [], educations: [] };
 const hrCvId = "00000000-0000-4000-8000-000000000098";
 const hrUser = { ...user, id: "00000000-0000-4000-8000-000000000002", email: "hr@example.test", full_name: "HR Test", role: "HR" };
+const hrBUser = { ...hrUser, id: "00000000-0000-4000-8000-000000000003", email: "hr-b@example.test", full_name: "HR B Test" };
 const hrSummary = { ...summary, id: hrCvId, file_name: "hr-pool.pdf" };
 const hrDetail = { resume: hrSummary, candidate_profile: null, skills: [], experiences: [], educations: [] };
 const received = [];
@@ -30,6 +31,8 @@ const backend = createServer(async (req, res) => {
       ? respond(res, 200, { success: true, data: user })
       : auth === "Bearer hr-token"
         ? respond(res, 200, { success: true, data: hrUser })
+        : auth === "Bearer hr-b-token"
+          ? respond(res, 200, { success: true, data: hrBUser })
         : respond(res, 401, { success: false, error: { code: "INVALID_ACCESS_TOKEN", message: "Invalid token" } });
   }
   // Real FastAPI enforces resumes.owner_user_id; simulate two completely separate owners.
@@ -44,6 +47,11 @@ const backend = createServer(async (req, res) => {
     }
     if (pathname === `/api/v1/resumes/${hrCvId}/parsed-data` && req.method === "PUT") return respond(res, 200, { success: true, data: { ...hrDetail, candidate_profile: JSON.parse(bytes.toString("utf8")).candidate_profile } });
     if (pathname === `/api/v1/resumes/${hrCvId}` && req.method === "DELETE") { res.writeHead(204); return res.end(); }
+    return respond(res, 404, { success: false, error: { code: "NOT_FOUND", message: "CV not found" } });
+  }
+  if (auth === "Bearer hr-b-token") {
+    if (pathname === "/api/v1/resumes" && req.method === "GET") return respond(res, 200, { success: true, data: [], meta: { page: 1, limit: 10, total_items: 0, total_pages: 0 } });
+    // HR B cannot read, download, edit or delete HR A's CV by guessing the UUID.
     return respond(res, 404, { success: false, error: { code: "NOT_FOUND", message: "CV not found" } });
   }
   if (auth !== "Bearer candidate-token") return respond(res, 403, { success: false, error: { code: "INSUFFICIENT_PERMISSIONS", message: "Forbidden" } });
@@ -178,6 +186,17 @@ async function check() {
   assert.equal(candidateReadsHr.status, 404);
   const hrReadsCandidate = await req(`/api/hr/resumes/${cvId}`, { headers: { cookie: hrCookie } });
   assert.equal(hrReadsCandidate.status, 404);
+  const hrBList = await req("/api/hr/resumes", { headers: { cookie: "cvinsight_session=hr-b-token" } });
+  assert.equal(hrBList.status, 200);
+  assert.deepEqual((await hrBList.json()).data, []);
+  for (const endpoint of [
+    `/api/hr/resumes/${hrCvId}`,
+    `/api/hr/resumes/${hrCvId}/status`,
+    `/api/hr/resumes/${hrCvId}/download`,
+  ]) {
+    const guessed = await req(endpoint, { headers: { cookie: "cvinsight_session=hr-b-token" } });
+    assert.equal(guessed.status, 404);
+  }
   const hrDetailRes = await req(`/api/hr/resumes/${hrCvId}`, { headers: { cookie: hrCookie } });
   assert.equal(hrDetailRes.status, 200);
   assert.equal((await hrDetailRes.json()).data.resume.id, hrCvId);
