@@ -434,6 +434,36 @@ async def test_hr_can_read_own_resume(resume_api: ResumeAPIContext) -> None:
 
 
 @pytest.mark.asyncio
+async def test_legacy_invalid_email_does_not_break_owned_resume_detail(
+    resume_api: ResumeAPIContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = resume_api.resumes[3]
+    resume_api.actor.id = target.owner_user_id
+    resume_api.actor.role = "HR"
+    original_get_aggregate = resume_endpoint.get_resume_aggregate
+
+    async def with_legacy_email(*args: Any, **kwargs: Any) -> ResumeAggregate:
+        aggregate = await original_get_aggregate(*args, **kwargs)
+        assert aggregate.candidate_profile is not None
+        aggregate.candidate_profile.email = "old@example.invalid"
+        return aggregate
+
+    monkeypatch.setattr(resume_endpoint, "get_resume_aggregate", with_legacy_email)
+    response = await resume_api.client.get(
+        f"/api/v1/resumes/{target.id}", headers=resume_api.headers
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["resume"]["parsing_status"] == "PARSED"
+    assert data["candidate_profile"]["email"] is None
+    assert data["candidate_profile"]["full_name"] == "Parsed Candidate"
+    assert data["skills"][0]["skill_id"] == 1
+    assert data["experiences"][0]["company_name"] == "Company"
+
+
+@pytest.mark.asyncio
 async def test_admin_can_list_and_read_all_non_deleted_resumes(
     resume_api: ResumeAPIContext,
 ) -> None:
