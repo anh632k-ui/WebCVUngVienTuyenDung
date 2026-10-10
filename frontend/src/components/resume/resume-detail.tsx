@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ResumeDataResponse, ResumeDetail, ResumeStatusResponse } from "@/lib/resume/contracts";
 import { ParsedDataEditor } from "./resume-editor";
+import { RESUME_AREAS, type ResumeArea } from "@/lib/resume/areas";
 
 const statusNames = { PENDING: "Đang chờ", PROCESSING: "Đang phân tích", PARSED: "Đã phân tích", FAILED: "Thất bại" } as const;
 
@@ -13,7 +14,8 @@ async function errorText(response: Response, fallback: string) {
   return body.error?.message || fallback;
 }
 
-export function ResumeDetailClient({ id }: { id: string }) {
+export function ResumeDetailClient({ id, area = "candidate" }: { id: string; area?: ResumeArea }) {
+  const config = RESUME_AREAS[area];
   const router = useRouter();
   const [detail, setDetail] = useState<ResumeDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -24,14 +26,14 @@ export function ResumeDetailClient({ id }: { id: string }) {
 
   const reload = useCallback(async (signal?: AbortSignal) => {
     try {
-      const response = await fetch(`/api/candidate/resumes/${id}`, { cache: "no-store", signal });
+      const response = await fetch(`${config.api}/${id}`, { cache: "no-store", signal });
       if (!response.ok) throw new Error(await errorText(response, "Không thể đọc CV."));
       const payload = await response.json() as ResumeDataResponse;
       if (!signal?.aborted) { setDetail(payload.data); setError(""); }
     } catch (cause) {
       if (!signal?.aborted) setError(cause instanceof Error ? cause.message : "Không thể tải CV.");
     } finally { if (!signal?.aborted) setLoading(false); }
-  }, [id]);
+  }, [id, config.api]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -44,7 +46,7 @@ export function ResumeDetailClient({ id }: { id: string }) {
     const timer = window.setInterval(async () => {
       if (document.hidden) return;
       try {
-        const response = await fetch(`/api/candidate/resumes/${id}/status`, { cache: "no-store" });
+        const response = await fetch(`${config.api}/${id}/status`, { cache: "no-store" });
         if (!response.ok) return;
         const body = await response.json() as ResumeStatusResponse;
         if (body.data.parsing_status !== detail.resume.parsing_status || body.data.revision !== detail.resume.revision) {
@@ -54,15 +56,15 @@ export function ResumeDetailClient({ id }: { id: string }) {
       } catch { /* Polling best-effort; user can refresh manually. */ }
     }, 10000);
     return () => window.clearInterval(timer);
-  }, [detail, id, reload]);
+  }, [detail, id, reload, config.api]);
 
   async function remove() {
     if (!detail || working || !window.confirm(`Xóa CV "${detail.resume.file_name}"? Thao tác này là xóa mềm và không thể hoàn tác qua giao diện.`)) return;
     setWorking(true); setError("");
     try {
-      const response = await fetch(`/api/candidate/resumes/${id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const response = await fetch(`${config.api}/${id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}" });
       if (!response.ok) throw new Error(await errorText(response, "Không thể xóa CV."));
-      router.replace("/cv"); router.refresh();
+      router.replace(config.page); router.refresh();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Không thể xóa CV."); }
     finally { setWorking(false); }
   }
@@ -71,7 +73,7 @@ export function ResumeDetailClient({ id }: { id: string }) {
     if (!detail || working) return;
     setWorking(true); setError("");
     try {
-      const response = await fetch(`/api/candidate/resumes/${id}/download`, { cache: "no-store" });
+      const response = await fetch(`${config.api}/${id}/download`, { cache: "no-store" });
       if (!response.ok) throw new Error(await errorText(response, "Không thể tải file."));
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -107,7 +109,7 @@ export function ResumeDetailClient({ id }: { id: string }) {
       <div className="resume-section-head"><div><h2>Dữ liệu đã nhận diện</h2><p>Hãy kiểm tra kỹ trước khi dùng để đối chiếu với công việc.</p></div>
         <button type="button" className="button button-secondary" onClick={() => setEditing((state) => !state)}>{editing ? "Đóng chỉnh sửa" : "Hiệu chỉnh dữ liệu"}</button>
       </div>
-      {editing ? <ParsedDataEditor detail={detail} id={id} onSaved={(updated) => { setDetail(updated); setEditing(false); }} /> :
+      {editing ? <ParsedDataEditor detail={detail} id={id} apiBase={config.api} onSaved={(updated) => { setDetail(updated); setEditing(false); }} /> :
         <div className="resume-detail-grid">
           <article className="resume-detail-group"><h3>Thông tin ứng viên</h3>
             {detail.candidate_profile ? <dl>{Object.entries({

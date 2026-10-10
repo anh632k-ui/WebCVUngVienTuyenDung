@@ -21,6 +21,24 @@ export async function candidateGate() {
   return { token } as const;
 }
 
+/** HR talent-pool guard; FastAPI still enforces owner_user_id per resource. */
+export async function hrGate() {
+  const session = await verifySession();
+  if (!session.user) {
+    const status = session.status === 401 ? 401 : session.status === 403 ? 403 : 503;
+    return { error: jsonNoStore({ success: false, error: {
+      code: status === 401 ? "AUTHENTICATION_REQUIRED" : status === 403 ? "ACCOUNT_INACTIVE" : "SESSION_UNAVAILABLE",
+      message: status === 401 ? "Vui lòng đăng nhập." : status === 403 ? "Tài khoản không hoạt động." : "Chưa thể xác minh phiên. Vui lòng thử lại.",
+    } }, status) } as const;
+  }
+  if (session.user.role !== "HR") {
+    return { error: jsonNoStore({ success: false, error: { code: "INSUFFICIENT_PERMISSIONS", message: "Chỉ Nhà tuyển dụng được quản lý talent pool." } }, 403) } as const;
+  }
+  const token = await readSessionToken();
+  if (!token) return { error: jsonNoStore({ success: false, error: { code: "AUTHENTICATION_REQUIRED", message: "Vui lòng đăng nhập." } }, 401) } as const;
+  return { token } as const;
+}
+
 export function resumeJson(result: BackendResult) {
   return result.ok ? jsonNoStore(result.body, result.status) : jsonNoStore(backendError(result), result.status);
 }

@@ -8,6 +8,7 @@ const actions: Record<UserRole, readonly DashboardLink[]> = {
     { href: "/matching", label: "Tự đối chiếu CV với JD", description: "Xem điểm thành phần và Skill Gap khi kết quả được tính xong." },
   ],
   HR: [
+    { href: "/hr/talent-pool", label: "Kho CV của nhà tuyển dụng", description: "Tải lên và quản lý các CV trong talent pool mà bạn sở hữu." },
     { href: "/hr/jobs", label: "Quản lý mô tả công việc", description: "Tạo JD, xác nhận criteria, thay đổi trạng thái và trọng số." },
     { href: "/matching", label: "Batch matching", description: "Đối chiếu JD với CV trong talent pool thuộc quyền sở hữu của HR." },
   ],
