@@ -438,6 +438,14 @@ svg { flex: 0 0 auto; }
 .job-create-form .resume-edit-row select { width: 100%; }
 
 /* F05 Hybrid matching */
+/* Prevent long JD option labels from imposing a min-content width on the page.
+   The results table continues to scroll inside .resume-table-wrap. */
+.matching-workspace { grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.matching-workspace .resume-filters { min-width: 0; }
+.matching-workspace .resume-filters label { min-width: 0; max-width: 100%; }
+.matching-workspace .resume-filters select { display: block; width: 100%; min-width: 0; }
+.matching-workspace .match-select { min-width: 0; }
+.matching-workspace .match-select span { min-width: 0; overflow-wrap: anywhere; }
 .match-select { border: 1px solid var(--border); border-radius: 12px; margin: 15px 0 20px; padding: 18px; }
 .match-select legend { color: var(--navy); font-weight: 750; padding: 0 8px; }
 .match-select label { align-items: center; display: flex; gap: 10px; padding: 8px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
