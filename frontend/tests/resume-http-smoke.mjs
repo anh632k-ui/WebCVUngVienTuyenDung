@@ -13,6 +13,10 @@ const cvId = "00000000-0000-4000-8000-000000000099";
 const summary = { id: cvId, revision: 1, file_name: "profile.pdf", file_size: 512, mime_type: "application/pdf", parsing_status: "PARSED", is_manually_edited: false, created_at: "2026-01-01T00:00:00Z", parsed_at: "2026-01-01T00:00:02Z" };
 const user = { id: "00000000-0000-4000-8000-000000000001", email: "candidate@example.test", full_name: "Candidate", phone_number: null, role: "CANDIDATE", is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" };
 const detail = { resume: summary, candidate_profile: null, skills: [], experiences: [], educations: [] };
+const hrCvId = "00000000-0000-4000-8000-000000000098";
+const hrUser = { ...user, id: "00000000-0000-4000-8000-000000000002", email: "hr@example.test", full_name: "HR Test", role: "HR" };
+const hrSummary = { ...summary, id: hrCvId, file_name: "hr-pool.pdf" };
+const hrDetail = { resume: hrSummary, candidate_profile: null, skills: [], experiences: [], educations: [] };
 const received = [];
 function respond(res, status, data) { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(data)); }
 async function read(req) { const chunks = []; for await (const c of req) chunks.push(c); return Buffer.concat(chunks); }
@@ -25,8 +29,22 @@ const backend = createServer(async (req, res) => {
     return auth === "Bearer candidate-token"
       ? respond(res, 200, { success: true, data: user })
       : auth === "Bearer hr-token"
-        ? respond(res, 200, { success: true, data: { ...user, role: "HR" } })
+        ? respond(res, 200, { success: true, data: hrUser })
         : respond(res, 401, { success: false, error: { code: "INVALID_ACCESS_TOKEN", message: "Invalid token" } });
+  }
+  // Real FastAPI enforces resumes.owner_user_id; simulate two completely separate owners.
+  if (auth === "Bearer hr-token") {
+    if (pathname === "/api/v1/resumes" && req.method === "GET") return respond(res, 200, { success: true, data: [hrSummary], meta: { page: 1, limit: 10, total_items: 1, total_pages: 1 } });
+    if (pathname === "/api/v1/resumes/upload" && req.method === "POST") return respond(res, 202, { success: true, data: { resume_id: hrCvId, revision: 1, file_name: "hr-pool.pdf", file_size: 512, parsing_status: "PENDING" } });
+    if (pathname === `/api/v1/resumes/${hrCvId}` && req.method === "GET") return respond(res, 200, { success: true, data: hrDetail });
+    if (pathname === `/api/v1/resumes/${hrCvId}/status` && req.method === "GET") return respond(res, 200, { success: true, data: { resume_id: hrCvId, revision: 1, parsing_status: "PARSED", parsed_at: summary.parsed_at, error_message: null } });
+    if (pathname === `/api/v1/resumes/${hrCvId}/download` && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/pdf", "Content-Disposition": 'attachment; filename="hr-pool.pdf"', "Cache-Control": "private, no-store" });
+      return res.end(Buffer.from("%PDF-1.4\n%%EOF"));
+    }
+    if (pathname === `/api/v1/resumes/${hrCvId}/parsed-data` && req.method === "PUT") return respond(res, 200, { success: true, data: { ...hrDetail, candidate_profile: JSON.parse(bytes.toString("utf8")).candidate_profile } });
+    if (pathname === `/api/v1/resumes/${hrCvId}` && req.method === "DELETE") { res.writeHead(204); return res.end(); }
+    return respond(res, 404, { success: false, error: { code: "NOT_FOUND", message: "CV not found" } });
   }
   if (auth !== "Bearer candidate-token") return respond(res, 403, { success: false, error: { code: "INSUFFICIENT_PERMISSIONS", message: "Forbidden" } });
   if (pathname === "/api/v1/resumes" && req.method === "GET") return respond(res, 200, { success: true, data: [summary], meta: { page: 1, limit: 10, total_items: 1, total_pages: 1 } });
@@ -129,8 +147,74 @@ async function check() {
   assert.equal(escalation.status, 422);
   const removed = await req(`/api/candidate/resumes/${cvId}`, { method: "DELETE", headers: { ...headers, cookie }, body: "{}" });
   assert.equal(removed.status, 204);
+  // HR talent pool is independent of Candidate CVs, even when using the same FastAPI endpoints.
+  const hrCookie = "cvinsight_session=hr-token";
+  const guestHr = await req("/api/hr/resumes");
+  assert.equal(guestHr.status, 401);
+  const candidateAtHr = await req("/api/hr/resumes", { headers: { cookie } });
+  assert.equal(candidateAtHr.status, 403);
+  const hrList = await req("/api/hr/resumes", { headers: { cookie: hrCookie } });
+  assert.equal(hrList.status, 200);
+  assert.match(hrList.headers.get("cache-control") ?? "", /no-store/);
+  const hrItems = (await hrList.json()).data;
+  assert.deepEqual(hrItems.map((item) => item.id), [hrCvId]);
+  const hrPage = await req("/hr/talent-pool", { headers: { cookie: hrCookie } });
+  assert.equal(hrPage.status, 200);
+  const hrHtml = await hrPage.text();
+  assert.match(hrHtml, /Talent pool của tôi/);
+  assert.match(hrHtml, /noindex, nofollow/);
+  assert.match(hrPage.headers.get("cache-control") ?? "", /no-store/);
+  assert.doesNotMatch(hrHtml, /hr-token|candidate-token/);
+  const forbiddenCandidateHrPage = await req("/hr/talent-pool", { headers: { cookie }, redirect: "manual" });
+  assert.equal(forbiddenCandidateHrPage.status, 307);
+  const forbiddenGuestHrPage = await req("/hr/talent-pool");
+  assert.equal(forbiddenGuestHrPage.status, 200); // follows redirect to login; no protected data
+  assert.doesNotMatch(await forbiddenGuestHrPage.text(), /Talent pool của tôi/);
+  const hrDetailPage = await req(`/hr/talent-pool/${hrCvId}`, { headers: { cookie: hrCookie } });
+  assert.equal(hrDetailPage.status, 200);
+  assert.match(await hrDetailPage.text(), /noindex, nofollow/);
+  const candidateReadsHr = await req(`/api/candidate/resumes/${hrCvId}`, { headers: { cookie } });
+  assert.equal(candidateReadsHr.status, 404);
+  const hrReadsCandidate = await req(`/api/hr/resumes/${cvId}`, { headers: { cookie: hrCookie } });
+  assert.equal(hrReadsCandidate.status, 404);
+  const hrDetailRes = await req(`/api/hr/resumes/${hrCvId}`, { headers: { cookie: hrCookie } });
+  assert.equal(hrDetailRes.status, 200);
+  assert.equal((await hrDetailRes.json()).data.resume.id, hrCvId);
+  const hrStatus = await req(`/api/hr/resumes/${hrCvId}/status`, { headers: { cookie: hrCookie } });
+  assert.equal(hrStatus.status, 200);
+  assert.equal((await hrStatus.json()).data.parsing_status, "PARSED");
+  const hrDownload = await req(`/api/hr/resumes/${hrCvId}/download`, { headers: { cookie: hrCookie } });
+  assert.equal(hrDownload.status, 200);
+  assert.match(hrDownload.headers.get("content-type") ?? "", /application\/pdf/);
+  const hrEdit = await req(`/api/hr/resumes/${hrCvId}/parsed-data`, {
+    method: "PUT", headers: { ...headers, cookie: hrCookie },
+    body: JSON.stringify({ candidate_profile: null, skills: [], experiences: [], educations: [] }),
+  });
+  assert.equal(hrEdit.status, 200);
+  const hrUpload = new FormData();
+  hrUpload.set("file", new Blob([Buffer.from("%PDF-1.4\n%%EOF")], { type: "application/pdf" }), "hr-pool.pdf");
+  const hrUploadKey = "c33d3333-3333-4333-8333-333333333337";
+  const hrUploadResult = await req("/api/hr/resumes", { method: "POST", headers: { cookie: hrCookie, origin, "sec-fetch-site": "same-origin", "idempotency-key": hrUploadKey }, body: hrUpload });
+  assert.equal(hrUploadResult.status, 202, await hrUploadResult.clone().text());
+  assert.doesNotMatch(JSON.stringify(await hrUploadResult.json()), /hr-token/);
+  assert.ok(received.some((i) => i.path === "/api/v1/resumes/upload" && i.auth === "Bearer hr-token" && i.key === hrUploadKey));
+  const countHrUploads = received.filter((i) => i.path === "/api/v1/resumes/upload" && i.auth === "Bearer hr-token").length;
+  const hrCrossSite = await req("/api/hr/resumes", { method: "POST", headers: { cookie: hrCookie, origin: "https://evil.example", "sec-fetch-site": "cross-site", "idempotency-key": hrUploadKey }, body: hrUpload });
+  assert.equal(hrCrossSite.status, 403);
+  assert.equal(received.filter((i) => i.path === "/api/v1/resumes/upload" && i.auth === "Bearer hr-token").length, countHrUploads);
+  const candidateTriesHrUpload = await req("/api/hr/resumes", { method: "POST", headers: { cookie, origin, "sec-fetch-site": "same-origin", "idempotency-key": hrUploadKey }, body: hrUpload });
+  assert.equal(candidateTriesHrUpload.status, 403);
+  const invalidHrKey = await req("/api/hr/resumes", { method: "POST", headers: { cookie: hrCookie, origin, "sec-fetch-site": "same-origin", "idempotency-key": "invalid" }, body: hrUpload });
+  assert.equal(invalidHrKey.status, 422);
+  const oversizedHr = new FormData();
+  oversizedHr.set("file", new Blob([new Uint8Array(5 * 1024 * 1024 + 1)], { type: "application/pdf" }), "oversized.pdf");
+  const rejectedHr = await req("/api/hr/resumes", { method: "POST", headers: { cookie: hrCookie, origin, "sec-fetch-site": "same-origin", "idempotency-key": "c33d3333-3333-4333-8333-333333333338" }, body: oversizedHr });
+  assert.equal(rejectedHr.status, 413);
+  assert.equal(received.filter((i) => i.path === "/api/v1/resumes/upload" && i.auth === "Bearer hr-token").length, countHrUploads);
+  const deletedHr = await req(`/api/hr/resumes/${hrCvId}`, { method: "DELETE", headers: { ...headers, cookie: hrCookie }, body: "{}" });
+  assert.equal(deletedHr.status, 204);
   const site = await (await req("/sitemap.xml")).text();
-  assert.doesNotMatch(site, /\/cv\b|\/api\/candidate/i);
+  assert.doesNotMatch(site, /\/cv\b|\/api\/candidate|\/hr\/talent-pool|\/api\/hr\/resumes/i);
 }
 async function waitReady() {
   for (let i = 0; i < 80; i++) {

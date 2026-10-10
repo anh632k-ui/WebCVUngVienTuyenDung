@@ -16,6 +16,7 @@ const nextConfig: NextConfig = {
       { source: "/dashboard/:path*", headers: PRIVATE_NO_STORE },
       { source: "/cv/:path*", headers: PRIVATE_NO_STORE },
       { source: "/hr/jobs/:path*", headers: PRIVATE_NO_STORE },
+      { source: "/hr/talent-pool/:path*", headers: PRIVATE_NO_STORE },
       { source: "/matching/:path*", headers: PRIVATE_NO_STORE },
       { source: "/admin/users/:path*", headers: PRIVATE_NO_STORE },
       { source: "/tai-khoan", headers: PRIVATE_NO_STORE },
