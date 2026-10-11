@@ -469,6 +469,7 @@ async def test_aggregate_constraint_failure_rolls_back_parsed_and_marks_failed(
         raw_text="valid normalized text",
         experiences=(ParsedExperience(company_name="x" * 151, job_title="Engineer"),),
     )
+
     async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedResumeResult:
         return parsed
 
@@ -511,6 +512,7 @@ async def test_unknown_parser_skill_is_never_inserted(
         raw_text="unknown skill",
         skills=(ParsedSkill(maximum_skill_id + 1, "Unknown", "unknown"),),
     )
+
     async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedResumeResult:
         return parsed
 
