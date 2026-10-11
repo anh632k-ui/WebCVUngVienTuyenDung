@@ -206,6 +206,7 @@ async def test_claimed_stage_failure_attempts_controlled_failed_cas(
         return JobParseTaskOutcome.FAILED
 
     values = [0.0] * (BGE_M3_EMBEDDING_DIMENSION - 1) if failure_stage == "embedding" else None
+
     async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
         return parse(*args, **kwargs)
 
@@ -230,6 +231,7 @@ async def test_terminal_cas_miss_discards_without_failed_transition(
 ) -> None:
     events: list[str] = []
     patch_claim_and_context(monkeypatch, events)
+
     async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
         return parsed_result()
 
