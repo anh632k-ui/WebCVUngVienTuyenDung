@@ -13,8 +13,8 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.job_parser import JobParseError
-from app.ai.parser_isolation import ParserIsolationTimeout, run_job_parser_isolated
 from app.ai.job_schemas import ParsedJobResult
+from app.ai.parser_isolation import ParserIsolationTimeout, run_job_parser_isolated
 from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.schemas import TaxonomySkill
 from app.ai.vector_embedding import (
