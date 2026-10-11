@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import Callable
@@ -13,7 +12,8 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.errors import ResumeParseError
-from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION, parse_resume
+from app.ai.parser_isolation import ParserIsolationTimeout, run_resume_parser_isolated
+from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.schemas import ParsedProfile, ParsedResumeResult, TaxonomySkill
 from app.ai.vector_embedding import (
     BGE_M3_EMBEDDING_DIMENSION,
@@ -288,13 +288,16 @@ async def process_resume_parse_task(
         return _log_outcome(resume_id, expected_revision, outcome)
 
     try:
-        parsed = await asyncio.to_thread(
-            parse_resume,
-            source_bytes,
-            context.mime_type,
-            context.taxonomy,
-        )
+        parsed = await run_resume_parser_isolated(source_bytes, context.mime_type, context.taxonomy)
         _validate_parsed_skill_ids(parsed, context.taxonomy)
+    except ParserIsolationTimeout:
+        outcome = await _mark_failed(
+            session_factory,
+            resume_id=resume_id,
+            expected_revision=expected_revision,
+            message="Resume parsing timed out",
+        )
+        return _log_outcome(resume_id, expected_revision, outcome)
     except ResumeParseError as error:
         outcome = await _mark_failed(
             session_factory,

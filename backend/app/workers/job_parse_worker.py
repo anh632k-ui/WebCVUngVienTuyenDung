@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import Callable
@@ -13,8 +12,9 @@ from typing import Literal, cast
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.job_parser import JobParseError, parse_job_description
+from app.ai.job_parser import JobParseError
 from app.ai.job_schemas import ParsedJobResult
+from app.ai.parser_isolation import ParserIsolationTimeout, run_job_parser_isolated
 from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.schemas import TaxonomySkill
 from app.ai.vector_embedding import (
@@ -242,12 +242,16 @@ async def process_job_parse_task(
         return _log_outcome(job_id, expected_revision, JobParseTaskOutcome.DISCARDED)
 
     try:
-        parsed = await asyncio.to_thread(
-            parse_job_description,
-            context.raw_content,
-            context.taxonomy,
-        )
+        parsed = await run_job_parser_isolated(context.raw_content, context.taxonomy)
         _validate_parsed_result(parsed, context.taxonomy)
+    except ParserIsolationTimeout:
+        outcome = await _mark_failed(
+            session_factory,
+            job_id=job_id,
+            expected_revision=expected_revision,
+            message="Job parsing timed out",
+        )
+        return _log_outcome(job_id, expected_revision, outcome)
     except JobParseError as error:
         outcome = await _mark_failed(
             session_factory,

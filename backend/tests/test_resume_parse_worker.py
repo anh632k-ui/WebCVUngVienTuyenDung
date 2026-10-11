@@ -119,7 +119,10 @@ async def test_worker_orders_claim_storage_parser_embedding_and_terminal_cas(
         events.append("persist")
         return True
 
-    monkeypatch.setattr(resume_parse_worker, "parse_resume", parse)
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedResumeResult:
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(resume_parse_worker, "run_resume_parser_isolated", isolated_stub)
     monkeypatch.setattr(resume_parse_worker, "_persist_success", persist)
 
     outcome = await process_resume_parse_task(
@@ -165,7 +168,11 @@ async def test_claimed_stage_failure_attempts_controlled_failed_cas(
     provider_values = (
         [0.0] * (BGE_M3_EMBEDDING_DIMENSION - 1) if failure_stage == "embedding" else None
     )
-    monkeypatch.setattr(resume_parse_worker, "parse_resume", parse)
+
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedResumeResult:
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(resume_parse_worker, "run_resume_parser_isolated", isolated_stub)
     monkeypatch.setattr(resume_parse_worker, "_mark_failed", mark_failed)
 
     outcome = await process_resume_parse_task(
@@ -188,11 +195,10 @@ async def test_terminal_cas_miss_discards_without_failed_transition(
     events: list[str] = []
     patch_claim_and_context(monkeypatch, events)
 
-    monkeypatch.setattr(
-        resume_parse_worker,
-        "parse_resume",
-        lambda *args, **kwargs: ParsedResumeResult(raw_text="normalized text"),
-    )
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedResumeResult:
+        return ParsedResumeResult(raw_text="normalized text")
+
+    monkeypatch.setattr(resume_parse_worker, "run_resume_parser_isolated", isolated_stub)
 
     async def terminal_miss(*args: Any, **kwargs: Any) -> bool:
         del args, kwargs

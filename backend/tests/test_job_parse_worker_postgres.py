@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, AsyncTransaction
 
 from app.ai.job_schemas import ParsedJobResult, ParsedJobSkill
+from app.ai.parser_isolation import ParserIsolationTimeout
 from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.vector_embedding import BGE_M3_EMBEDDING_DIMENSION, BGE_M3_MODEL_NAME
 from app.core.config import Settings
@@ -436,7 +437,11 @@ async def test_job_skill_insert_failure_rolls_back_parsed_payload_and_marks_fail
             ),
         ),
     )
-    monkeypatch.setattr(job_parse_worker, "parse_job_description", lambda *args: parsed)
+
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
+        return parsed
+
+    monkeypatch.setattr(job_parse_worker, "run_job_parser_isolated", isolated_stub)
 
     outcome = await process_job_parse_task(
         job.id,
@@ -485,7 +490,11 @@ async def test_unknown_parser_skill_never_mutates_taxonomy(
             ),
         ),
     )
-    monkeypatch.setattr(job_parse_worker, "parse_job_description", lambda *args: parsed)
+
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
+        return parsed
+
+    monkeypatch.setattr(job_parse_worker, "run_job_parser_isolated", isolated_stub)
 
     outcome = await process_job_parse_task(
         job.id,
@@ -552,3 +561,30 @@ async def test_two_independent_sessions_race_one_claim_wins() -> None:
         await cleanup.commit()
         await cleanup.close()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
+    postgres_job_worker: PostgreSQLJobWorkerHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = postgres_job_worker
+    job = await harness.create_job()
+
+    async def timed_out(*args: Any, **kwargs: Any) -> ParsedJobResult:
+        raise ParserIsolationTimeout("child exceeded deadline")
+
+    monkeypatch.setattr(job_parse_worker, "run_job_parser_isolated", timed_out)
+
+    outcome = await process_job_parse_task(
+        job.id,
+        1,
+        session_factory=harness.session_factory,
+        embedding_provider=FakeEmbeddingProvider(),
+    )
+
+    stored = await harness.load_job(job.id)
+    assert outcome is JobParseTaskOutcome.FAILED
+    assert stored.parsing_status == "FAILED"
+    assert stored.parsing_error_message == "Job parsing timed out"
+    assert stored.job_embedding is None

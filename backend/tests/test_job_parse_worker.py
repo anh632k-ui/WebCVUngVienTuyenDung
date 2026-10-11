@@ -126,7 +126,10 @@ async def test_worker_orders_claim_context_parser_embedding_and_terminal_cas(
         events.append("persist")
         return True
 
-    monkeypatch.setattr(job_parse_worker, "parse_job_description", parse)
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(job_parse_worker, "run_job_parser_isolated", isolated_stub)
     monkeypatch.setattr(job_parse_worker, "_persist_success", persist)
 
     outcome = await process_job_parse_task(
@@ -203,7 +206,11 @@ async def test_claimed_stage_failure_attempts_controlled_failed_cas(
         return JobParseTaskOutcome.FAILED
 
     values = [0.0] * (BGE_M3_EMBEDDING_DIMENSION - 1) if failure_stage == "embedding" else None
-    monkeypatch.setattr(job_parse_worker, "parse_job_description", parse)
+
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(job_parse_worker, "run_job_parser_isolated", isolated_stub)
     monkeypatch.setattr(job_parse_worker, "_mark_failed", mark_failed)
 
     outcome = await process_job_parse_task(
@@ -224,7 +231,11 @@ async def test_terminal_cas_miss_discards_without_failed_transition(
 ) -> None:
     events: list[str] = []
     patch_claim_and_context(monkeypatch, events)
-    monkeypatch.setattr(job_parse_worker, "parse_job_description", lambda *args: parsed_result())
+
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
+        return parsed_result()
+
+    monkeypatch.setattr(job_parse_worker, "run_job_parser_isolated", isolated_stub)
 
     async def terminal_miss(*args: Any, **kwargs: Any) -> bool:
         del args, kwargs
