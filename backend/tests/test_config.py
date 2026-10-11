@@ -122,12 +122,11 @@ def test_test_database_opt_in_forbidden_outside_test(app_env: str) -> None:
     ],
 )
 def test_test_database_requires_exact_name_host_port_and_no_query_overrides(
-    url: str, allowed_name: str | None,
+    url: str,
+    allowed_name: str | None,
 ) -> None:
     with pytest.raises(ValidationError):
-        Settings(
-            _env_file=None, app_env="test", test_database_name=allowed_name, database_url=url
-        )
+        Settings(_env_file=None, app_env="test", test_database_name=allowed_name, database_url=url)
 
 
 @pytest.mark.parametrize(
