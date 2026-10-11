@@ -282,6 +282,12 @@ async def run_resume_parser_isolated(
 async def run_job_parser_isolated(
     raw_content: str, taxonomy: tuple[TaxonomySkill, ...]
 ) -> ParsedJobResult:
+    if not isinstance(raw_content, str):
+        raise JobParseError(JobParseErrorKind.INVALID_INPUT, "Job content must be text")
+    try:
+        raw_content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise JobParseError(JobParseErrorKind.INVALID_INPUT, "Job content is invalid Unicode") from exc
     if len(raw_content) > MAX_JOB_INPUT_CHARS:
         raise JobParseError(JobParseErrorKind.TEXT_LIMIT_EXCEEDED, "Job text too large")
     request: dict[str, Any] = {
