@@ -13,8 +13,7 @@ from docx import Document
 from reportlab.pdfgen import canvas
 
 from app.ai.errors import ResumeParseError, ResumeParseErrorKind
-from app.ai.job_parser import JobParseError, JobParseErrorKind
-from app.ai.job_parser import parse_job_description
+from app.ai.job_parser import JobParseError, JobParseErrorKind, parse_job_description
 from app.ai.parser_isolation import (
     MAX_REQUEST_BYTES,
     ParserIsolationError,
