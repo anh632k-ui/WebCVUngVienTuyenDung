@@ -12,8 +12,8 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.errors import ResumeParseError
-from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.parser_isolation import ParserIsolationTimeout, run_resume_parser_isolated
+from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.schemas import ParsedProfile, ParsedResumeResult, TaxonomySkill
 from app.ai.vector_embedding import (
     BGE_M3_EMBEDDING_DIMENSION,
