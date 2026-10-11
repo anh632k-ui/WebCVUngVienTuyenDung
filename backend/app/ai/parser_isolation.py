@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import suppress
 import json
 import os
 import struct
@@ -76,18 +77,14 @@ async def _terminate_child(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         await process.wait()
         return
-    try:
+    with suppress(ProcessLookupError):
         process.terminate()
-    except ProcessLookupError:
-        pass
     try:
         await asyncio.wait_for(process.wait(), timeout=2.0)
     except TimeoutError:
         if process.returncode is None:
-            try:
+            with suppress(ProcessLookupError):
                 process.kill()
-            except ProcessLookupError:
-                pass
         await asyncio.wait_for(process.wait(), timeout=5.0)
 
 
