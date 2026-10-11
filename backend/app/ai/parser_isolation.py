@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from contextlib import suppress
 import json
 import os
 import struct
 import sys
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import date
 from decimal import Decimal
