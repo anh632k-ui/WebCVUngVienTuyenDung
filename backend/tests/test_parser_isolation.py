@@ -13,6 +13,7 @@ from docx import Document
 from reportlab.pdfgen import canvas
 
 from app.ai.errors import ResumeParseError, ResumeParseErrorKind
+from app.ai.job_parser import JobParseError, JobParseErrorKind
 from app.ai.job_parser import parse_job_description
 from app.ai.parser_isolation import (
     MAX_REQUEST_BYTES,
@@ -148,3 +149,12 @@ async def test_unsupported_mime_preserves_original_error_kind(
     with pytest.raises(ResumeParseError) as caught:
         await run_resume_parser_isolated(b"input", "text/plain", taxonomy)
     assert caught.value.kind is ResumeParseErrorKind.UNSUPPORTED_MIME_TYPE
+
+
+@pytest.mark.asyncio
+async def test_invalid_job_unicode_preserves_controlled_error_kind(
+    taxonomy: tuple[TaxonomySkill, ...],
+) -> None:
+    with pytest.raises(JobParseError) as captured:
+        await run_job_parser_isolated("Job\ud800 content", taxonomy)
+    assert captured.value.kind is JobParseErrorKind.INVALID_INPUT
