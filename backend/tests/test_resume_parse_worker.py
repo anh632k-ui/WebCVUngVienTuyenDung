@@ -168,6 +168,7 @@ async def test_claimed_stage_failure_attempts_controlled_failed_cas(
     provider_values = (
         [0.0] * (BGE_M3_EMBEDDING_DIMENSION - 1) if failure_stage == "embedding" else None
     )
+
     async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedResumeResult:
         return parse(*args, **kwargs)
 
