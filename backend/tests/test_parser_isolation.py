@@ -57,8 +57,8 @@ def _make_pdf() -> bytes:
 @pytest.mark.parametrize(
     ("source", "mime"),
     [
-        (_make_pdf(), PDF_MIME_TYPE),
-        (_make_docx(), DOCX_MIME_TYPE),
+        pytest.param(_make_pdf(), PDF_MIME_TYPE, id="pdf-baseline"),
+        pytest.param(_make_docx(), DOCX_MIME_TYPE, id="docx-unicode-baseline"),
     ],
 )
 async def test_real_isolated_resume_output_matches_baseline(
