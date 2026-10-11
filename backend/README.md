@@ -19,6 +19,27 @@ Health is available at `GET /api/v1/health`. With no `DATABASE_URL`, startup rem
 available and health reports `database.status=not_configured`. A configured but unreachable
 database returns HTTP 503 without exposing connection details.
 
+### Isolated PostgreSQL integration tests
+
+The canonical database name remains `webcv_ungvien` in normal environments. To
+run integration tests against a **dedicated database in the QA PostgreSQL cluster
+on loopback port 55432**, set all three process environment variables explicitly:
+
+```powershell
+$env:APP_ENV = "test"
+$env:TEST_DATABASE_NAME = "webcv_task6b_clean"
+$env:DATABASE_URL = "postgresql+asyncpg://<qa-user>:<qa-password>@127.0.0.1:55432/webcv_task6b_clean"
+```
+
+Provision the dedicated QA database (canonical `schema.sql` + taxonomy seed)
+before running pytest. Never point this mode at port 5432, a remote host, or
+`webcv_ungvien`: the configuration rejects all of them when the override is set.
+The explicit database name must match the URL and start with `webcv_test`,
+`webcv_task`, or `webcv_qa`. URL query options are rejected for test overrides
+to prevent query-based connection-target substitution. Without the opt-in, only
+the canonical database name is accepted. Clear these three process variables
+when leaving the isolated test session.
+
 Run verification with:
 
 ```powershell
