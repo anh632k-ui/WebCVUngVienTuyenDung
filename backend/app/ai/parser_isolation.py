@@ -287,7 +287,9 @@ async def run_job_parser_isolated(
     try:
         raw_content.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise JobParseError(JobParseErrorKind.INVALID_INPUT, "Job content is invalid Unicode") from exc
+        raise JobParseError(
+            JobParseErrorKind.INVALID_INPUT, "Job content is invalid Unicode"
+        ) from exc
     if len(raw_content) > MAX_JOB_INPUT_CHARS:
         raise JobParseError(JobParseErrorKind.TEXT_LIMIT_EXCEEDED, "Job text too large")
     request: dict[str, Any] = {
