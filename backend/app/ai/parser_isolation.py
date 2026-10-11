@@ -62,8 +62,16 @@ def json_bytes(payload: dict[str, Any]) -> bytes:
 def _parser_environment() -> dict[str, str]:
     # Do not pass DATABASE_URL, broker URLs, JWT secrets or application env settings.
     allowed = (
-        "PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR",
-        "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+        "PATH",
+        "SystemRoot",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
     )
     result = {key: os.environ[key] for key in allowed if key in os.environ}
     result["PYTHONPATH"] = str(_backend_dir)
@@ -177,9 +185,7 @@ def _resume_from_payload(value: object) -> ParsedResumeResult:
         ParsedSkill(
             **{
                 **_dictionary(entry),
-                "years_of_experience": _decimal_or_none(
-                    _dictionary(entry)["years_of_experience"]
-                ),
+                "years_of_experience": _decimal_or_none(_dictionary(entry)["years_of_experience"]),
             }
         )
         for entry in _entries(body["skills"])
@@ -224,9 +230,7 @@ def _job_from_payload(value: object) -> ParsedJobResult:
         ParsedJobSkill(
             **{
                 **_dictionary(entry),
-                "min_years_required": _decimal_or_none(
-                    _dictionary(entry)["min_years_required"]
-                ),
+                "min_years_required": _decimal_or_none(_dictionary(entry)["min_years_required"]),
             }
         )
         for entry in _entries(body["skills"])
