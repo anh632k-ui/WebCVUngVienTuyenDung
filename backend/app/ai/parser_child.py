@@ -59,15 +59,14 @@ def _parse(request: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("Invalid source encoding") from exc
         if len(data) > MAX_RESUME_BYTES:
             raise ValueError("Oversized Resume source")
-        parsed = parse_resume(data, mime_type, taxonomy)
+        return {"ok": True, "result": asdict(parse_resume(data, mime_type, taxonomy))}
     elif kind == "job":
         raw = request["raw_content"]
         if not isinstance(raw, str) or len(raw) > MAX_JOB_INPUT_CHARS:
             raise ValueError("Invalid Job input")
-        parsed = parse_job_description(raw, taxonomy)
+        return {"ok": True, "result": asdict(parse_job_description(raw, taxonomy))}
     else:
         raise ValueError("Unknown parser kind")
-    return {"ok": True, "result": asdict(parsed)}
 
 
 def main() -> int:
