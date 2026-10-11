@@ -613,5 +613,5 @@ async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
         stored = await session.get(Resume, resume.id)
     assert outcome is ResumeParseTaskOutcome.FAILED
     assert stored is not None and stored.parsing_status == "FAILED"
-    assert stored.parsing_error_message == "Resume parsing timed out"
+    assert stored.error_message == "Resume parsing timed out"
     assert stored.raw_text is None and stored.resume_embedding is None
