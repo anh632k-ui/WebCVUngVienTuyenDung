@@ -288,9 +288,7 @@ async def process_resume_parse_task(
         return _log_outcome(resume_id, expected_revision, outcome)
 
     try:
-        parsed = await run_resume_parser_isolated(
-            source_bytes, context.mime_type, context.taxonomy
-        )
+        parsed = await run_resume_parser_isolated(source_bytes, context.mime_type, context.taxonomy)
         _validate_parsed_skill_ids(parsed, context.taxonomy)
     except ParserIsolationTimeout:
         outcome = await _mark_failed(
