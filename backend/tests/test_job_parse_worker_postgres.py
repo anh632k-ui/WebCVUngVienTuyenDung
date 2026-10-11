@@ -436,7 +436,10 @@ async def test_job_skill_insert_failure_rolls_back_parsed_payload_and_marks_fail
             ),
         ),
     )
-    monkeypatch.setattr(job_parse_worker, "parse_job_description", lambda *args: parsed)
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
+        return parsed
+
+    monkeypatch.setattr(job_parse_worker, "run_job_parser_isolated", isolated_stub)
 
     outcome = await process_job_parse_task(
         job.id,
@@ -485,7 +488,10 @@ async def test_unknown_parser_skill_never_mutates_taxonomy(
             ),
         ),
     )
-    monkeypatch.setattr(job_parse_worker, "parse_job_description", lambda *args: parsed)
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedJobResult:
+        return parsed
+
+    monkeypatch.setattr(job_parse_worker, "run_job_parser_isolated", isolated_stub)
 
     outcome = await process_job_parse_task(
         job.id,
