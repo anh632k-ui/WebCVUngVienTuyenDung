@@ -13,8 +13,8 @@ import pytest_asyncio
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, AsyncTransaction
 
-from app.ai.parser_isolation import ParserIsolationTimeout
 from app.ai.job_schemas import ParsedJobResult, ParsedJobSkill
+from app.ai.parser_isolation import ParserIsolationTimeout
 from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.vector_embedding import BGE_M3_EMBEDDING_DIMENSION, BGE_M3_MODEL_NAME
 from app.core.config import Settings
