@@ -469,7 +469,10 @@ async def test_aggregate_constraint_failure_rolls_back_parsed_and_marks_failed(
         raw_text="valid normalized text",
         experiences=(ParsedExperience(company_name="x" * 151, job_title="Engineer"),),
     )
-    monkeypatch.setattr(resume_parse_worker, "parse_resume", lambda *args: parsed)
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedResumeResult:
+        return parsed
+
+    monkeypatch.setattr(resume_parse_worker, "run_resume_parser_isolated", isolated_stub)
 
     outcome = await process_resume_parse_task(
         resume.id,
@@ -508,7 +511,10 @@ async def test_unknown_parser_skill_is_never_inserted(
         raw_text="unknown skill",
         skills=(ParsedSkill(maximum_skill_id + 1, "Unknown", "unknown"),),
     )
-    monkeypatch.setattr(resume_parse_worker, "parse_resume", lambda *args: parsed)
+    async def isolated_stub(*args: Any, **kwargs: Any) -> ParsedResumeResult:
+        return parsed
+
+    monkeypatch.setattr(resume_parse_worker, "run_resume_parser_isolated", isolated_stub)
 
     outcome = await process_resume_parse_task(
         resume.id,
