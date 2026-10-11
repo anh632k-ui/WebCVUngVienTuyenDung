@@ -16,6 +16,7 @@ from docx import Document
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, AsyncTransaction
 
+from app.ai.parser_isolation import ParserIsolationTimeout
 from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.schemas import ParsedExperience, ParsedResumeResult, ParsedSkill
 from app.ai.vector_embedding import BGE_M3_EMBEDDING_DIMENSION, BGE_M3_MODEL_NAME
@@ -585,3 +586,32 @@ async def test_two_independent_sessions_race_one_claim_wins() -> None:
         await cleanup.commit()
         await cleanup.close()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
+    postgres_worker: PostgreSQLWorkerHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = postgres_worker
+    resume = await harness.create_resume(make_docx())
+
+    async def timed_out(*args: Any, **kwargs: Any) -> ParsedResumeResult:
+        raise ParserIsolationTimeout("child exceeded deadline")
+
+    monkeypatch.setattr(resume_parse_worker, "run_resume_parser_isolated", timed_out)
+
+    outcome = await process_resume_parse_task(
+        resume.id,
+        1,
+        session_factory=harness.session_factory,
+        storage=harness.storage,
+        embedding_provider=FakeEmbeddingProvider(),
+    )
+
+    async with harness.session_factory() as session:
+        stored = await session.get(Resume, resume.id)
+    assert outcome is ResumeParseTaskOutcome.FAILED
+    assert stored is not None and stored.parsing_status == "FAILED"
+    assert stored.parsing_error_message == "Resume parsing timed out"
+    assert stored.raw_text is None and stored.resume_embedding is None
