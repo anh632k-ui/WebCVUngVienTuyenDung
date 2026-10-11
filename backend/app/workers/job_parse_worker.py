@@ -242,9 +242,7 @@ async def process_job_parse_task(
         return _log_outcome(job_id, expected_revision, JobParseTaskOutcome.DISCARDED)
 
     try:
-        parsed = await run_job_parser_isolated(
-            context.raw_content, context.taxonomy
-        )
+        parsed = await run_job_parser_isolated(context.raw_content, context.taxonomy)
         _validate_parsed_result(parsed, context.taxonomy)
     except ParserIsolationTimeout:
         outcome = await _mark_failed(
