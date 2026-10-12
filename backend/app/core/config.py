@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     match_recovery_grace_seconds: int = Field(default=300, ge=1, le=86_400)
     match_recovery_interval_seconds: int = Field(default=60, ge=1, le=3_600)
     match_recovery_batch_size: int = Field(default=100, ge=1, le=1_000)
+    processing_observation_enabled: bool = False
+    processing_observation_threshold_seconds: int = Field(default=1_800, ge=60, le=604_800)
+    processing_observation_batch_size: int = Field(default=100, ge=1, le=1_000)
     jwt_secret_key: SecretStr | None = Field(default=None, min_length=32)
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
     access_token_expire_minutes: int = Field(default=15, gt=0, le=1440)
