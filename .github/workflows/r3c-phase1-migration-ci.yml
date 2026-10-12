@@ -76,7 +76,11 @@ jobs:
         working-directory: backend
         env:
           R3C_PHASE1_MIGRATION_QA: '0'
-        run: python -m pytest -q
+        run: |
+          python -m pytest -q \
+            -k 'not test_celery_imports_do_not_create_engine_before_child_runtime'
+          env -u TEST_DATABASE_NAME python -m pytest -q \
+            tests/test_celery_tasks.py::test_celery_imports_do_not_create_engine_before_child_runtime
 
       - name: Run Ruff lint
         working-directory: backend
