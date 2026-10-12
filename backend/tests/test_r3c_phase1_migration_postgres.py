@@ -131,36 +131,40 @@ async def test_legacy_claim_and_terminal_cas_need_no_fencing_tokens() -> None:
                     updated_at=now,
                 )
             )
-            session.add(
-                Resume(
-                    id=resume_id,
-                    owner_user_id=user_id,
-                    file_name="legacy-cas.pdf",
-                    storage_key=f"r3c/cas/{resume_id}",
-                    file_size=64,
-                    mime_type="application/pdf",
-                    create_request_fingerprint="c" * 64,
-                    revision=3,
-                    parsing_status="PENDING",
-                    created_at=now,
-                    updated_at=now,
-                )
+            await session.commit()
+
+            session.add_all(
+                [
+                    Resume(
+                        id=resume_id,
+                        owner_user_id=user_id,
+                        file_name="legacy-cas.pdf",
+                        storage_key=f"r3c/cas/{resume_id}",
+                        file_size=64,
+                        mime_type="application/pdf",
+                        create_request_fingerprint="c" * 64,
+                        revision=3,
+                        parsing_status="PENDING",
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                    JobDescription(
+                        id=job_id,
+                        recruiter_id=user_id,
+                        title="R3C CAS Job",
+                        job_level="MID",
+                        raw_content="compatibility fixture",
+                        create_request_fingerprint="d" * 64,
+                        revision=5,
+                        parsing_status="PENDING",
+                        status="DRAFT",
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                ]
             )
-            session.add(
-                JobDescription(
-                    id=job_id,
-                    recruiter_id=user_id,
-                    title="R3C CAS Job",
-                    job_level="MID",
-                    raw_content="compatibility fixture",
-                    create_request_fingerprint="d" * 64,
-                    revision=5,
-                    parsing_status="PENDING",
-                    status="DRAFT",
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
+            await session.commit()
+
             session.add(
                 MatchResult(
                     id=match_id,
