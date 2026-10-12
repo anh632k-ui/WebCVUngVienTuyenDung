@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -102,6 +103,7 @@ async def test_enabled_observation_uses_threshold_and_logs_counts_without_ids_or
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.WARNING, logger=processing_observation.__name__)
     now = datetime(2026, 10, 12, 4, 0, tzinfo=UTC)
     resource_id = uuid.uuid4()
     selected = (
