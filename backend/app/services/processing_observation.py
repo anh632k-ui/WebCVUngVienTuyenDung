@@ -27,7 +27,7 @@ class ProcessingObservation:
 
     resource_kind: ResourceKind
     resource_id: uuid.UUID
-    attempt_version: int
+    snapshot_version: int
     updated_at: datetime
     is_deleted: bool | None = None
     resume_revision: int | None = None
@@ -138,10 +138,12 @@ async def observe_old_processing(
         for kind in ("resume", "job", "match")
     }
     logger.warning(
-        "old_processing_observed total=%s resumes=%s jobs=%s matches=%s",
+        "old_processing_sample_observed sample_size=%s sampled_resumes=%s "
+        "sampled_jobs=%s sampled_matches=%s batch_limit=%s",
         len(candidates),
         counts["resume"],
         counts["job"],
         counts["match"],
+        settings.processing_observation_batch_size,
     )
     return ProcessingObservationReport(enabled=True, cutoff=cutoff, candidates=candidates)

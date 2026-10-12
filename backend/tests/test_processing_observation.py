@@ -86,7 +86,7 @@ async def test_selection_reads_only_bounded_non_sensitive_metadata() -> None:
     assert session.closed is True
     assert session.execute_count == 3
     assert [
-        (item.resource_kind, item.resource_id, item.attempt_version) for item in candidates
+        (item.resource_kind, item.resource_id, item.snapshot_version) for item in candidates
     ] == [
         ("resume", resume_id, 3),
         ("job", job_id, 5),
@@ -129,6 +129,9 @@ async def test_enabled_observation_uses_threshold_and_logs_counts_without_ids_or
 
     assert report.enabled is True
     assert report.candidates == selected
-    assert "old_processing_observed total=1 resumes=1 jobs=0 matches=0" in caplog.text
+    assert (
+        "old_processing_sample_observed sample_size=1 sampled_resumes=1 "
+        "sampled_jobs=0 sampled_matches=0 batch_limit=17"
+    ) in caplog.text
     assert str(resource_id) not in caplog.text
     assert "CV content" not in caplog.text
