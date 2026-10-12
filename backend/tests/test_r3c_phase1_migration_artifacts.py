@@ -45,6 +45,33 @@ def test_indexes_are_concurrent_partial_lease_indexes() -> None:
     assert "DROP INDEX" not in sql.upper()
 
 
+def test_index_predicate_validation_is_null_safe_and_consistent() -> None:
+    indexes = read_artifact("r3c_phase1_indexes.sql")
+    verification = (MIGRATIONS / "tests" / "r3c_phase1_verify.sql").read_text(encoding="utf-8")
+    runner = (REPOSITORY_ROOT / ".github" / "scripts" / "r3c_phase1_migration_ci.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert indexes.count("normalized_predicate IS DISTINCT FROM") == 2
+    assert verification.count("normalized_predicate IS DISTINCT FROM") == 1
+    assert "normalized_predicate <>" not in indexes + verification
+    for metadata_check in (
+        "object_kind <> 'i'",
+        "table_name <> expected.table_name",
+        "access_method <> 'btree'",
+        "indisvalid",
+        "indisunique",
+        "indnkeyatts <> 2",
+        "indnatts <> 2",
+        "columns <> ARRAY['processing_lease_expires_at', 'id']",
+    ):
+        assert metadata_check in indexes
+        assert metadata_check in verification
+    assert "same-shape index without partial predicate" in runner
+    assert "final verification of index without partial predicate" in runner
+    assert "rejected index without partial predicate was mutated or replaced" in runner
+
+
 def test_migration_does_not_modify_runtime_or_canonical_bootstrap() -> None:
     expand = read_artifact("r3c_phase1_expand.sql")
     indexes = read_artifact("r3c_phase1_indexes.sql")

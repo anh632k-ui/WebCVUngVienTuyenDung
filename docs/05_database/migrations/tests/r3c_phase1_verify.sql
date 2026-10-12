@@ -113,8 +113,12 @@ BEGIN
     LOOP
         SELECT
             table_class.relname AS table_name,
+            index_class.relkind AS object_kind,
+            access_method.amname AS access_method,
             index_row.indisvalid,
             index_row.indisunique,
+            index_row.indnkeyatts,
+            index_row.indnatts,
             ARRAY(
                 SELECT attribute.attname::text
                 FROM unnest(index_row.indkey) WITH ORDINALITY AS key(attnum, position)
@@ -129,7 +133,12 @@ BEGIN
         JOIN pg_catalog.pg_namespace n ON n.oid = index_class.relnamespace
         JOIN pg_catalog.pg_index index_row ON index_row.indexrelid = index_class.oid
         JOIN pg_catalog.pg_class table_class ON table_class.oid = index_row.indrelid
+        JOIN pg_catalog.pg_am access_method ON access_method.oid = index_class.relam
         WHERE n.nspname = 'public' AND index_class.relname = expected.index_name;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'index verification failed: missing %', expected.index_name;
+        END IF;
 
         normalized_predicate := pg_catalog.regexp_replace(
             pg_catalog.replace(
@@ -138,12 +147,15 @@ BEGIN
             ),
             '[[:space:]]', '', 'g'
         );
-        IF NOT FOUND
+        IF actual.object_kind <> 'i'
            OR actual.table_name <> expected.table_name
+           OR actual.access_method <> 'btree'
            OR NOT actual.indisvalid
            OR actual.indisunique
+           OR actual.indnkeyatts <> 2
+           OR actual.indnatts <> 2
            OR actual.columns <> ARRAY['processing_lease_expires_at', 'id']
-           OR normalized_predicate <>
+           OR normalized_predicate IS DISTINCT FROM
               expected.status_column || '=''PROCESSING''ANDprocessing_lease_expires_atISNOTNULL'
         THEN
             RAISE EXCEPTION 'index verification failed for %', expected.index_name;

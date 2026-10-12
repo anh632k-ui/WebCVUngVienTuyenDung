@@ -119,6 +119,22 @@ psql_db 'r3c_p1_case_index_conflict' -c \
   'CREATE INDEX idx_resumes_processing_lease ON public.resumes (id)'
 expect_failure 'occupied index name' 'r3c_p1_case_index_conflict' "$INDEXES"
 
+create_case_database 'r3c_p1_case_missing_predicate'
+psql_db 'r3c_p1_case_missing_predicate' < "$EXPAND"
+psql_db 'r3c_p1_case_missing_predicate' < "$LEGACY_SEED"
+psql_db 'r3c_p1_case_missing_predicate' -c \
+  'CREATE INDEX idx_resumes_processing_lease ON public.resumes (processing_lease_expires_at, id)'
+missing_predicate_before="$(scalar 'r3c_p1_case_missing_predicate' "SELECT pg_get_indexdef('public.idx_resumes_processing_lease'::regclass)")"
+expect_failure 'same-shape index without partial predicate' \
+  'r3c_p1_case_missing_predicate' "$INDEXES"
+expect_failure 'final verification of index without partial predicate' \
+  'r3c_p1_case_missing_predicate' "$VERIFY"
+missing_predicate_after="$(scalar 'r3c_p1_case_missing_predicate' "SELECT pg_get_indexdef('public.idx_resumes_processing_lease'::regclass)")"
+[[ "$missing_predicate_before" == "$missing_predicate_after" ]] \
+  || fail 'rejected index without partial predicate was mutated or replaced'
+[[ "$(scalar 'r3c_p1_case_missing_predicate' "SELECT count(*) FROM pg_index WHERE indexrelid='public.idx_resumes_processing_lease'::regclass AND indisvalid")" == '1' ]] \
+  || fail 'rejected index without partial predicate was deleted or invalidated'
+
 create_case_database 'r3c_p1_case_invalid_index'
 psql_db 'r3c_p1_case_invalid_index' < "$EXPAND"
 psql_db 'r3c_p1_case_invalid_index' -c \
@@ -134,6 +150,7 @@ for case_database in \
   r3c_p1_case_wrong_type \
   r3c_p1_case_missing_table \
   r3c_p1_case_index_conflict \
+  r3c_p1_case_missing_predicate \
   r3c_p1_case_invalid_index
 do
   docker exec "$POSTGRES_CONTAINER_ID" dropdb -U "$PG_USER" --force "$case_database"
