@@ -47,7 +47,7 @@ BEGIN
             index_row.indnkeyatts,
             index_row.indnatts,
             ARRAY(
-                SELECT attribute.attname
+                SELECT attribute.attname::text
                 FROM unnest(index_row.indkey) WITH ORDINALITY AS key(attnum, position)
                 JOIN pg_catalog.pg_attribute attribute
                   ON attribute.attrelid = index_row.indrelid
