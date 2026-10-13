@@ -70,6 +70,14 @@ class Resume(Base):
             postgresql_using="hnsw",
             postgresql_ops={"resume_embedding": "vector_cosine_ops"},
         ),
+        Index(
+            "idx_resumes_processing_lease",
+            "processing_lease_expires_at",
+            "id",
+            postgresql_where=text(
+                "parsing_status='PROCESSING' AND processing_lease_expires_at IS NOT NULL"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -104,6 +112,13 @@ class Resume(Base):
     )
     parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_attempt_epoch: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    processing_owner_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    processing_activation_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    processing_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CandidateProfile(Base):

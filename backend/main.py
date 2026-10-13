@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.database import SessionFactory, dispose_engine
 from app.core.exceptions import APIError
 from app.core.logging import configure_logging
+from app.core.processing_fencing import verify_processing_fencing_schema
 from app.services.job_recovery import start_job_recovery, stop_job_recovery
 from app.services.match_recovery import start_match_recovery, stop_match_recovery
 from app.services.resume_recovery import start_resume_recovery, stop_resume_recovery
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    if SessionFactory is not None:
+        await verify_processing_fencing_schema(SessionFactory)
     logger.info("application_started environment=%s", settings.app_env)
     resume_recovery_task = start_resume_recovery(settings, SessionFactory)
     job_recovery_task = start_job_recovery(settings, SessionFactory)

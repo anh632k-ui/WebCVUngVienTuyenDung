@@ -68,6 +68,14 @@ class MatchResult(Base):
             postgresql_where=text("status='COMPLETED'"),
         ),
         Index("idx_match_resume", "resume_id", text("created_at DESC")),
+        Index(
+            "idx_matches_processing_lease",
+            "processing_lease_expires_at",
+            "id",
+            postgresql_where=text(
+                "status='PROCESSING' AND processing_lease_expires_at IS NOT NULL"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -109,3 +117,10 @@ class MatchResult(Base):
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
     calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_attempt_epoch: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    processing_owner_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    processing_activation_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    processing_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

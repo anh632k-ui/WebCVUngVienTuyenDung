@@ -47,6 +47,11 @@ EXPECTED_COLUMNS = {
         "updated_at",
         "parsed_at",
         "deleted_at",
+        "processing_attempt_epoch",
+        "processing_owner_token",
+        "processing_activation_token",
+        "processing_heartbeat_at",
+        "processing_lease_expires_at",
     },
     "candidate_profiles": {
         "id",
@@ -122,6 +127,11 @@ EXPECTED_COLUMNS = {
         "updated_at",
         "parsed_at",
         "deleted_at",
+        "processing_attempt_epoch",
+        "processing_owner_token",
+        "processing_activation_token",
+        "processing_heartbeat_at",
+        "processing_lease_expires_at",
     },
     "job_skills": {
         "id",
@@ -154,6 +164,11 @@ EXPECTED_COLUMNS = {
         "created_at",
         "updated_at",
         "calculated_at",
+        "processing_attempt_epoch",
+        "processing_owner_token",
+        "processing_activation_token",
+        "processing_heartbeat_at",
+        "processing_lease_expires_at",
     },
 }
 

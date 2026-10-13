@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -19,6 +19,11 @@ from app.ai.resume_parser import RESUME_TEXT_PREPROCESSING_VERSION
 from app.ai.vector_embedding import BGE_M3_EMBEDDING_DIMENSION, BGE_M3_MODEL_NAME
 from app.core.config import Settings
 from app.core.database import create_engine
+from app.core.processing_fencing import (
+    ProcessingAttemptGuard,
+    activate_reclaimed_attempt,
+    claim_job_attempt,
+)
 from app.core.version_guard import claim_job_revision
 from app.models.job import JobDescription
 from app.models.skill import JobSkill, Skill
@@ -260,12 +265,14 @@ async def test_real_parser_taxonomy_embedding_and_aggregate_success(
         1,
         session_factory=harness.session_factory,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
     duplicate = await process_job_parse_task(
         job.id,
         1,
         session_factory=harness.session_factory,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
 
     async with harness.session_factory() as session:
@@ -287,6 +294,11 @@ async def test_real_parser_taxonomy_embedding_and_aggregate_success(
     assert stored.embedding_model == BGE_M3_MODEL_NAME
     assert stored.embedding_preprocessing_version == RESUME_TEXT_PREPROCESSING_VERSION
     assert stored.parsed_at is not None and stored.parsing_error_message is None
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None
+    assert stored.processing_activation_token is None
+    assert stored.processing_heartbeat_at is None
+    assert stored.processing_lease_expires_at is None
     assert stored.is_criteria_verified is False
     assert stored.status == "DRAFT"
     assert len(job_skills) == 1
@@ -297,7 +309,7 @@ async def test_real_parser_taxonomy_embedding_and_aggregate_success(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("race", ["delete", "revision"])
+@pytest.mark.parametrize("race", ["delete", "revision", "owner", "activation", "expired"])
 async def test_terminal_cas_blocks_delete_or_stale_revision_without_aggregate_replacement(
     postgres_job_worker: PostgreSQLJobWorkerHarness,
     race: str,
@@ -320,8 +332,14 @@ async def test_terminal_cas_blocks_delete_or_stale_revision_without_aggregate_re
         values: dict[str, Any]
         if race == "delete":
             values = {"is_deleted": True, "deleted_at": datetime.now(UTC)}
-        else:
+        elif race == "revision":
             values = {"revision": 2, "parsing_status": "PENDING"}
+        elif race == "owner":
+            values = {"processing_owner_token": uuid.uuid4()}
+        elif race == "activation":
+            values = {"processing_activation_token": uuid.uuid4()}
+        else:
+            values = {"processing_lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
         async with harness.session_factory() as session:
             await session.execute(
                 update(JobDescription).where(JobDescription.id == job.id).values(**values)
@@ -333,6 +351,7 @@ async def test_terminal_cas_blocks_delete_or_stale_revision_without_aggregate_re
         1,
         session_factory=harness.session_factory,
         embedding_provider=MutatingEmbeddingProvider(mutate_after_claim),
+        processing_fencing_enabled=True,
     )
 
     async with harness.session_factory() as session:
@@ -361,6 +380,7 @@ async def test_parser_and_embedding_failures_are_controlled(
         1,
         session_factory=harness.session_factory,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
     embedding_outcome = await process_job_parse_task(
         embedding_failure.id,
@@ -448,6 +468,7 @@ async def test_job_skill_insert_failure_rolls_back_parsed_payload_and_marks_fail
         1,
         session_factory=harness.session_factory,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
 
     async with harness.session_factory() as session:
@@ -544,16 +565,46 @@ async def test_two_independent_sessions_race_one_claim_wins() -> None:
         )
         await setup.commit()
 
-        async def claim() -> bool:
+        async def claim() -> ProcessingAttemptGuard | None:
             async with AsyncSession(engine, expire_on_commit=False) as session:
-                return await claim_job_revision(
+                return await claim_job_attempt(
                     session,
                     job_id=job_id,
                     expected_revision=1,
+                    lease_seconds=1_800,
                 )
 
         results = await asyncio.gather(claim(), claim())
-        assert sorted(results) == [False, True]
+        winners = [item for item in results if item is not None]
+        assert len(winners) == 1 and winners[0].attempt_epoch == 1
+
+        reclaimed_owner = uuid.uuid4()
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await session.execute(
+                update(JobDescription)
+                .where(JobDescription.id == job_id)
+                .values(
+                    processing_attempt_epoch=2,
+                    processing_owner_token=reclaimed_owner,
+                    processing_activation_token=None,
+                    processing_heartbeat_at=func.clock_timestamp(),
+                    processing_lease_expires_at=func.clock_timestamp() + timedelta(minutes=30),
+                )
+            )
+            await session.commit()
+        reclaimed = replace(
+            winners[0],
+            attempt_epoch=2,
+            owner_token=reclaimed_owner,
+            activation_token=None,
+        )
+
+        async def activate() -> ProcessingAttemptGuard | None:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                return await activate_reclaimed_attempt(session, reclaimed, lease_seconds=1_800)
+
+        activations = await asyncio.gather(activate(), activate())
+        assert len([item for item in activations if item is not None]) == 1
     finally:
         await setup.close()
         await cleanup.execute(delete(JobDescription).where(JobDescription.id == job_id))
@@ -581,6 +632,7 @@ async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
         1,
         session_factory=harness.session_factory,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
 
     stored = await harness.load_job(job.id)
@@ -588,3 +640,6 @@ async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
     assert stored.parsing_status == "FAILED"
     assert stored.parsing_error_message == "Job parsing timed out"
     assert stored.job_embedding is None
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None
+    assert stored.processing_activation_token is None

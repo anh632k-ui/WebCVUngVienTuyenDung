@@ -45,6 +45,10 @@ async def test_lifespan_starts_and_stops_all_recovery_loops_before_engine_dispos
     async def dispose() -> None:
         events.append("dispose")
 
+    async def schema_ready(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        events.append("schema_ready")
+
     monkeypatch.setattr(main, "start_resume_recovery", start_resume)
     monkeypatch.setattr(main, "start_job_recovery", start_job)
     monkeypatch.setattr(main, "stop_resume_recovery", stop_resume)
@@ -52,11 +56,13 @@ async def test_lifespan_starts_and_stops_all_recovery_loops_before_engine_dispos
     monkeypatch.setattr(main, "start_match_recovery", start_match)
     monkeypatch.setattr(main, "stop_match_recovery", stop_match)
     monkeypatch.setattr(main, "dispose_engine", dispose)
+    monkeypatch.setattr(main, "verify_processing_fencing_schema", schema_ready)
 
     async with main.lifespan(main.app):
         events.append("running")
 
     assert events == [
+        "schema_ready",
         "start_resume",
         "start_job",
         "start_match",

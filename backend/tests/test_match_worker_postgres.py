@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.ai.matching_engine import ALGORITHM_VERSION, compute_match
 from app.core.config import Settings
 from app.core.database import create_engine
+from app.core.processing_fencing import (
+    ProcessingAttemptGuard,
+    activate_reclaimed_attempt,
+    claim_match_attempt,
+)
 from app.core.version_guard import claim_match_generation
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
@@ -562,10 +567,53 @@ async def test_two_independent_sessions_race_and_only_one_claims(
     harness = postgres_match_worker
     graph = await harness.create_graph()
 
-    results = await asyncio.gather(claim(harness, graph), claim(harness, graph))
+    async def fenced_claim() -> ProcessingAttemptGuard | None:
+        async with harness.session_factory() as session:
+            return await claim_match_attempt(
+                session,
+                match_id=graph.match_id,
+                expected_generation=1,
+                expected_resume_revision=1,
+                expected_job_revision=1,
+                algorithm_version=ALGORITHM_VERSION,
+                lease_seconds=1_800,
+            )
 
-    assert sorted(results) == [False, True]
-    assert (await harness.load_match(graph.match_id)).status == "PROCESSING"
+    results = await asyncio.gather(fenced_claim(), fenced_claim())
+
+    winners = [item for item in results if item is not None]
+    assert len(winners) == 1 and winners[0].attempt_epoch == 1
+    stored = await harness.load_match(graph.match_id)
+    assert stored.status == "PROCESSING"
+    assert stored.processing_owner_token == winners[0].owner_token
+    assert stored.processing_activation_token == winners[0].activation_token
+    reclaimed_owner = uuid.uuid4()
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(MatchResult)
+            .where(MatchResult.id == graph.match_id)
+            .values(
+                processing_attempt_epoch=2,
+                processing_owner_token=reclaimed_owner,
+                processing_activation_token=None,
+                processing_heartbeat_at=func.clock_timestamp(),
+                processing_lease_expires_at=func.clock_timestamp() + timedelta(minutes=30),
+            )
+        )
+        await session.commit()
+    reclaimed = replace(
+        winners[0],
+        attempt_epoch=2,
+        owner_token=reclaimed_owner,
+        activation_token=None,
+    )
+
+    async def activate() -> ProcessingAttemptGuard | None:
+        async with harness.session_factory() as session:
+            return await activate_reclaimed_attempt(session, reclaimed, lease_seconds=1_800)
+
+    activations = await asyncio.gather(activate(), activate())
+    assert len([item for item in activations if item is not None]) == 1
     async with harness.session_factory() as session:
         assert await session.scalar(select(1)) == 1
 
@@ -585,6 +633,7 @@ async def test_real_engine_success_persists_complete_payload_without_mutating_in
         ALGORITHM_VERSION,
         session_factory=harness.session_factory,
         date_provider=lambda: date(2026, 10, 7),
+        processing_fencing_enabled=True,
     )
 
     stored = await harness.load_match(graph.match_id)
@@ -623,6 +672,11 @@ async def test_real_engine_success_persists_complete_payload_without_mutating_in
     assert stored.embedding_preprocessing_version == "text-v1"
     assert stored.calculated_at is not None and stored.updated_at == stored.calculated_at
     assert stored.generation == stored.resume_revision == stored.job_revision == 1
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None
+    assert stored.processing_activation_token is None
+    assert stored.processing_heartbeat_at is None
+    assert stored.processing_lease_expires_at is None
     assert resume is not None and resume.revision == 1
     assert job is not None and job.revision == 1
     assert resume_skill is not None and resume_skill.years_of_experience == Decimal("3.0")
@@ -671,6 +725,9 @@ async def test_current_experience_uses_the_single_injected_as_of_date(
         ({"revision": 2}, "job"),
         ({"is_deleted": True, "deleted_at": datetime.now(UTC)}, "resume"),
         ({"is_deleted": True, "deleted_at": datetime.now(UTC)}, "job"),
+        ({"processing_owner_token": uuid.uuid4()}, "match"),
+        ({"processing_activation_token": uuid.uuid4()}, "match"),
+        ({"processing_lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}, "match"),
     ],
 )
 async def test_terminal_success_discards_every_stale_or_deleted_race(
@@ -709,7 +766,13 @@ async def test_terminal_success_discards_every_stale_or_deleted_race(
 
     monkeypatch.setattr(match_worker, "_load_computation_context", load_then_mutate)
     outcome = await process_match_task(
-        graph.match_id, 1, 1, 1, ALGORITHM_VERSION, session_factory=harness.session_factory
+        graph.match_id,
+        1,
+        1,
+        1,
+        ALGORITHM_VERSION,
+        session_factory=harness.session_factory,
+        processing_fencing_enabled=True,
     )
     stored = await harness.load_match(graph.match_id)
 
@@ -732,7 +795,13 @@ async def test_invalid_persisted_context_transitions_to_safe_cleared_failed(
     )
 
     outcome = await process_match_task(
-        graph.match_id, 1, 1, 1, ALGORITHM_VERSION, session_factory=harness.session_factory
+        graph.match_id,
+        1,
+        1,
+        1,
+        ALGORITHM_VERSION,
+        session_factory=harness.session_factory,
+        processing_fencing_enabled=True,
     )
     stored = await harness.load_match(graph.match_id)
 
@@ -744,6 +813,9 @@ async def test_invalid_persisted_context_transitions_to_safe_cleared_failed(
     assert stored.matched_skills == [] and stored.missing_skills == []
     assert stored.embedding_model is None and stored.calculated_at is None
     assert stored.generation == stored.resume_revision == stored.job_revision == 1
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None
+    assert stored.processing_activation_token is None
 
 
 @pytest.mark.asyncio
