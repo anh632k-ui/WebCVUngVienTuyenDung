@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from hashlib import sha1
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -98,3 +99,73 @@ def test_ci_runner_has_multiple_identity_gates() -> None:
         "SELECT count(*) FROM public.skills",
     ):
         assert marker in runner
+
+
+def test_canonical_and_legacy_bootstraps_are_explicitly_separated() -> None:
+    canonical = (REPOSITORY_ROOT / "docs" / "05_database" / "schema.sql").read_text(
+        encoding="utf-8"
+    )
+    legacy = read_artifact("tests/r3c_pre_fencing_schema.sql")
+    runner = (REPOSITORY_ROOT / ".github" / "scripts" / "r3c_phase1_migration_ci.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert canonical.count("processing_attempt_epoch BIGINT NOT NULL DEFAULT 0") == 3
+    for column in (
+        "processing_owner_token UUID",
+        "processing_activation_token UUID",
+        "processing_heartbeat_at TIMESTAMPTZ",
+        "processing_lease_expires_at TIMESTAMPTZ",
+    ):
+        assert canonical.count(column) == 3
+    assert canonical.count("CREATE INDEX idx_") >= 3
+    for index_name in (
+        "idx_resumes_processing_lease",
+        "idx_jobs_processing_lease",
+        "idx_matches_processing_lease",
+    ):
+        assert canonical.count(index_name) == 1
+        assert index_name not in legacy
+
+    assert "a38ec82d81e915581766d0ae6c38c717696a8724" in legacy
+    assert "processing_attempt_epoch BIGINT" not in legacy
+    fixture_body = "\n".join(legacy.splitlines()[7:]) + "\n"
+    fixture_blob = sha1(
+        f"blob {len(fixture_body.encode())}\0".encode() + fixture_body.encode(),
+        usedforsecurity=False,
+    ).hexdigest()
+    assert fixture_blob == "8ca16eb6cc0971ea2c82d3b7fe18a8901629c1ba"
+    assert "readonly LEGACY_SCHEMA=" in runner
+    assert "bootstrap_fresh_database" in runner
+    assert "bootstrap_legacy_database" in runner
+
+
+def test_schema_equivalence_gate_compares_catalog_metadata() -> None:
+    snapshot = read_artifact("tests/r3c_schema_catalog_snapshot.sql")
+    runner = (REPOSITORY_ROOT / ".github" / "scripts" / "r3c_phase1_migration_ci.sh").read_text(
+        encoding="utf-8"
+    )
+
+    for object_type in (
+        "'table'::text",
+        "'column'",
+        "'primary_key'",
+        "'foreign_key'",
+        "'unique_constraint'",
+        "'check_constraint'",
+        "'index'",
+    ):
+        assert object_type in snapshot
+    for metadata in (
+        "format_type",
+        "attnotnull",
+        "pg_get_expr",
+        "pg_get_constraintdef",
+        "amname",
+        "pg_get_indexdef",
+        "indpred",
+        "indisvalid",
+    ):
+        assert metadata in snapshot
+    assert "diff -u" in runner
+    assert "migrated legacy and fresh canonical schemas are not catalog-equivalent" in runner

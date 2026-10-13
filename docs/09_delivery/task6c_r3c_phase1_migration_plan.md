@@ -1,6 +1,7 @@
 # Task 6C-R3C Phase 1 migration plan
 
-Status: review artifact only. **NOT AUTHORIZED FOR LOCAL/PRODUCTION EXECUTION.**
+Status: canonical source artifacts synchronized; physical database deployment **NOT performed**.
+Migration execution remains **NOT AUTHORIZED FOR LOCAL/QA/STAGING/PRODUCTION** by this document.
 
 ## 1. Baseline SHA
 
@@ -9,15 +10,17 @@ Prepared from `origin/dev` at `a38ec82d81e915581766d0ae6c38c717696a8724` on
 
 ## 2. Migration scope
 
-Phase 1 is expand-only. It adds persistent attempt metadata to `resumes`,
+The reviewed Phase 1 migration is expand-only. It adds persistent attempt metadata to `resumes`,
 `job_descriptions`, and `match_results`, plus three future lease lookup indexes. It
 does not add a table, change lifecycle constraints, backfill owners, or implement
 runtime fencing, activation, heartbeat, reclaim, or redispatch.
 
 ## 3. Current and proposed schema
 
-The current canonical physical schema has ten tables and no `processing_*`
-columns. The proposed deployed shape adds the same five columns to each target:
+The synchronized canonical physical schema still has exactly ten tables and now includes the same
+five columns on each target table. Existing databases that predate synchronization do not gain
+these objects from documentation changes; they require the reviewed migration and separate
+deployment approval.
 
 | Column | Type and Phase 1 default |
 |---|---|
@@ -27,10 +30,10 @@ columns. The proposed deployed shape adds the same five columns to each target:
 | `processing_heartbeat_at` | nullable `TIMESTAMPTZ` |
 | `processing_lease_expires_at` | nullable `TIMESTAMPTZ` |
 
-The migration creates no ownership-required `CHECK`, including `NOT VALID`, and
-no trigger. Canonical `schema.sql`, PDM, and data dictionary remain unchanged in
-this preparation PR; this PR does **not** claim that the canonical physical schema
-or any real database has been upgraded.
+The migration and canonical bootstrap create no ownership-required `CHECK`, including `NOT VALID`,
+and no trigger. Canonical `schema.sql`, PDM, and data dictionary are synchronized with the approved
+Phase 1 shape. This is a source-artifact change only and does **not** claim that a local, QA,
+staging, production, or other existing physical database has been upgraded.
 
 ## 4. DDL files and run order
 
@@ -60,7 +63,7 @@ obtain a separately reviewed repair plan.
 
 ## 6. PostgreSQL 18 compatibility
 
-CI runs the canonical schema and seed on `pgvector/pgvector:0.8.6-pg18` and rejects
+CI runs both the legacy fixture and canonical schema on `pgvector/pgvector:0.8.6-pg18` and rejects
 servers whose `server_version_num / 10000` is not 18. It validates UUID, bigint,
 timestamptz, catalog metadata, partial predicates, and `pg_index.indisvalid`.
 
@@ -104,20 +107,24 @@ infer data corruption from a migration refusal.
 
 ## 11. PostgreSQL CI test evidence
 
-The workflow uses only its GitHub-hosted service container and dedicated database
-`webcv_task_r3c_phase1_ci` on loopback port 55432. Gates cover GitHub, runner,
-repository, container, host, port, database, PG major, table count, and taxonomy
-count. Tests cover fresh expansion, exact 15-column metadata, pre-existing
-PROCESSING rows, legacy CAS, exact indexes, repeat behavior, preserved indexes,
-and isolated wrong-type, missing-table, conflicting-index, and invalid-index
-refusals. The backend regression suite then runs on the migrated schema. PR checks
-are the evidence of record; local PostgreSQL is not a substitute.
+The workflow uses only its GitHub-hosted service container and loopback port 55432. Gates cover
+GitHub, runner, repository, container, host, port, database, PG major, table count, and taxonomy
+count. Path A bootstraps the immutable pre-fencing fixture copied from canonical commit
+`a38ec82d81e915581766d0ae6c38c717696a8724`, seeds legacy PROCESSING rows, applies both migrations,
+checks legacy CAS, negative paths, and rerun idempotency. Path B bootstraps current canonical
+`schema.sql` from scratch, seeds 42 skills, verifies exactly 10 tables, all 15 columns, all three
+partial indexes, and the absence of ownership CHECKs. Backend regression runs on Path B.
+
+A dedicated catalog snapshot compares Path A and Path B for public tables, columns, PostgreSQL
+types, nullability, defaults, primary keys, foreign keys, unique constraints, CHECK constraints,
+and index name/method/keys/predicate/validity. Any material difference is printed by `diff` and
+fails CI. PR checks are the evidence of record; local PostgreSQL is not a substitute.
 
 ## 12. Proposed rollout procedure
 
-This is a proposal, not authorization. First synchronize canonical `schema.sql`,
-PDM, and data dictionary with the approved shape. Re-run CI and rehearse on a
-disposable PostgreSQL 18 clone. Drain conflicting DDL, observe locks, verify backup,
+This is a proposal, not authorization. Canonical `schema.sql`, PDM, and data dictionary are now
+synchronized with the approved shape. Re-run CI and rehearse on a disposable PostgreSQL 18 clone.
+Drain conflicting DDL, observe locks, verify backup,
 then apply expansion in an approved window. Verify metadata and legacy traffic.
 Apply indexes separately, verify `indisvalid`, predicates, latency, errors, and
 replication lag, then hold before any Phase 2 deployment.
@@ -157,6 +164,11 @@ EXECUTION**. DDL is authorized only in the disposable GitHub Actions service. Th
 task does not authorize local ports 5432/55432, the local QA directory,
 `webcv_ungvien`, or any canonical/external database.
 
+For a new empty database, bootstrap with current canonical `schema.sql` followed by the taxonomy
+seed. Never run `schema.sql` as an upgrade procedure against an existing populated database.
+Existing databases use the reviewed expand and index migrations only after explicit deployment
+approval and environment preflight; this document grants no such approval.
+
 ## 17. Phase 2 prerequisites
 
 Phase 2 requires Technical Lead approval, synchronized canonical artifacts,
@@ -164,3 +176,7 @@ successful PostgreSQL 18 migration CI, approved Phase 1 deployment, old-worker
 inventory/drain strategy, ORM mappings, fenced claim/terminal CAS design, token
 secrecy review, real concurrency tests, metrics/alerts, and disabled-by-default
 reclaim. Phase 2–5 are not implemented here.
+
+Accordingly, ORM mappings and runtime CAS remain Phase 1 legacy-compatible and do not map/use the
+five columns. Heartbeat and reclaim must remain disabled; old PROCESSING rows are not safely
+reclaimable merely because canonical source artifacts now contain the metadata.

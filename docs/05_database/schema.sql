@@ -51,6 +51,11 @@ CREATE TABLE resumes (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     parsed_at TIMESTAMPTZ,
     deleted_at TIMESTAMPTZ,
+    processing_attempt_epoch BIGINT NOT NULL DEFAULT 0,
+    processing_owner_token UUID,
+    processing_activation_token UUID,
+    processing_heartbeat_at TIMESTAMPTZ,
+    processing_lease_expires_at TIMESTAMPTZ,
     CONSTRAINT chk_resume_parsed_payload CHECK (
         parsing_status <> 'PARSED' OR (
             raw_text IS NOT NULL AND resume_embedding IS NOT NULL
@@ -68,6 +73,9 @@ CREATE TABLE resumes (
 CREATE INDEX idx_resumes_owner_active ON resumes(owner_user_id, created_at DESC) WHERE is_deleted=FALSE;
 CREATE INDEX idx_resumes_parsing_status ON resumes(parsing_status) WHERE is_deleted=FALSE;
 CREATE INDEX idx_resumes_embedding_hnsw ON resumes USING hnsw (resume_embedding vector_cosine_ops);
+CREATE INDEX idx_resumes_processing_lease
+    ON resumes(processing_lease_expires_at, id)
+    WHERE parsing_status='PROCESSING' AND processing_lease_expires_at IS NOT NULL;
 
 CREATE TABLE candidate_profiles (
     id BIGSERIAL PRIMARY KEY,
@@ -159,6 +167,11 @@ CREATE TABLE job_descriptions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     parsed_at TIMESTAMPTZ,
     deleted_at TIMESTAMPTZ,
+    processing_attempt_epoch BIGINT NOT NULL DEFAULT 0,
+    processing_owner_token UUID,
+    processing_activation_token UUID,
+    processing_heartbeat_at TIMESTAMPTZ,
+    processing_lease_expires_at TIMESTAMPTZ,
     CONSTRAINT chk_job_weights CHECK ((w_skill+w_semantic+w_experience)=1.000),
     CONSTRAINT chk_job_parsed_payload CHECK (
         parsing_status <> 'PARSED' OR (
@@ -178,6 +191,9 @@ CREATE TABLE job_descriptions (
 CREATE INDEX idx_jobs_recruiter_active ON job_descriptions(recruiter_id, created_at DESC) WHERE is_deleted=FALSE;
 CREATE INDEX idx_jobs_public_active ON job_descriptions(status, created_at DESC) WHERE is_deleted=FALSE;
 CREATE INDEX idx_jobs_embedding_hnsw ON job_descriptions USING hnsw (job_embedding vector_cosine_ops);
+CREATE INDEX idx_jobs_processing_lease
+    ON job_descriptions(processing_lease_expires_at, id)
+    WHERE parsing_status='PROCESSING' AND processing_lease_expires_at IS NOT NULL;
 
 CREATE TABLE job_skills (
     id BIGSERIAL PRIMARY KEY,
@@ -214,6 +230,11 @@ CREATE TABLE match_results (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     calculated_at TIMESTAMPTZ,
+    processing_attempt_epoch BIGINT NOT NULL DEFAULT 0,
+    processing_owner_token UUID,
+    processing_activation_token UUID,
+    processing_heartbeat_at TIMESTAMPTZ,
+    processing_lease_expires_at TIMESTAMPTZ,
     CONSTRAINT uq_job_resume_match UNIQUE(job_id,resume_id),
     CONSTRAINT chk_match_scores_range CHECK (
         (overall_score IS NULL OR overall_score BETWEEN 0 AND 100)
@@ -249,6 +270,9 @@ CREATE TABLE match_results (
 CREATE INDEX idx_match_job_leaderboard
     ON match_results(job_id, overall_score DESC) WHERE status='COMPLETED';
 CREATE INDEX idx_match_resume ON match_results(resume_id, created_at DESC);
+CREATE INDEX idx_matches_processing_lease
+    ON match_results(processing_lease_expires_at, id)
+    WHERE status='PROCESSING' AND processing_lease_expires_at IS NOT NULL;
 
 -- Cross-table readiness/ownership/revision equality are service/transaction invariants.
 -- create_request_fingerprint binds each deterministic create resource to its original logical payload.

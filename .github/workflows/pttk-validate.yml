@@ -124,6 +124,14 @@ jobs:
               assert text in sql, text
           assert sql.count('create_request_fingerprint VARCHAR(64) NOT NULL') == 2
           assert sql.count("create_request_fingerprint ~ '^[0-9a-f]{64}$'") == 2
+          assert sql.count('processing_attempt_epoch BIGINT NOT NULL DEFAULT 0') == 3
+          for field in ('processing_owner_token UUID', 'processing_activation_token UUID',
+                        'processing_heartbeat_at TIMESTAMPTZ', 'processing_lease_expires_at TIMESTAMPTZ'):
+              assert sql.count(field) == 3, field
+          for index_name in ('idx_resumes_processing_lease', 'idx_jobs_processing_lease',
+                             'idx_matches_processing_lease'):
+              assert sql.count(index_name) == 1, index_name
+          assert not re.search(r'CHECK\s*\([^)]*processing_owner_token', sql, re.IGNORECASE)
 
           seed = read('docs/05_database/skill_taxonomy_seed.sql')
           assert 'INSERT INTO skills' in seed
@@ -208,6 +216,12 @@ jobs:
           assert dictionary.count('create_request_fingerprint') >= 2
           assert 'IDEMPOTENCY_KEY_REUSED' in dictionary
           assert pdm.count('create_request_fingerprint') >= 2
+          assert dictionary.count('processing_attempt_epoch') >= 1
+          assert 'physical database deployment NOT performed' in dictionary
+          assert pdm.count('processing_attempt_epoch') == 3
+          for index_name in ('idx_resumes_processing_lease', 'idx_jobs_processing_lease',
+                             'idx_matches_processing_lease'):
+              assert index_name in pdm
 
           trace = read('docs/08_traceability/traceability_matrix.md')
           for phrase in ('FR-43','FR-44','FR-45','FR-46','FR-47','FR-48','Request fingerprint','Resume storage orphan','Parse exclusive CAS','Match exclusive CAS'):

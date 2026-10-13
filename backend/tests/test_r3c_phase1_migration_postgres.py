@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 def migration_url() -> str:
     value = os.environ.get("R3C_PHASE1_DATABASE_URL", "")
-    assert value.endswith("@127.0.0.1:55432/webcv_task_r3c_phase1_ci")
+    assert value.endswith("@127.0.0.1:55432/r3c_p1_case_legacy")
     assert os.environ.get("GITHUB_ACTIONS") == "true"
     assert os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
     return value
@@ -48,7 +48,7 @@ async def test_migrated_database_identity_and_metadata() -> None:
                     )
                 )
             ).one()
-            assert identity == ("webcv_task_r3c_phase1_ci", 18)
+            assert identity == ("r3c_p1_case_legacy", 18)
             assert (
                 await connection.scalar(
                     text(

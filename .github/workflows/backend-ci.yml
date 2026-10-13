@@ -5,11 +5,15 @@ on:
     branches: [dev, main]
     paths:
       - 'backend/**'
+      - 'docs/05_database/schema.sql'
+      - 'docs/05_database/skill_taxonomy_seed.sql'
       - '.github/workflows/backend-ci.yml'
   push:
     branches: [dev, main]
     paths:
       - 'backend/**'
+      - 'docs/05_database/schema.sql'
+      - 'docs/05_database/skill_taxonomy_seed.sql'
       - '.github/workflows/backend-ci.yml'
 
 permissions:

@@ -2,6 +2,25 @@
 
 `schema.sql` là nguồn vật lý cuối cùng; `skill_taxonomy_seed.sql` là bootstrap data bắt buộc cho demo.
 
+**Trạng thái R3C Phase 1:** Canonical source artifacts synchronized; physical database deployment NOT performed.
+
+Ba bảng xử lý `resumes`, `job_descriptions`, và `match_results` có cùng metadata attempt
+để chuẩn bị cho worker fencing trong các phase sau:
+
+- `processing_attempt_epoch BIGINT NOT NULL DEFAULT 0`: số thứ tự attempt, độc lập với
+  Resume/Job `revision` và Match `generation`; Phase 1 chưa tăng giá trị này.
+- `processing_owner_token UUID NULL`: định danh bí mật của future processing owner.
+- `processing_activation_token UUID NULL`: future single-delivery activation fence.
+- `processing_heartbeat_at TIMESTAMPTZ NULL`: thời điểm heartbeat thành công gần nhất của
+  future fenced worker.
+- `processing_lease_expires_at TIMESTAMPTZ NULL`: thời hạn lease theo database clock cho
+  future reclaim CAS.
+
+Trong Phase 1, ORM và worker legacy chưa map các cột này: INSERT/UPDATE hiện hữu tiếp tục để
+epoch `0` và toàn bộ token/timestamp `NULL`. Không có ownership-required CHECK, trigger,
+heartbeat hay reclaim runtime. Các row `PROCESSING` cũ không có ownership metadata **không được
+coi là safely reclaimable**; chúng chỉ được quan sát cho đến khi các phase fencing sau được duyệt.
+
 ## users
 `id` UUID; `email` case-insensitive unique; `password_hash`; `full_name`; `phone_number`; `role=CANDIDATE|HR|ADMIN`; `is_active`; audit timestamps.
 
@@ -19,6 +38,9 @@ Pipeline không tự thêm skill lạ. Seed baseline chạy sau schema.
 - parse: `parsing_status`, `raw_text`, `error_message`, `parsed_at`.
 - embedding: `resume_embedding vector(1024)`, `embedding_model`, `embedding_preprocessing_version`.
 - manual/soft delete flags.
+- attempt metadata: năm cột `processing_*` theo định nghĩa chung ở trên; partial index
+  `idx_resumes_processing_lease(processing_lease_expires_at, id)` chỉ chứa row
+  `parsing_status='PROCESSING'` có lease khác NULL.
 
 `storage_key` của create flow phải deterministic theo `resume_id` và không phụ thuộc tên file, ví dụ `resumes/{resume_id}/source`. Retry cùng Idempotency-Key không được overwrite object hiện hữu.
 
@@ -50,6 +72,9 @@ Institution/degree/field/start_year/graduation_year/gpa/description.
 - parse state + parsing error.
 - verified flag + weights + business status.
 - soft delete/audit timestamps.
+- attempt metadata: năm cột `processing_*` theo định nghĩa chung ở trên; partial index
+  `idx_jobs_processing_lease(processing_lease_expires_at, id)` chỉ chứa row
+  `parsing_status='PROCESSING'` có lease khác NULL.
 
 Raw content/criteria/weights/model/preprocessing mutation ảnh hưởng score => revision++ + Match invalidation.
 
@@ -62,6 +87,9 @@ Một current row/pair.
 - scores/evidence.
 - provenance: `algorithm_version`, `embedding_model`, `embedding_preprocessing_version`.
 - lifecycle + error/timestamps.
+- attempt metadata: năm cột `processing_*` theo định nghĩa chung ở trên; partial index
+  `idx_matches_processing_lease(processing_lease_expires_at, id)` chỉ chứa row
+  `status='PROCESSING'` có lease khác NULL.
 
 COMPLETED yêu cầu 4 score + embedding provenance + calculated_at.
 Non-COMPLETED phải clear score/evidence/embedding provenance/calculated_at.

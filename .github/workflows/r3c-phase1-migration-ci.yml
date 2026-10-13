@@ -4,6 +4,9 @@ on:
   pull_request:
     branches: [dev]
     paths:
+      - 'docs/05_database/schema.sql'
+      - 'docs/05_database/data_dictionary.md'
+      - 'docs/05_database/PDM/03_pdm_physical_erd.puml'
       - 'docs/05_database/migrations/**'
       - 'docs/09_delivery/task6c_r3c_phase1_migration_plan.md'
       - 'backend/tests/test_r3c_phase1_**'
@@ -62,17 +65,10 @@ jobs:
         working-directory: backend
         env:
           R3C_PHASE1_MIGRATION_QA: '1'
+          R3C_PHASE1_DATABASE_URL: postgresql+asyncpg://webcv_ci:webcv-ci-only@127.0.0.1:55432/r3c_p1_case_legacy
         run: python -m pytest -q tests/test_r3c_phase1_migration_postgres.py
 
-      - name: Remove migration fixtures before regression
-        env:
-          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
-        run: |
-          docker exec "${POSTGRES_CONTAINER_ID}" psql \
-            -X -U webcv_ci -d webcv_task_r3c_phase1_ci -v ON_ERROR_STOP=1 \
-            -c "DELETE FROM users WHERE id IN ('10000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002')"
-
-      - name: Run backend regression on migrated schema
+      - name: Run backend regression on fresh canonical schema
         working-directory: backend
         env:
           R3C_PHASE1_MIGRATION_QA: '0'
