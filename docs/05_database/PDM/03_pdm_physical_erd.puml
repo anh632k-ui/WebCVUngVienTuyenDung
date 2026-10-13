@@ -24,6 +24,11 @@ entity resumes {
  embedding_model : VARCHAR
  embedding_preprocessing_version : VARCHAR
  error_message : TEXT
+ * processing_attempt_epoch : BIGINT = 0
+ processing_owner_token : UUID <<NULL>>
+ processing_activation_token : UUID <<NULL>>
+ processing_heartbeat_at : TIMESTAMPTZ <<NULL>>
+ processing_lease_expires_at : TIMESTAMPTZ <<NULL>>
 }
 entity candidate_profiles {
  * id : BIGSERIAL <<PK>>
@@ -56,6 +61,11 @@ entity job_descriptions {
  embedding_preprocessing_version : VARCHAR
  * is_criteria_verified : BOOLEAN
  * status : VARCHAR <<CHECK>>
+ * processing_attempt_epoch : BIGINT = 0
+ processing_owner_token : UUID <<NULL>>
+ processing_activation_token : UUID <<NULL>>
+ processing_heartbeat_at : TIMESTAMPTZ <<NULL>>
+ processing_lease_expires_at : TIMESTAMPTZ <<NULL>>
 }
 entity job_skills {
  * id : BIGSERIAL <<PK>>
@@ -76,6 +86,11 @@ entity match_results {
  embedding_preprocessing_version : VARCHAR
  * status : VARCHAR <<CHECK>>
  error_message : TEXT
+ * processing_attempt_epoch : BIGINT = 0
+ processing_owner_token : UUID <<NULL>>
+ processing_activation_token : UUID <<NULL>>
+ processing_heartbeat_at : TIMESTAMPTZ <<NULL>>
+ processing_lease_expires_at : TIMESTAMPTZ <<NULL>>
 }
 
 users ||--o{ resumes
@@ -93,11 +108,15 @@ resumes ||--o{ match_results
 note right of resumes
 create_request_fingerprint = SHA-256(raw file bytes).
 Same deterministic id + different fingerprint => 409.
+idx_resumes_processing_lease(processing_lease_expires_at, id)
+WHERE parsing_status=PROCESSING AND processing_lease_expires_at IS NOT NULL.
 end note
 
 note right of job_descriptions
 create_request_fingerprint = SHA-256(canonical create payload).
 Same deterministic id + different fingerprint => 409.
+idx_jobs_processing_lease(processing_lease_expires_at, id)
+WHERE parsing_status=PROCESSING AND processing_lease_expires_at IS NOT NULL.
 end note
 
 note right of match_results
@@ -105,5 +124,7 @@ UQ(job_id,resume_id)
 generation + resource revisions guard stale workers.
 COMPLETED requires scores/provenance/calculated_at.
 FAILED requires error_message.
+idx_matches_processing_lease(processing_lease_expires_at, id)
+WHERE status=PROCESSING AND processing_lease_expires_at IS NOT NULL.
 end note
 @enduml
