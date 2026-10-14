@@ -100,6 +100,10 @@ ownership capability values. Do not execute it on a developer database under thi
 Its canonical table list is the left side of the final join, so the result always contains
 `resumes`, `job_descriptions`, and `match_results`; an empty table has zero counts and NULL
 minimum/maximum attempt epochs.
+For Resume and Job rows, `is_deleted=true` while `parsing_status='PROCESSING'` is reported as
+`snapshot_invalidated`. Match invalidation continues to require the referenced Resume and Job
+revision to exist and remain not soft-deleted. The inventory does not mutate status, epoch, or
+ownership fields.
 
 Each legacy unowned PROCESSING row must receive an operator disposition backed by correlated
 process/task evidence: live owner, terminally resolved after the capture, investigation required,
@@ -228,6 +232,10 @@ rejection, strict structure, and execution with deliberately invalid database/br
 variables. The dedicated workflow uses an isolated PostgreSQL 18 service only to execute the
 read-only inventory template against temporary minimal tables for the empty, one-table, and
 all-table cases; it uses no production credential and performs no external operational action. It
+also verifies active and soft-deleted Resume/Job PROCESSING rows plus Matches linked to each
+soft-deleted resource. Before any test connection, an opt-in guard requires GitHub Actions on a
+GitHub-hosted runner and the exact disposable host, port, database, user, and option-free DSN;
+non-CI execution skips, while an opted-in GitHub CI target mismatch fails without connecting. It
 exercises the fixed example through a frozen unit-test clock and exercises CLI success with
 timestamps generated at test runtime. Existing Backend CI
 continues to run the full backend test suite,

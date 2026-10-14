@@ -9,6 +9,8 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
+from urllib.parse import urlsplit
 
 import asyncpg
 import pytest
@@ -36,6 +38,9 @@ GIT_HASH = "a" * 40
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 HASH_C = "c" * 64
+PHASE3_CI_DATABASE_NAME = "r3c_phase3_inventory"
+PHASE3_CI_DATABASE_USER = "r3c_phase3_ci"
+SAFE_PHASE3_TEST_DSN = "postgresql://r3c_phase3_ci:placeholder@127.0.0.1:5432/r3c_phase3_inventory"
 
 
 def _source_ids() -> list[str]:
@@ -273,6 +278,109 @@ def evaluate(payload: dict[str, Any]):
 
 def issue_codes(result: Any) -> set[str]:
     return {issue.code for issue in result.issues}
+
+
+def _validated_phase3_ci_dsn() -> str:
+    if os.environ.get("R3C_PHASE3_POSTGRES_INTEGRATION") != "true":
+        pytest.skip("Phase 3 PostgreSQL integration is not enabled")
+    if not (
+        os.environ.get("CI") == "true"
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+    ):
+        pytest.skip("Phase 3 PostgreSQL integration requires a GitHub-hosted runner")
+
+    dsn = os.environ.get("R3C_PHASE3_DATABASE_URL")
+    try:
+        parsed = urlsplit(dsn or "")
+        port = parsed.port
+    except ValueError:
+        pytest.fail("Phase 3 CI database target failed safety validation", pytrace=False)
+
+    valid = (
+        parsed.scheme == "postgresql"
+        and parsed.hostname == "127.0.0.1"
+        and port == 5432
+        and parsed.username == PHASE3_CI_DATABASE_USER
+        and bool(parsed.password)
+        and parsed.path == f"/{PHASE3_CI_DATABASE_NAME}"
+        and not parsed.query
+        and not parsed.fragment
+    )
+    if not valid:
+        pytest.fail("Phase 3 CI database target failed safety validation", pytrace=False)
+    return dsn or ""
+
+
+async def _connect_phase3_ci_database() -> asyncpg.Connection:
+    dsn = _validated_phase3_ci_dsn()
+    return await asyncpg.connect(dsn)
+
+
+def _set_phase3_ci_identity(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
+    monkeypatch.setenv("R3C_PHASE3_POSTGRES_INTEGRATION", "true")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setenv("R3C_PHASE3_DATABASE_URL", dsn)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unsafe_dsn",
+    [
+        "postgresql://r3c_phase3_ci:placeholder@127.0.0.1:5432/webcv_ungvien",
+        "postgresql://r3c_phase3_ci:placeholder@127.0.0.1:5432/webcv_task6b_clean",
+        "postgresql://r3c_phase3_ci:placeholder@127.0.0.1:55432/r3c_phase3_inventory",
+        "postgresql://r3c_phase3_ci:placeholder@db.example:5432/r3c_phase3_inventory",
+        "postgresql://different_user:placeholder@127.0.0.1:5432/r3c_phase3_inventory",
+        "postgresql://r3c_phase3_ci:placeholder@127.0.0.1:5432/different_database",
+        "postgresql://r3c_phase3_ci:placeholder@127.0.0.1:5432/"
+        "r3c_phase3_inventory?sslmode=require",
+        "postgresql://r3c_phase3_ci:placeholder@127.0.0.1:not-a-port/r3c_phase3_inventory",
+    ],
+)
+async def test_phase3_ci_database_guard_rejects_unsafe_target_before_connect(
+    monkeypatch: pytest.MonkeyPatch, unsafe_dsn: str
+) -> None:
+    _set_phase3_ci_identity(monkeypatch, unsafe_dsn)
+    connect = AsyncMock()
+    monkeypatch.setattr(asyncpg, "connect", connect)
+
+    with pytest.raises(pytest.fail.Exception, match="safety validation"):
+        await _connect_phase3_ci_database()
+
+    connect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phase3_ci_database_guard_skips_without_github_identity_before_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_phase3_ci_identity(monkeypatch, SAFE_PHASE3_TEST_DSN)
+    monkeypatch.delenv("GITHUB_ACTIONS")
+    connect = AsyncMock()
+    monkeypatch.setattr(asyncpg, "connect", connect)
+
+    with pytest.raises(pytest.skip.Exception, match="GitHub-hosted"):
+        await _connect_phase3_ci_database()
+
+    connect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phase3_ci_database_guard_fails_missing_target_before_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_phase3_ci_identity(monkeypatch, SAFE_PHASE3_TEST_DSN)
+    monkeypatch.delenv("R3C_PHASE3_DATABASE_URL")
+    connect = AsyncMock()
+    monkeypatch.setattr(asyncpg, "connect", connect)
+
+    with pytest.raises(pytest.fail.Exception, match="safety validation"):
+        await _connect_phase3_ci_database()
+
+    connect.assert_not_awaited()
 
 
 def test_complete_synthetic_manifest_is_ready_only_for_operator_review() -> None:
@@ -694,11 +802,7 @@ def test_processing_inventory_always_emits_all_canonical_tables() -> None:
 
 @pytest.mark.asyncio
 async def test_processing_inventory_postgresql_empty_one_and_all_tables() -> None:
-    dsn = os.environ.get("R3C_PHASE3_DATABASE_URL")
-    if not dsn:
-        pytest.skip("R3C_PHASE3_DATABASE_URL is not configured")
-
-    connection = await asyncpg.connect(dsn)
+    connection = await _connect_phase3_ci_database()
     try:
         await connection.execute(
             """
@@ -743,31 +847,48 @@ async def test_processing_inventory_postgresql_empty_one_and_all_tables() -> Non
             """
             INSERT INTO resumes
                 (id, revision, is_deleted, parsing_status, processing_attempt_epoch)
-            VALUES (1, 1, false, 'PROCESSING', 7)
+            VALUES (1, 1, false, 'PROCESSING', 7);
+            INSERT INTO job_descriptions
+                (id, revision, is_deleted, parsing_status, processing_attempt_epoch)
+            VALUES (10, 1, false, 'PROCESSING', 8);
             """
         )
-        one_table = await snapshot()
-        assert one_table["resumes"]["processing_total"] == 1
-        assert one_table["resumes"]["minimum_attempt_epoch"] == 7
-        assert one_table["job_descriptions"]["processing_total"] == 0
-        assert one_table["match_results"]["processing_total"] == 0
+        active_snapshots = await snapshot()
+        assert active_snapshots["resumes"]["snapshot_invalidated"] == 0
+        assert active_snapshots["job_descriptions"]["snapshot_invalidated"] == 0
+        assert active_snapshots["match_results"]["processing_total"] == 0
 
         await connection.execute(
             """
+            INSERT INTO resumes
+                (id, revision, is_deleted, parsing_status, processing_attempt_epoch)
+            VALUES (2, 1, true, 'PROCESSING', 11);
             INSERT INTO job_descriptions
                 (id, revision, is_deleted, parsing_status, processing_attempt_epoch)
-            VALUES (2, 1, false, 'PROCESSING', 8);
+            VALUES (11, 1, true, 'PROCESSING', 12);
             INSERT INTO match_results
                 (status, resume_id, resume_revision, job_id, job_revision,
                  processing_attempt_epoch)
-            VALUES ('PROCESSING', 1, 1, 2, 1, 9);
+            VALUES
+                ('PROCESSING', 1, 1, 10, 1, 9),
+                ('PROCESSING', 2, 1, 10, 1, 13),
+                ('PROCESSING', 1, 1, 11, 1, 14);
             """
         )
         all_tables = await snapshot()
         assert {name: row["processing_total"] for name, row in all_tables.items()} == {
-            "resumes": 1,
-            "job_descriptions": 1,
-            "match_results": 1,
+            "resumes": 2,
+            "job_descriptions": 2,
+            "match_results": 3,
         }
+        assert all_tables["resumes"]["snapshot_invalidated"] == 1
+        assert all_tables["job_descriptions"]["snapshot_invalidated"] == 1
+        assert all_tables["match_results"]["snapshot_invalidated"] == 2
+        assert all_tables["resumes"]["minimum_attempt_epoch"] == 7
+        assert all_tables["resumes"]["maximum_attempt_epoch"] == 11
+        assert all_tables["job_descriptions"]["minimum_attempt_epoch"] == 8
+        assert all_tables["job_descriptions"]["maximum_attempt_epoch"] == 12
+        assert all_tables["match_results"]["minimum_attempt_epoch"] == 9
+        assert all_tables["match_results"]["maximum_attempt_epoch"] == 14
     finally:
         await connection.close()

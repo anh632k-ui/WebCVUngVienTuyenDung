@@ -19,7 +19,7 @@ WITH canonical_tables(table_name) AS (
         processing_heartbeat_at IS NULL AS heartbeat_is_null,
         processing_lease_expires_at IS NULL AS lease_is_null,
         processing_lease_expires_at,
-        false AS snapshot_invalidated
+        is_deleted AS snapshot_invalidated
     FROM resumes
     WHERE parsing_status = 'PROCESSING'
 
@@ -33,7 +33,7 @@ WITH canonical_tables(table_name) AS (
         processing_heartbeat_at IS NULL,
         processing_lease_expires_at IS NULL,
         processing_lease_expires_at,
-        false
+        is_deleted
     FROM job_descriptions
     WHERE parsing_status = 'PROCESSING'
 
