@@ -878,7 +878,7 @@ async def test_flag_off_processes_new_revision_after_fenced_completion(
         embedding_provider=FakeEmbeddingProvider(),
         processing_fencing_enabled=True,
     )
-    assert first is ResumeParseTaskOutcome.COMPLETED
+    assert first is ResumeParseTaskOutcome.PARSED
 
     async with harness.session_factory() as session:
         await session.execute(
@@ -906,7 +906,7 @@ async def test_flag_off_processes_new_revision_after_fenced_completion(
     )
     stored = await harness.load_resume(resume.id)
 
-    assert second is ResumeParseTaskOutcome.COMPLETED
+    assert second is ResumeParseTaskOutcome.PARSED
     assert stored.parsing_status == "PARSED"
     assert stored.processing_attempt_epoch == 1
     assert stored.processing_owner_token is None
