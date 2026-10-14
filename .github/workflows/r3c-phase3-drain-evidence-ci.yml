@@ -1,0 +1,56 @@
+name: R3C Phase 3 Drain Evidence CI
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'backend/scripts/r3c_phase3_drain_evidence.py'
+      - 'backend/tests/test_r3c_phase3_drain_evidence.py'
+      - 'docs/09_delivery/task6c_r3c_phase3_*'
+      - '.github/workflows/r3c-phase3-drain-evidence-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-evidence-validator:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install backend test dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run Phase 3 offline validator tests
+        run: python -m pytest -q tests/test_r3c_phase3_drain_evidence.py
+
+      - name: Validate the synthetic example
+        run: >-
+          python -m scripts.r3c_phase3_drain_evidence
+          ../docs/09_delivery/task6c_r3c_phase3_evidence_manifest.example.json
+
+      - name: Run Ruff lint for Phase 3 artifacts
+        run: >-
+          python -m ruff check
+          scripts/r3c_phase3_drain_evidence.py
+          tests/test_r3c_phase3_drain_evidence.py
+
+      - name: Check Ruff formatting for Phase 3 artifacts
+        run: >-
+          python -m ruff format --check
+          scripts/r3c_phase3_drain_evidence.py
+          tests/test_r3c_phase3_drain_evidence.py
+
+      - name: Run mypy for the offline validator
+        run: python -m mypy scripts/r3c_phase3_drain_evidence.py

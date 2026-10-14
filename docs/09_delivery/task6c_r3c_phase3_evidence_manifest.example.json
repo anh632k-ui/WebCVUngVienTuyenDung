@@ -1,0 +1,221 @@
+{
+  "schema_version": "r3c-phase3-v1",
+  "environment": {
+    "environment_name": "synthetic-phase3-test",
+    "environment_identity": "phase3-test-env",
+    "expected_environment_identity": "phase3-test-env",
+    "evidence_kind": "SYNTHETIC_TEST"
+  },
+  "approved_release": {
+    "release_id": "release-r3c-p2",
+    "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "review_reference": "synthetic-review/r3c-phase2"
+  },
+  "captured_at": "2026-10-14T02:00:00Z",
+  "deployments": [
+    {
+      "instance_id": "api-1",
+      "environment_identity": "phase3-test-env",
+      "workload_identity": "synthetic/api-1",
+      "process_kind": "API",
+      "task_role": "PUBLISHER",
+      "release_id": "release-r3c-p2",
+      "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "compatibility": "FENCE_AWARE",
+      "process_state": "RUNNING",
+      "queue_subscriptions": [],
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    },
+    {
+      "instance_id": "worker-parent-1",
+      "environment_identity": "phase3-test-env",
+      "workload_identity": "synthetic/worker-1/parent",
+      "process_kind": "CELERY_PARENT",
+      "task_role": "TERMINAL_WRITER",
+      "release_id": "release-r3c-p2",
+      "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "compatibility": "FENCE_AWARE",
+      "process_state": "RUNNING",
+      "queue_subscriptions": ["resume.parse", "job.parse", "match.calculate"],
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    },
+    {
+      "instance_id": "worker-child-1",
+      "environment_identity": "phase3-test-env",
+      "workload_identity": "synthetic/worker-1/child-1",
+      "process_kind": "CELERY_CHILD",
+      "task_role": "TERMINAL_WRITER",
+      "release_id": "release-r3c-p2",
+      "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "compatibility": "FENCE_AWARE",
+      "process_state": "RUNNING",
+      "queue_subscriptions": [],
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    }
+  ],
+  "legacy_processes": [
+    {
+      "process_identity": "legacy-worker-archived-1",
+      "release_id": "release-legacy",
+      "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "process_state": "TERMINATED",
+      "restart_prevented": true,
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    }
+  ],
+  "worker_nodes": [
+    {
+      "node_identity": "celery-node-1",
+      "deployment_instance_id": "worker-parent-1",
+      "reachable": true,
+      "response_complete": true,
+      "active": [],
+      "reserved": [],
+      "scheduled": [],
+      "retry_delayed": [],
+      "unacknowledged": [],
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    }
+  ],
+  "queue_routes": [
+    {
+      "task_name": "resume.parse",
+      "exchange": "synthetic-exchange",
+      "routing_key": "resume.parse",
+      "consumer_instance_ids": ["worker-parent-1"],
+      "all_consumers_accounted": true,
+      "pending_delivery_count": 0,
+      "dead_letter_count": 0,
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    },
+    {
+      "task_name": "job.parse",
+      "exchange": "synthetic-exchange",
+      "routing_key": "job.parse",
+      "consumer_instance_ids": ["worker-parent-1"],
+      "all_consumers_accounted": true,
+      "pending_delivery_count": 0,
+      "dead_letter_count": 0,
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    },
+    {
+      "task_name": "match.calculate",
+      "exchange": "synthetic-exchange",
+      "routing_key": "match.calculate",
+      "consumer_instance_ids": ["worker-parent-1"],
+      "all_consumers_accounted": true,
+      "pending_delivery_count": 0,
+      "dead_letter_count": 0,
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    }
+  ],
+  "restart_prevention": [
+    {
+      "legacy_release_id": "release-legacy",
+      "replicas_zero": true,
+      "autoscaling_cannot_launch": true,
+      "restart_policy_disabled": true,
+      "supervisors_disabled": true,
+      "scheduled_launchers_disabled": true,
+      "rollback_artifacts_blocked": true,
+      "old_image_references_blocked": true,
+      "observed_at": "2026-10-14T02:00:00Z",
+      "source_ids": ["synthetic-fixture"]
+    }
+  ],
+  "publishers": {
+    "api_publishers_quiesced": true,
+    "pending_recovery_loops_quiesced": true,
+    "scheduled_publishers_quiesced": true,
+    "other_publishers_quiesced": true,
+    "observed_at": "2026-10-14T02:00:00Z",
+    "source_ids": ["synthetic-fixture"]
+  },
+  "database_inventory": {
+    "complete": true,
+    "schema_readiness_verified": true,
+    "tables": [
+      {
+        "table_name": "resumes",
+        "processing_total": 0,
+        "legacy_unowned": 0,
+        "fenced_owned": 0,
+        "expired_lease": 0,
+        "current_lease": 0,
+        "inconsistent_metadata": 0,
+        "snapshot_invalidated": 0,
+        "classified_legacy": 0,
+        "operator_live_worker": 0,
+        "operator_investigation": 0,
+        "operator_approved_recovery_candidate": 0,
+        "terminally_resolved_since_capture": 0
+      },
+      {
+        "table_name": "job_descriptions",
+        "processing_total": 0,
+        "legacy_unowned": 0,
+        "fenced_owned": 0,
+        "expired_lease": 0,
+        "current_lease": 0,
+        "inconsistent_metadata": 0,
+        "snapshot_invalidated": 0,
+        "classified_legacy": 0,
+        "operator_live_worker": 0,
+        "operator_investigation": 0,
+        "operator_approved_recovery_candidate": 0,
+        "terminally_resolved_since_capture": 0
+      },
+      {
+        "table_name": "match_results",
+        "processing_total": 0,
+        "legacy_unowned": 0,
+        "fenced_owned": 0,
+        "expired_lease": 0,
+        "current_lease": 0,
+        "inconsistent_metadata": 0,
+        "snapshot_invalidated": 0,
+        "classified_legacy": 0,
+        "operator_live_worker": 0,
+        "operator_investigation": 0,
+        "operator_approved_recovery_candidate": 0,
+        "terminally_resolved_since_capture": 0
+      }
+    ],
+    "captured_at": "2026-10-14T02:00:00Z",
+    "source_ids": ["synthetic-fixture"]
+  },
+  "unresolved_items": [],
+  "evidence_sources": [
+    {
+      "source_id": "synthetic-fixture",
+      "source_type": "SYNTHETIC_FIXTURE",
+      "reference": "repository synthetic fixture",
+      "collector_identity": "ci-test-runner",
+      "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "captured_at": "2026-10-14T02:00:00Z",
+      "authenticity": "VERIFIED"
+    }
+  ],
+  "operator_review": {
+    "collection_reviewed": true,
+    "reviewer_identity": "synthetic-test-reviewer",
+    "review_reference": "synthetic-review-only",
+    "reviewed_at": "2026-10-14T02:00:00Z",
+    "final_drain_approval": "PENDING"
+  },
+  "validation_policy": {
+    "evaluated_at": "2026-10-14T02:05:00Z",
+    "maximum_evidence_age_seconds": 3600,
+    "maximum_future_skew_seconds": 60,
+    "maximum_cross_source_skew_seconds": 600
+  }
+}
