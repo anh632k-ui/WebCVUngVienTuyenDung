@@ -97,6 +97,9 @@ lifespan. This repository task does not perform that action.
 attempt epoch (attempt identity) from Resume/Job revision and Match generation (business snapshot
 identity). It returns no row IDs, raw documents, profiles, e-mail, errors, embeddings, or
 ownership capability values. Do not execute it on a developer database under this task.
+Its canonical table list is the left side of the final join, so the result always contains
+`resumes`, `job_descriptions`, and `match_results`; an empty table has zero counts and NULL
+minimum/maximum attempt epochs.
 
 Each legacy unowned PROCESSING row must receive an operator disposition backed by correlated
 process/task evidence: live owner, terminally resolved after the capture, investigation required,
@@ -117,14 +120,32 @@ verifiable sources for orchestrator, process inventory, broker, task inspection,
 and change control. Every inventory item references its sources. Evidence is SHA-256 bound,
 timestamped, environment-scoped, and collected without secrets or PII.
 
+Source types are purpose-bound: deployment/process inventory requires orchestrator plus process
+inventory; queue routes require broker evidence; worker snapshots require task inspection;
+database counts require database summary; and release approval, restart prevention, publisher
+quiescence, and operator review require their specified change-control/inventory sources. Merely
+listing the six source types does not satisfy the gate. Unused, cross-environment, wrongly typed,
+or synthetic sources in a live bundle block validation. A 64-hex SHA-256 remains the evidence
+artifact hash, an image digest remains `sha256:<64 hex>`, and `commit_sha` is a 40-hex Git object
+ID.
+
 Forbidden evidence includes credentials, bearer/access/ownership tokens, connection URLs with
 passwords, CV/JD raw text, profiles, e-mail, embeddings, and persisted error messages. Task
 references are hashed. The validator emits only stable issue codes and never echoes rejected
 values. A hand-edited JSON file is only a claim: unverifiable/manual provenance yields at best
-`REVIEW_REQUIRED`.
+`REVIEW_REQUIRED`. In particular, `authenticity: VERIFIED` and a syntactically valid digest are
+self-assertions unless an operator independently verifies the referenced artifact/trust anchor;
+the offline validator therefore never promotes a live bundle past `REVIEW_REQUIRED` on those
+fields alone.
 
-Freshness policy is explicit in each manifest. All timestamps require timezone offsets, must not
-exceed future skew or maximum age, and must fit the approved cross-source capture window.
+Freshness policy is explicit in each manifest, but the manifest does not choose the clock. The
+validator captures current UTC from its own runtime and compares the declared `evaluated_at`
+against that trusted clock within `maximum_evaluation_clock_skew_seconds`. Unit tests may inject a
+frozen clock through the Python API; the CLI has no flag or environment override for it. All
+timestamps require timezone offsets, must not exceed future skew or maximum age relative to the
+trusted clock, and must fit the approved cross-source capture window. The committed fixed-time
+synthetic fixture is test data and is only evaluated with the test-injected clock; it is not a
+permanently fresh CLI success example.
 Contradictory counts, identities, routes, artifacts, or timestamps fail closed.
 
 Run offline from `backend/`:
@@ -194,17 +215,22 @@ delayed/unacked/broker work, legacy routes, incomplete publisher quiescence, mis
 inventory, inconsistent or unclassified PROCESSING rows, unresolved items, expired/future/mixed
 timestamps, contradictions, missing item provenance, and CI-only claims presented as live proof.
 
-`REVIEW_REQUIRED` covers a structurally coherent bundle whose source authenticity or evidence
-collection review remains manual/unverified. `READY_FOR_OPERATOR_REVIEW` means only that the
-machine-checkable manifest conditions passed. Final live inventory, actual drain, source
+`REVIEW_REQUIRED` covers a structurally coherent live bundle whose referenced artifact/trust
+anchor still needs independent operator verification, or whose collection review remains
+manual/unverified. `READY_FOR_OPERATOR_REVIEW` is the synthetic-test ceiling only; it means that
+the machine-checkable fixture conditions passed. Final live inventory, actual drain, source
 authenticity judgment, and operator authorization stay outside the validator.
 
 ## 9. Testing and CI boundary
 
 Unit tests cover the positive synthetic ceiling, all mandatory negative cases, sanitized secret
 rejection, strict structure, and execution with deliberately invalid database/broker environment
-variables. The dedicated workflow uses no service container or production credential and performs
-no external operational action. Existing Backend CI continues to run the full backend test suite,
+variables. The dedicated workflow uses an isolated PostgreSQL 18 service only to execute the
+read-only inventory template against temporary minimal tables for the empty, one-table, and
+all-table cases; it uses no production credential and performs no external operational action. It
+exercises the fixed example through a frozen unit-test clock and exercises CLI success with
+timestamps generated at test runtime. Existing Backend CI
+continues to run the full backend test suite,
 Ruff, format check, and mypy; existing Phase 1 migration CI, Phase 2 PostgreSQL concurrency
 coverage, and PTTK validation remain unchanged.
 

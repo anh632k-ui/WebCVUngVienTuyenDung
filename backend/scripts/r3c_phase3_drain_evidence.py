@@ -12,6 +12,7 @@ import json
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -30,6 +31,7 @@ REQUIRED_LIVE_SOURCE_TYPES = {
     "CHANGE_CONTROL",
 }
 SHA256 = r"^[0-9a-f]{64}$"
+GIT_SHA = r"^[0-9a-f]{40}$"
 DIGEST = r"^sha256:[0-9a-f]{64}$"
 IDENTITY = r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}$"
 
@@ -87,6 +89,7 @@ class EvidenceSource(StrictModel):
     ]
     reference: str = Field(min_length=1, max_length=300)
     collector_identity: str = Field(pattern=IDENTITY)
+    environment_identity: str = Field(pattern=IDENTITY)
     artifact_sha256: str = Field(pattern=SHA256)
     captured_at: datetime
     authenticity: Literal["VERIFIED", "MANUAL_ASSERTION", "UNVERIFIED"]
@@ -101,9 +104,10 @@ class EnvironmentIdentity(StrictModel):
 
 class ApprovedRelease(StrictModel):
     release_id: str = Field(pattern=IDENTITY)
-    commit_sha: str = Field(pattern=SHA256)
+    commit_sha: str = Field(pattern=GIT_SHA)
     artifact_digest: str = Field(pattern=DIGEST)
     review_reference: str = Field(min_length=1, max_length=300)
+    source_ids: list[str] = Field(min_length=1)
 
 
 class DeploymentInstance(StrictModel):
@@ -223,12 +227,14 @@ class OperatorReview(StrictModel):
     review_reference: str = Field(min_length=1, max_length=300)
     reviewed_at: datetime
     final_drain_approval: Literal["NOT_REQUESTED", "PENDING", "APPROVED"]
+    source_ids: list[str] = Field(min_length=1)
 
 
 class ValidationPolicy(StrictModel):
     evaluated_at: datetime
     maximum_evidence_age_seconds: Annotated[int, Field(ge=60, le=86400)]
     maximum_future_skew_seconds: Annotated[int, Field(ge=0, le=300)]
+    maximum_evaluation_clock_skew_seconds: Annotated[int, Field(ge=0, le=300)]
     maximum_cross_source_skew_seconds: Annotated[int, Field(ge=1, le=3600)]
 
 
@@ -278,16 +284,44 @@ def _contains_sensitive_content(value: object) -> bool:
     return isinstance(value, str) and _SENSITIVE_VALUE.search(value) is not None
 
 
-def _references_exist(source_ids: list[str], known: set[str]) -> bool:
-    return bool(source_ids) and len(source_ids) == len(set(source_ids)) and set(source_ids) <= known
+Clock = Callable[[], datetime]
 
 
-def validate_manifest(manifest: EvidenceManifest) -> GateResult:
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _check_provenance(
+    source_ids: list[str],
+    sources: dict[str, EvidenceSource],
+    allowed_live_types: set[str],
+    synthetic: bool,
+    missing_code: str,
+    wrong_type_code: str,
+    blockers: set[str],
+    referenced_sources: set[str],
+) -> None:
+    if (
+        not source_ids
+        or len(source_ids) != len(set(source_ids))
+        or not set(source_ids) <= set(sources)
+    ):
+        blockers.add(missing_code)
+        return
+    referenced_sources.update(source_ids)
+    expected_types = {"SYNTHETIC_FIXTURE"} if synthetic else allowed_live_types
+    if not {sources[source_id].source_type for source_id in source_ids} >= expected_types:
+        blockers.add(wrong_type_code)
+
+
+def validate_manifest(manifest: EvidenceManifest, *, clock: Clock | None = None) -> GateResult:
     """Evaluate a structurally valid manifest without contacting external systems."""
 
     blockers: set[str] = set()
     reviews: set[str] = set()
     timestamps: list[datetime] = [manifest.captured_at]
+    trusted_now = (clock or _utc_now)()
+    synthetic = manifest.environment.evidence_kind == "SYNTHETIC_TEST"
 
     if (
         manifest.environment.environment_identity
@@ -297,21 +331,51 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
 
     source_ids = [source.source_id for source in manifest.evidence_sources]
     known_sources = set(source_ids)
+    sources_by_id = {source.source_id: source for source in manifest.evidence_sources}
+    referenced_sources: set[str] = set()
     if len(source_ids) != len(known_sources):
         blockers.add("DUPLICATE_EVIDENCE_SOURCE_ID")
     for source in manifest.evidence_sources:
         timestamps.append(source.captured_at)
+        if source.environment_identity != manifest.environment.environment_identity:
+            blockers.add("EVIDENCE_SOURCE_ENVIRONMENT_MISMATCH")
         if source.authenticity != "VERIFIED":
             reviews.add("EVIDENCE_SOURCE_NOT_VERIFIED")
+        if not synthetic:
+            reviews.add("INDEPENDENT_PROVENANCE_REVIEW_REQUIRED")
+
+    if synthetic:
+        if any(source.source_type != "SYNTHETIC_FIXTURE" for source in manifest.evidence_sources):
+            blockers.add("SYNTHETIC_EVIDENCE_SOURCE_INVALID")
+    elif any(source.source_type == "SYNTHETIC_FIXTURE" for source in manifest.evidence_sources):
+        blockers.add("SYNTHETIC_SOURCE_FOR_LIVE_EVIDENCE")
 
     approved = manifest.approved_release
+    _check_provenance(
+        approved.source_ids,
+        sources_by_id,
+        {"CHANGE_CONTROL"},
+        synthetic,
+        "APPROVED_RELEASE_PROVENANCE_MISSING",
+        "APPROVED_RELEASE_SOURCE_TYPE_INVALID",
+        blockers,
+        referenced_sources,
+    )
     instance_ids = [item.instance_id for item in manifest.deployments]
     if len(instance_ids) != len(set(instance_ids)):
         blockers.add("DUPLICATE_OR_CONFLICTING_INSTANCE_ID")
     for instance in manifest.deployments:
         timestamps.append(instance.observed_at)
-        if not _references_exist(instance.source_ids, known_sources):
-            blockers.add("DEPLOYMENT_PROVENANCE_MISSING")
+        _check_provenance(
+            instance.source_ids,
+            sources_by_id,
+            {"ORCHESTRATOR", "PROCESS_INVENTORY"},
+            synthetic,
+            "DEPLOYMENT_PROVENANCE_MISSING",
+            "DEPLOYMENT_SOURCE_TYPE_INVALID",
+            blockers,
+            referenced_sources,
+        )
         if instance.environment_identity != manifest.environment.environment_identity:
             blockers.add("DEPLOYMENT_ENVIRONMENT_MISMATCH")
         if instance.compatibility is Compatibility.UNKNOWN:
@@ -327,8 +391,16 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
 
     for process in manifest.legacy_processes:
         timestamps.append(process.observed_at)
-        if not _references_exist(process.source_ids, known_sources):
-            blockers.add("LEGACY_PROCESS_PROVENANCE_MISSING")
+        _check_provenance(
+            process.source_ids,
+            sources_by_id,
+            {"ORCHESTRATOR", "PROCESS_INVENTORY"},
+            synthetic,
+            "LEGACY_PROCESS_PROVENANCE_MISSING",
+            "LEGACY_PROCESS_SOURCE_TYPE_INVALID",
+            blockers,
+            referenced_sources,
+        )
         if process.process_state == "RUNNING":
             blockers.add("LEGACY_PROCESS_ACTIVE")
         if not process.restart_prevented:
@@ -345,8 +417,16 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
         timestamps.append(node.observed_at)
         worker_node_ids.append(node.node_identity)
         worker_instance_ids.append(node.deployment_instance_id)
-        if not _references_exist(node.source_ids, known_sources):
-            blockers.add("WORKER_NODE_PROVENANCE_MISSING")
+        _check_provenance(
+            node.source_ids,
+            sources_by_id,
+            {"TASK_INSPECT"},
+            synthetic,
+            "WORKER_NODE_PROVENANCE_MISSING",
+            "WORKER_NODE_SOURCE_TYPE_INVALID",
+            blockers,
+            referenced_sources,
+        )
         if not node.reachable:
             blockers.add("WORKER_NODE_UNRESPONSIVE")
         if not node.response_complete:
@@ -374,8 +454,16 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
     for route in manifest.queue_routes:
         timestamps.append(route.observed_at)
         routed_consumers[route.task_name] = set(route.consumer_instance_ids)
-        if not _references_exist(route.source_ids, known_sources):
-            blockers.add("QUEUE_ROUTE_PROVENANCE_MISSING")
+        _check_provenance(
+            route.source_ids,
+            sources_by_id,
+            {"BROKER"},
+            synthetic,
+            "QUEUE_ROUTE_PROVENANCE_MISSING",
+            "QUEUE_ROUTE_SOURCE_TYPE_INVALID",
+            blockers,
+            referenced_sources,
+        )
         if not route.all_consumers_accounted:
             blockers.add("QUEUE_CONSUMER_INVENTORY_INCOMPLETE")
         if route.pending_delivery_count or route.dead_letter_count:
@@ -407,8 +495,16 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
         blockers.add("RESTART_PREVENTION_INVENTORY_INCOMPLETE")
     for item in manifest.restart_prevention:
         timestamps.append(item.observed_at)
-        if not _references_exist(item.source_ids, known_sources):
-            blockers.add("RESTART_PREVENTION_PROVENANCE_MISSING")
+        _check_provenance(
+            item.source_ids,
+            sources_by_id,
+            {"ORCHESTRATOR", "CHANGE_CONTROL"},
+            synthetic,
+            "RESTART_PREVENTION_PROVENANCE_MISSING",
+            "RESTART_PREVENTION_SOURCE_TYPE_INVALID",
+            blockers,
+            referenced_sources,
+        )
         if not all(
             (
                 item.replicas_zero,
@@ -424,8 +520,16 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
 
     publisher = manifest.publishers
     timestamps.append(publisher.observed_at)
-    if not _references_exist(publisher.source_ids, known_sources):
-        blockers.add("PUBLISHER_PROVENANCE_MISSING")
+    _check_provenance(
+        publisher.source_ids,
+        sources_by_id,
+        {"PROCESS_INVENTORY", "CHANGE_CONTROL"},
+        synthetic,
+        "PUBLISHER_PROVENANCE_MISSING",
+        "PUBLISHER_SOURCE_TYPE_INVALID",
+        blockers,
+        referenced_sources,
+    )
     if not publisher.api_publishers_quiesced:
         blockers.add("API_PUBLISHERS_NOT_QUIESCED")
     if not publisher.pending_recovery_loops_quiesced:
@@ -435,8 +539,16 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
 
     inventory = manifest.database_inventory
     timestamps.append(inventory.captured_at)
-    if not _references_exist(inventory.source_ids, known_sources):
-        blockers.add("DATABASE_INVENTORY_PROVENANCE_MISSING")
+    _check_provenance(
+        inventory.source_ids,
+        sources_by_id,
+        {"DATABASE_SUMMARY"},
+        synthetic,
+        "DATABASE_INVENTORY_PROVENANCE_MISSING",
+        "DATABASE_INVENTORY_SOURCE_TYPE_INVALID",
+        blockers,
+        referenced_sources,
+    )
     if not inventory.complete or not inventory.schema_readiness_verified:
         blockers.add("DATABASE_INVENTORY_INCOMPLETE")
     table_names = [table.table_name for table in inventory.tables]
@@ -471,6 +583,16 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
 
     review = manifest.operator_review
     timestamps.append(review.reviewed_at)
+    _check_provenance(
+        review.source_ids,
+        sources_by_id,
+        {"CHANGE_CONTROL"},
+        synthetic,
+        "OPERATOR_REVIEW_PROVENANCE_MISSING",
+        "OPERATOR_REVIEW_SOURCE_TYPE_INVALID",
+        blockers,
+        referenced_sources,
+    )
     if not review.collection_reviewed:
         reviews.add("OPERATOR_COLLECTION_REVIEW_MISSING")
     if review.final_drain_approval == "NOT_REQUESTED":
@@ -479,16 +601,25 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
         reviews.add("OPERATOR_REVIEW_PROVENANCE_MISSING")
 
     policy = manifest.validation_policy
-    evaluated_at = policy.evaluated_at.astimezone(UTC)
-    if any(not _is_aware(item) for item in timestamps) or not _is_aware(policy.evaluated_at):
+    if (
+        any(not _is_aware(item) for item in timestamps)
+        or not _is_aware(policy.evaluated_at)
+        or not _is_aware(trusted_now)
+    ):
         blockers.add("TIMESTAMP_WITHOUT_TIMEZONE")
     else:
+        evaluated_at = policy.evaluated_at.astimezone(UTC)
+        trusted_now = trusted_now.astimezone(UTC)
         utc_times = [item.astimezone(UTC) for item in timestamps]
+        if abs((evaluated_at - trusted_now).total_seconds()) > (
+            policy.maximum_evaluation_clock_skew_seconds
+        ):
+            blockers.add("DECLARED_EVALUATION_TIME_MISMATCH")
         future_limit = policy.maximum_future_skew_seconds
-        if any((item - evaluated_at).total_seconds() > future_limit for item in utc_times):
+        if any((item - trusted_now).total_seconds() > future_limit for item in utc_times):
             blockers.add("EVIDENCE_TIMESTAMP_IN_FUTURE")
         if any(
-            (evaluated_at - item).total_seconds() > policy.maximum_evidence_age_seconds
+            (trusted_now - item).total_seconds() > policy.maximum_evidence_age_seconds
             for item in utc_times
         ):
             blockers.add("EVIDENCE_EXPIRED")
@@ -498,11 +629,12 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
             blockers.add("EVIDENCE_TIMESTAMPS_NOT_COHERENT")
 
     source_types = {source.source_type for source in manifest.evidence_sources}
-    synthetic = manifest.environment.evidence_kind == "SYNTHETIC_TEST"
     if not synthetic and not source_types >= REQUIRED_LIVE_SOURCE_TYPES:
         blockers.add("LIVE_EVIDENCE_SOURCES_INCOMPLETE")
     if not synthetic and source_types <= {"CI"}:
         blockers.add("CI_IS_NOT_LIVE_DRAIN_EVIDENCE")
+    if referenced_sources != known_sources:
+        blockers.add("UNUSED_EVIDENCE_SOURCE")
 
     issues = [GateIssue(code=code, category="BLOCKER") for code in sorted(blockers)]
     issues.extend(GateIssue(code=code, category="REVIEW") for code in sorted(reviews))
@@ -523,7 +655,7 @@ def validate_manifest(manifest: EvidenceManifest) -> GateResult:
     )
 
 
-def load_and_validate(path: Path) -> GateResult:
+def load_and_validate(path: Path, *, clock: Clock | None = None) -> GateResult:
     """Load one bounded JSON file and return a sanitized result."""
 
     try:
@@ -538,7 +670,7 @@ def load_and_validate(path: Path) -> GateResult:
         manifest = EvidenceManifest.model_validate_json(json.dumps(payload))
     except ValidationError:
         return _blocked("MANIFEST_STRUCTURE_INVALID")
-    return validate_manifest(manifest)
+    return validate_manifest(manifest, clock=clock)
 
 
 def _blocked(code: str) -> GateResult:

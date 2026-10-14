@@ -5,9 +5,12 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import pytest
 
 from scripts.r3c_phase3_drain_evidence import (
@@ -28,6 +31,8 @@ INVENTORY_SQL = (
 VALIDATOR_SOURCE = BACKEND_DIR / "scripts" / "r3c_phase3_drain_evidence.py"
 NOW = "2026-10-14T02:05:00Z"
 CAPTURED = "2026-10-14T02:00:00Z"
+FROZEN_NOW = datetime(2026, 10, 14, 2, 5, tzinfo=UTC)
+GIT_HASH = "a" * 40
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 HASH_C = "c" * 64
@@ -106,9 +111,10 @@ def valid_manifest() -> dict[str, Any]:
         },
         "approved_release": {
             "release_id": "release-r3c-p2",
-            "commit_sha": HASH_A,
+            "commit_sha": GIT_HASH,
             "artifact_digest": f"sha256:{HASH_B}",
             "review_reference": "synthetic-review/r3c-phase2",
+            "source_ids": _source_ids(),
         },
         "captured_at": CAPTURED,
         "deployments": deployments,
@@ -192,6 +198,7 @@ def valid_manifest() -> dict[str, Any]:
                 "source_type": "SYNTHETIC_FIXTURE",
                 "reference": "repository synthetic fixture",
                 "collector_identity": "ci-test-runner",
+                "environment_identity": "phase3-test-env",
                 "artifact_sha256": HASH_A,
                 "captured_at": CAPTURED,
                 "authenticity": "VERIFIED",
@@ -203,19 +210,65 @@ def valid_manifest() -> dict[str, Any]:
             "review_reference": "synthetic-review-only",
             "reviewed_at": CAPTURED,
             "final_drain_approval": "PENDING",
+            "source_ids": _source_ids(),
         },
         "validation_policy": {
             "evaluated_at": NOW,
             "maximum_evidence_age_seconds": 3600,
             "maximum_future_skew_seconds": 60,
+            "maximum_evaluation_clock_skew_seconds": 60,
             "maximum_cross_source_skew_seconds": 600,
         },
     }
 
 
+def live_manifest() -> dict[str, Any]:
+    payload = valid_manifest()
+    payload["environment"].update(
+        environment_name="production",
+        environment_identity="prod-a",
+        expected_environment_identity="prod-a",
+        evidence_kind="LIVE",
+    )
+    source_types = {
+        "orchestrator": "ORCHESTRATOR",
+        "process-inventory": "PROCESS_INVENTORY",
+        "broker": "BROKER",
+        "task-inspect": "TASK_INSPECT",
+        "database-summary": "DATABASE_SUMMARY",
+        "change-control": "CHANGE_CONTROL",
+    }
+    payload["evidence_sources"] = [
+        {
+            "source_id": source_id,
+            "source_type": source_type,
+            "reference": f"live-artifact/{source_id}",
+            "collector_identity": "operator-collector",
+            "environment_identity": "prod-a",
+            "artifact_sha256": HASH_A,
+            "captured_at": CAPTURED,
+            "authenticity": "VERIFIED",
+        }
+        for source_id, source_type in source_types.items()
+    ]
+    payload["approved_release"]["source_ids"] = ["change-control"]
+    for deployment in payload["deployments"]:
+        deployment["environment_identity"] = "prod-a"
+        deployment["source_ids"] = ["orchestrator", "process-inventory"]
+    payload["legacy_processes"][0]["source_ids"] = ["orchestrator", "process-inventory"]
+    payload["worker_nodes"][0]["source_ids"] = ["task-inspect"]
+    for route in payload["queue_routes"]:
+        route["source_ids"] = ["broker"]
+    payload["restart_prevention"][0]["source_ids"] = ["orchestrator", "change-control"]
+    payload["publishers"]["source_ids"] = ["process-inventory", "change-control"]
+    payload["database_inventory"]["source_ids"] = ["database-summary"]
+    payload["operator_review"]["source_ids"] = ["change-control"]
+    return payload
+
+
 def evaluate(payload: dict[str, Any]):
     manifest = EvidenceManifest.model_validate_json(json.dumps(payload))
-    return validate_manifest(manifest)
+    return validate_manifest(manifest, clock=lambda: FROZEN_NOW)
 
 
 def issue_codes(result: Any) -> set[str]:
@@ -228,6 +281,52 @@ def test_complete_synthetic_manifest_is_ready_only_for_operator_review() -> None
     assert result.status is GateStatus.READY_FOR_OPERATOR_REVIEW
     assert result.synthetic_evidence is True
     assert "authorize reclaim" in result.disclaimer
+
+
+def test_old_manifest_replay_is_blocked_by_trusted_clock() -> None:
+    manifest = EvidenceManifest.model_validate_json(json.dumps(valid_manifest()))
+    result = validate_manifest(manifest, clock=lambda: FROZEN_NOW + timedelta(days=1))
+    assert result.status is GateStatus.BLOCKED
+    assert "EVIDENCE_EXPIRED" in issue_codes(result)
+
+
+@pytest.mark.parametrize("offset", [-3600, 3600])
+def test_manifest_cannot_select_past_or_future_evaluation_time(offset: int) -> None:
+    payload = valid_manifest()
+    payload["validation_policy"]["evaluated_at"] = (
+        FROZEN_NOW + timedelta(seconds=offset)
+    ).isoformat()
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "DECLARED_EVALUATION_TIME_MISMATCH" in issue_codes(result)
+
+
+def test_stale_but_internally_coherent_evidence_is_blocked() -> None:
+    payload = valid_manifest()
+    stale = (FROZEN_NOW - timedelta(hours=2)).isoformat()
+    for key, container in _walk_dicts(payload):
+        if key in {"captured_at", "observed_at", "reviewed_at"}:
+            container[key] = stale
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "EVIDENCE_EXPIRED" in issue_codes(result)
+    assert "EVIDENCE_TIMESTAMPS_NOT_COHERENT" not in issue_codes(result)
+
+
+def test_timezone_missing_is_blocked() -> None:
+    payload = valid_manifest()
+    payload["captured_at"] = "2026-10-14T02:00:00"
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "TIMESTAMP_WITHOUT_TIMEZONE" in issue_codes(result)
+
+
+@pytest.mark.parametrize("commit_sha", [HASH_A, "g" * 40, "a" * 39])
+def test_release_commit_requires_full_40_hex_git_sha(commit_sha: str) -> None:
+    payload = valid_manifest()
+    payload["approved_release"]["commit_sha"] = commit_sha
+    with pytest.raises(ValueError):
+        EvidenceManifest.model_validate_json(json.dumps(payload))
 
 
 @pytest.mark.parametrize(
@@ -300,7 +399,7 @@ def test_complete_synthetic_manifest_is_ready_only_for_operator_review() -> None
         ),
         (
             lambda d: d["validation_policy"].update(evaluated_at="2026-10-15T02:05:00Z"),
-            "EVIDENCE_EXPIRED",
+            "DECLARED_EVALUATION_TIME_MISMATCH",
         ),
         (
             lambda d: d["environment"].update(expected_environment_identity="different-env"),
@@ -344,6 +443,90 @@ def test_unverified_provenance_requires_review() -> None:
     result = evaluate(payload)
     assert result.status is GateStatus.REVIEW_REQUIRED
     assert "EVIDENCE_SOURCE_NOT_VERIFIED" in issue_codes(result)
+
+
+def test_live_self_asserted_verified_hash_still_requires_independent_review() -> None:
+    result = evaluate(live_manifest())
+    assert result.status is GateStatus.REVIEW_REQUIRED
+    assert "INDEPENDENT_PROVENANCE_REVIEW_REQUIRED" in issue_codes(result)
+
+
+def test_live_evidence_cannot_reference_synthetic_fixture() -> None:
+    payload = live_manifest()
+    payload["evidence_sources"][0]["source_type"] = "SYNTHETIC_FIXTURE"
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "SYNTHETIC_SOURCE_FOR_LIVE_EVIDENCE" in issue_codes(result)
+
+
+def test_database_inventory_cannot_be_proved_by_ci_source() -> None:
+    payload = live_manifest()
+    database_source = next(
+        source
+        for source in payload["evidence_sources"]
+        if source["source_id"] == "database-summary"
+    )
+    database_source["source_type"] = "CI"
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "DATABASE_INVENTORY_SOURCE_TYPE_INVALID" in issue_codes(result)
+
+
+def test_broker_route_cannot_be_proved_by_process_inventory() -> None:
+    payload = live_manifest()
+    broker_source = next(
+        source for source in payload["evidence_sources"] if source["source_id"] == "broker"
+    )
+    broker_source["source_type"] = "PROCESS_INVENTORY"
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "QUEUE_ROUTE_SOURCE_TYPE_INVALID" in issue_codes(result)
+
+
+def test_unreferenced_required_source_types_do_not_satisfy_live_provenance() -> None:
+    payload = valid_manifest()
+    for source_type in (
+        "ORCHESTRATOR",
+        "PROCESS_INVENTORY",
+        "BROKER",
+        "TASK_INSPECT",
+        "DATABASE_SUMMARY",
+        "CHANGE_CONTROL",
+    ):
+        payload["evidence_sources"].append(
+            {
+                **payload["evidence_sources"][0],
+                "source_id": source_type.casefold().replace("_", "-"),
+                "source_type": source_type,
+            }
+        )
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "UNUSED_EVIDENCE_SOURCE" in issue_codes(result)
+
+
+def test_source_environment_mismatch_is_blocked() -> None:
+    payload = live_manifest()
+    payload["evidence_sources"][0]["environment_identity"] = "different-env"
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "EVIDENCE_SOURCE_ENVIRONMENT_MISMATCH" in issue_codes(result)
+
+
+def test_duplicate_source_id_is_blocked() -> None:
+    payload = live_manifest()
+    payload["evidence_sources"].append(copy.deepcopy(payload["evidence_sources"][0]))
+    result = evaluate(payload)
+    assert result.status is GateStatus.BLOCKED
+    assert "DUPLICATE_EVIDENCE_SOURCE_ID" in issue_codes(result)
+
+
+def test_bad_source_id_is_structurally_rejected(tmp_path: Path) -> None:
+    payload = valid_manifest()
+    payload["evidence_sources"][0]["source_id"] = "bad source id"
+    path = tmp_path / "bad-source.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert issue_codes(load_and_validate(path)) == {"MANIFEST_STRUCTURE_INVALID"}
 
 
 def test_missing_operator_collection_review_requires_review() -> None:
@@ -391,14 +574,21 @@ def test_sensitive_content_is_rejected_without_echo(tmp_path: Path) -> None:
 
 
 def test_committed_example_matches_the_positive_fixture() -> None:
-    result = load_and_validate(EXAMPLE_MANIFEST)
+    result = load_and_validate(EXAMPLE_MANIFEST, clock=lambda: FROZEN_NOW)
     assert result.status is GateStatus.READY_FOR_OPERATOR_REVIEW
     assert result.synthetic_evidence is True
 
 
 def test_cli_is_offline_and_does_not_need_application_environment(tmp_path: Path) -> None:
+    payload = valid_manifest()
+    runtime_now = datetime.now(UTC)
+    runtime_captured = (runtime_now - timedelta(seconds=5)).isoformat()
+    for key, value in _walk_dicts(payload):
+        if key in {"captured_at", "observed_at", "reviewed_at"}:
+            value[key] = runtime_captured
+    payload["validation_policy"]["evaluated_at"] = runtime_now.isoformat()
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps(valid_manifest()), encoding="utf-8")
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
     environment = {
         "PATH": os.environ.get("PATH", ""),
         "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
@@ -420,6 +610,47 @@ def test_cli_is_offline_and_does_not_need_application_environment(tmp_path: Path
     assert completed.stderr == ""
     assert "DATABASE_URL" not in completed.stdout
     assert "CELERY_BROKER_URL" not in completed.stdout
+
+
+def test_cli_ignores_environment_clock_override_and_rejects_stale_fixture(tmp_path: Path) -> None:
+    payload = valid_manifest()
+    runtime_now = datetime.now(UTC)
+    stale = (runtime_now - timedelta(hours=2)).isoformat()
+    for key, container in _walk_dicts(payload):
+        if key in {"captured_at", "observed_at", "reviewed_at"}:
+            container[key] = stale
+    payload["validation_policy"]["evaluated_at"] = runtime_now.isoformat()
+    manifest = tmp_path / "stale.json"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+        "PYTHONPATH": str(BACKEND_DIR),
+        "R3C_EVALUATED_AT": stale,
+    }
+    completed = subprocess.run(
+        [sys.executable, "-m", "scripts.r3c_phase3_drain_evidence", str(manifest)],
+        cwd=BACKEND_DIR,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    result = json.loads(completed.stdout)
+    assert completed.returncode == 2
+    assert result["status"] == "BLOCKED"
+    assert "EVIDENCE_EXPIRED" in {issue["code"] for issue in result["issues"]}
+
+
+def _walk_dicts(value: Any) -> Iterator[tuple[str, dict[str, Any]]]:
+    if isinstance(value, dict):
+        for key in list(value):
+            yield key, value
+            yield from _walk_dicts(value[key])
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_dicts(item)
 
 
 def test_validator_has_no_application_or_external_client_imports() -> None:
@@ -448,3 +679,95 @@ def test_processing_inventory_template_is_read_only() -> None:
         assert forbidden_statement not in statements
     assert "begin transaction read only" in statements
     assert "commit" in statements
+
+
+def test_processing_inventory_always_emits_all_canonical_tables() -> None:
+    sql = INVENTORY_SQL.read_text(encoding="utf-8").casefold()
+    assert "canonical_tables(table_name)" in sql
+    assert "left join aggregated using (table_name)" in sql
+    assert "coalesce(aggregated.processing_total, 0)" in sql
+    assert "aggregated.minimum_attempt_epoch" in sql
+    assert "aggregated.maximum_attempt_epoch" in sql
+    for table_name in ("resumes", "job_descriptions", "match_results"):
+        assert f"('{table_name}'::text)" in sql
+
+
+@pytest.mark.asyncio
+async def test_processing_inventory_postgresql_empty_one_and_all_tables() -> None:
+    dsn = os.environ.get("R3C_PHASE3_DATABASE_URL")
+    if not dsn:
+        pytest.skip("R3C_PHASE3_DATABASE_URL is not configured")
+
+    connection = await asyncpg.connect(dsn)
+    try:
+        await connection.execute(
+            """
+            CREATE TEMP TABLE resumes (
+                id bigint, revision integer, is_deleted boolean, parsing_status text,
+                processing_attempt_epoch integer, processing_owner_token text,
+                processing_activation_token text, processing_heartbeat_at timestamptz,
+                processing_lease_expires_at timestamptz
+            );
+            CREATE TEMP TABLE job_descriptions (
+                id bigint, revision integer, is_deleted boolean, parsing_status text,
+                processing_attempt_epoch integer, processing_owner_token text,
+                processing_activation_token text, processing_heartbeat_at timestamptz,
+                processing_lease_expires_at timestamptz
+            );
+            CREATE TEMP TABLE match_results (
+                status text, resume_id bigint, resume_revision integer,
+                job_id bigint, job_revision integer, processing_attempt_epoch integer,
+                processing_owner_token text, processing_activation_token text,
+                processing_heartbeat_at timestamptz, processing_lease_expires_at timestamptz
+            );
+            """
+        )
+        query = (
+            INVENTORY_SQL.read_text(encoding="utf-8")
+            .replace("BEGIN TRANSACTION READ ONLY;", "")
+            .replace("COMMIT;", "")
+            .strip()
+        )
+
+        async def snapshot() -> dict[str, dict[str, Any]]:
+            rows = await connection.fetch(query)
+            return {row["table_name"]: dict(row) for row in rows}
+
+        empty = await snapshot()
+        assert set(empty) == {"resumes", "job_descriptions", "match_results"}
+        assert all(row["processing_total"] == 0 for row in empty.values())
+        assert all(row["minimum_attempt_epoch"] is None for row in empty.values())
+        assert all(row["maximum_attempt_epoch"] is None for row in empty.values())
+
+        await connection.execute(
+            """
+            INSERT INTO resumes
+                (id, revision, is_deleted, parsing_status, processing_attempt_epoch)
+            VALUES (1, 1, false, 'PROCESSING', 7)
+            """
+        )
+        one_table = await snapshot()
+        assert one_table["resumes"]["processing_total"] == 1
+        assert one_table["resumes"]["minimum_attempt_epoch"] == 7
+        assert one_table["job_descriptions"]["processing_total"] == 0
+        assert one_table["match_results"]["processing_total"] == 0
+
+        await connection.execute(
+            """
+            INSERT INTO job_descriptions
+                (id, revision, is_deleted, parsing_status, processing_attempt_epoch)
+            VALUES (2, 1, false, 'PROCESSING', 8);
+            INSERT INTO match_results
+                (status, resume_id, resume_revision, job_id, job_revision,
+                 processing_attempt_epoch)
+            VALUES ('PROCESSING', 1, 1, 2, 1, 9);
+            """
+        )
+        all_tables = await snapshot()
+        assert {name: row["processing_total"] for name, row in all_tables.items()} == {
+            "resumes": 1,
+            "job_descriptions": 1,
+            "match_results": 1,
+        }
+    finally:
+        await connection.close()

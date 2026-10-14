@@ -5,7 +5,12 @@
 
 BEGIN TRANSACTION READ ONLY;
 
-WITH processing_rows AS (
+WITH canonical_tables(table_name) AS (
+    VALUES
+        ('resumes'::text),
+        ('job_descriptions'::text),
+        ('match_results'::text)
+), processing_rows AS (
     SELECT
         'resumes'::text AS table_name,
         processing_attempt_epoch,
@@ -68,7 +73,7 @@ WITH processing_rows AS (
         processing_lease_expires_at,
         snapshot_invalidated
     FROM processing_rows
-)
+), aggregated AS (
 SELECT
     table_name,
     count(*) AS processing_total,
@@ -88,6 +93,20 @@ SELECT
     max(processing_attempt_epoch) AS maximum_attempt_epoch
 FROM classified
 GROUP BY table_name
-ORDER BY table_name;
+)
+SELECT
+    canonical_tables.table_name,
+    coalesce(aggregated.processing_total, 0) AS processing_total,
+    coalesce(aggregated.legacy_unowned, 0) AS legacy_unowned,
+    coalesce(aggregated.fenced_owned, 0) AS fenced_owned,
+    coalesce(aggregated.inconsistent_metadata, 0) AS inconsistent_metadata,
+    coalesce(aggregated.snapshot_invalidated, 0) AS snapshot_invalidated,
+    coalesce(aggregated.expired_lease, 0) AS expired_lease,
+    coalesce(aggregated.current_lease, 0) AS current_lease,
+    aggregated.minimum_attempt_epoch,
+    aggregated.maximum_attempt_epoch
+FROM canonical_tables
+LEFT JOIN aggregated USING (table_name)
+ORDER BY canonical_tables.table_name;
 
 COMMIT;

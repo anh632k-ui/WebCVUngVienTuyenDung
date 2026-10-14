@@ -8,9 +8,10 @@
   },
   "approved_release": {
     "release_id": "release-r3c-p2",
-    "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "review_reference": "synthetic-review/r3c-phase2"
+    "review_reference": "synthetic-review/r3c-phase2",
+    "source_ids": ["synthetic-fixture"]
   },
   "captured_at": "2026-10-14T02:00:00Z",
   "deployments": [
@@ -200,6 +201,7 @@
       "source_type": "SYNTHETIC_FIXTURE",
       "reference": "repository synthetic fixture",
       "collector_identity": "ci-test-runner",
+      "environment_identity": "phase3-test-env",
       "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "captured_at": "2026-10-14T02:00:00Z",
       "authenticity": "VERIFIED"
@@ -210,12 +212,14 @@
     "reviewer_identity": "synthetic-test-reviewer",
     "review_reference": "synthetic-review-only",
     "reviewed_at": "2026-10-14T02:00:00Z",
-    "final_drain_approval": "PENDING"
+    "final_drain_approval": "PENDING",
+    "source_ids": ["synthetic-fixture"]
   },
   "validation_policy": {
     "evaluated_at": "2026-10-14T02:05:00Z",
     "maximum_evidence_age_seconds": 3600,
     "maximum_future_skew_seconds": 60,
+    "maximum_evaluation_clock_skew_seconds": 60,
     "maximum_cross_source_skew_seconds": 600
   }
 }

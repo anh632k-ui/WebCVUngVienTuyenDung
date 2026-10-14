@@ -16,6 +16,22 @@ permissions:
 jobs:
   offline-evidence-validator:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg18
+        env:
+          POSTGRES_USER: r3c_phase3_ci
+          POSTGRES_PASSWORD: r3c-phase3-ci-only
+          POSTGRES_DB: r3c_phase3_inventory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U r3c_phase3_ci -d r3c_phase3_inventory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      R3C_PHASE3_DATABASE_URL: postgresql://r3c_phase3_ci:r3c-phase3-ci-only@127.0.0.1:5432/r3c_phase3_inventory
     defaults:
       run:
         working-directory: backend
@@ -34,11 +50,6 @@ jobs:
 
       - name: Run Phase 3 offline validator tests
         run: python -m pytest -q tests/test_r3c_phase3_drain_evidence.py
-
-      - name: Validate the synthetic example
-        run: >-
-          python -m scripts.r3c_phase3_drain_evidence
-          ../docs/09_delivery/task6c_r3c_phase3_evidence_manifest.example.json
 
       - name: Run Ruff lint for Phase 3 artifacts
         run: >-
