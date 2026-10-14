@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal, cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.errors import ResumeParseError
@@ -21,6 +21,13 @@ from app.ai.vector_embedding import (
     EmbeddingProvider,
     EmbeddingProviderError,
     validate_dense_embedding,
+)
+from app.core.processing_fencing import (
+    ProcessingAttemptGuard,
+    claim_resume_attempt,
+    resume_fence,
+    terminal_ownership_values,
+    unowned_processing,
 )
 from app.core.version_guard import claim_resume_revision, fail_resume_revision
 from app.models.resume import CandidateProfile, Resume, ResumeEducation, ResumeExperience
@@ -56,8 +63,12 @@ async def _load_parse_context(
     *,
     resume_id: uuid.UUID,
     expected_revision: int,
+    attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> ResumeParseContext | None:
     async with session_factory() as session:
+        ownership_guard = (
+            resume_fence(attempt_guard) if attempt_guard is not None else unowned_processing(Resume)
+        )
         resume_row = (
             await session.execute(
                 select(Resume.storage_key, Resume.mime_type).where(
@@ -65,6 +76,7 @@ async def _load_parse_context(
                     Resume.revision == expected_revision,
                     Resume.parsing_status == "PROCESSING",
                     Resume.is_deleted.is_(False),
+                    *ownership_guard,
                 )
             )
         ).one_or_none()
@@ -120,10 +132,91 @@ async def _persist_success(
     expected_revision: int,
     parsed: ParsedResumeResult,
     embedding: list[float],
+    attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> bool:
     now = datetime.now(UTC)
     async with session_factory() as session:
         try:
+            if attempt_guard is not None:
+                owns_attempt = await session.scalar(
+                    select(Resume.id).where(*resume_fence(attempt_guard)).with_for_update()
+                )
+                if owns_attempt is None:
+                    await session.rollback()
+                    return False
+
+                await session.execute(
+                    delete(CandidateProfile).where(CandidateProfile.resume_id == resume_id)
+                )
+                await session.execute(delete(ResumeSkill).where(ResumeSkill.resume_id == resume_id))
+                await session.execute(
+                    delete(ResumeExperience).where(ResumeExperience.resume_id == resume_id)
+                )
+                await session.execute(
+                    delete(ResumeEducation).where(ResumeEducation.resume_id == resume_id)
+                )
+
+                profile_values = _profile_values(parsed.profile)
+                if _has_meaningful_profile(profile_values):
+                    session.add(CandidateProfile(resume_id=resume_id, **profile_values))
+                session.add_all(
+                    ResumeSkill(
+                        resume_id=resume_id,
+                        skill_id=skill.skill_id,
+                        years_of_experience=skill.years_of_experience,
+                        proficiency_level=skill.proficiency_level,
+                    )
+                    for skill in parsed.skills
+                )
+                session.add_all(
+                    ResumeExperience(
+                        resume_id=resume_id,
+                        company_name=experience.company_name,
+                        job_title=experience.job_title,
+                        start_date=experience.start_date,
+                        end_date=experience.end_date,
+                        is_current=experience.is_current,
+                        description=experience.description,
+                    )
+                    for experience in parsed.experiences
+                )
+                session.add_all(
+                    ResumeEducation(
+                        resume_id=resume_id,
+                        institution_name=education.institution_name,
+                        degree=education.degree,
+                        field_of_study=education.field_of_study,
+                        start_year=education.start_year,
+                        graduation_year=education.graduation_year,
+                        gpa=education.gpa,
+                        description=education.description,
+                    )
+                    for education in parsed.educations
+                )
+                await session.flush()
+                fenced_values = {
+                    "parsing_status": "PARSED",
+                    "raw_text": parsed.raw_text,
+                    "resume_embedding": embedding,
+                    "embedding_model": BGE_M3_MODEL_NAME,
+                    "embedding_preprocessing_version": RESUME_TEXT_PREPROCESSING_VERSION,
+                    "parsed_at": func.clock_timestamp(),
+                    "error_message": None,
+                    "updated_at": func.clock_timestamp(),
+                    **terminal_ownership_values(),
+                }
+                result = await session.execute(
+                    update(Resume)
+                    .where(*resume_fence(attempt_guard))
+                    .values(**fenced_values)
+                    .returning(Resume.id)
+                )
+                if result.scalar_one_or_none() is None:
+                    await session.rollback()
+                    return False
+                await session.commit()
+                return True
+
             result = await session.execute(
                 update(Resume)
                 .where(
@@ -131,6 +224,7 @@ async def _persist_success(
                     Resume.revision == expected_revision,
                     Resume.parsing_status == "PROCESSING",
                     Resume.is_deleted.is_(False),
+                    *unowned_processing(Resume),
                 )
                 .values(
                     parsing_status="PARSED",
@@ -200,7 +294,7 @@ async def _persist_success(
             return True
         except Exception:
             await session.rollback()
-            raise
+            raise RuntimeError("Resume terminal persistence failed") from None
 
 
 async def _mark_failed(
@@ -209,15 +303,34 @@ async def _mark_failed(
     resume_id: uuid.UUID,
     expected_revision: int,
     message: str,
+    attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> ResumeParseTaskOutcome:
     try:
         async with session_factory() as session:
-            failed = await fail_resume_revision(
-                session,
-                resume_id=resume_id,
-                expected_revision=expected_revision,
-                error_message=_bounded_error_message(message),
-            )
+            if attempt_guard is None:
+                failed = await fail_resume_revision(
+                    session,
+                    resume_id=resume_id,
+                    expected_revision=expected_revision,
+                    error_message=_bounded_error_message(message),
+                )
+            else:
+                result = await session.execute(
+                    update(Resume)
+                    .where(*resume_fence(attempt_guard))
+                    .values(
+                        parsing_status="FAILED",
+                        error_message=_bounded_error_message(message),
+                        updated_at=func.clock_timestamp(),
+                        **terminal_ownership_values(),
+                    )
+                    .returning(Resume.id)
+                )
+                failed = result.scalar_one_or_none() is not None
+                if failed:
+                    await session.commit()
+                else:
+                    await session.rollback()
     except Exception:  # noqa: BLE001 - failure CAS is best-effort after a claimed task failure
         logger.error(
             "resume_parse_failure_cas_error resume_id=%s expected_revision=%s",
@@ -249,13 +362,25 @@ async def process_resume_parse_task(
     session_factory: SessionFactory,
     storage: ResumeStorage,
     embedding_provider: EmbeddingProvider,
+    processing_fencing_enabled: bool = False,
+    processing_fencing_lease_seconds: int = 1_800,
 ) -> ResumeParseTaskOutcome:
     async with session_factory() as claim_session:
-        claimed = await claim_resume_revision(
-            claim_session,
-            resume_id=resume_id,
-            expected_revision=expected_revision,
-        )
+        attempt_guard = None
+        if processing_fencing_enabled:
+            attempt_guard = await claim_resume_attempt(
+                claim_session,
+                resume_id=resume_id,
+                expected_revision=expected_revision,
+                lease_seconds=processing_fencing_lease_seconds,
+            )
+            claimed = attempt_guard is not None
+        else:
+            claimed = await claim_resume_revision(
+                claim_session,
+                resume_id=resume_id,
+                expected_revision=expected_revision,
+            )
     if not claimed:
         return _log_outcome(resume_id, expected_revision, ResumeParseTaskOutcome.DISCARDED)
 
@@ -264,6 +389,7 @@ async def process_resume_parse_task(
             session_factory,
             resume_id=resume_id,
             expected_revision=expected_revision,
+            attempt_guard=attempt_guard,
         )
     except Exception:  # noqa: BLE001 - taxonomy/metadata failures become controlled FAILED
         outcome = await _mark_failed(
@@ -271,6 +397,7 @@ async def process_resume_parse_task(
             resume_id=resume_id,
             expected_revision=expected_revision,
             message="Resume taxonomy or metadata could not be loaded",
+            attempt_guard=attempt_guard,
         )
         return _log_outcome(resume_id, expected_revision, outcome)
     if context is None:
@@ -284,6 +411,7 @@ async def process_resume_parse_task(
             resume_id=resume_id,
             expected_revision=expected_revision,
             message="Resume source could not be read",
+            attempt_guard=attempt_guard,
         )
         return _log_outcome(resume_id, expected_revision, outcome)
 
@@ -296,6 +424,7 @@ async def process_resume_parse_task(
             resume_id=resume_id,
             expected_revision=expected_revision,
             message="Resume parsing timed out",
+            attempt_guard=attempt_guard,
         )
         return _log_outcome(resume_id, expected_revision, outcome)
     except ResumeParseError as error:
@@ -304,6 +433,7 @@ async def process_resume_parse_task(
             resume_id=resume_id,
             expected_revision=expected_revision,
             message=f"Resume parsing failed: {error.kind.value}",
+            attempt_guard=attempt_guard,
         )
         return _log_outcome(resume_id, expected_revision, outcome)
     except Exception:  # noqa: BLE001 - parser internals must not enter the persisted message
@@ -312,6 +442,7 @@ async def process_resume_parse_task(
             resume_id=resume_id,
             expected_revision=expected_revision,
             message="Resume parsing failed",
+            attempt_guard=attempt_guard,
         )
         return _log_outcome(resume_id, expected_revision, outcome)
 
@@ -331,6 +462,7 @@ async def process_resume_parse_task(
             resume_id=resume_id,
             expected_revision=expected_revision,
             message="Resume embedding failed",
+            attempt_guard=attempt_guard,
         )
         return _log_outcome(resume_id, expected_revision, outcome)
 
@@ -341,6 +473,7 @@ async def process_resume_parse_task(
             expected_revision=expected_revision,
             parsed=parsed,
             embedding=embedding,
+            attempt_guard=attempt_guard,
         )
     except Exception:  # noqa: BLE001 - persistence failures become controlled FAILED
         outcome = await _mark_failed(
@@ -348,6 +481,7 @@ async def process_resume_parse_task(
             resume_id=resume_id,
             expected_revision=expected_revision,
             message="Resume parsed aggregate could not be persisted",
+            attempt_guard=attempt_guard,
         )
         return _log_outcome(resume_id, expected_revision, outcome)
     outcome = ResumeParseTaskOutcome.PARSED if persisted else ResumeParseTaskOutcome.DISCARDED

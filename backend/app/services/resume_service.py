@@ -28,6 +28,7 @@ from app.ai.vector_embedding import (
 )
 from app.core.exceptions import APIError
 from app.core.idempotency import RESUME_UPLOAD_ROUTE, derive_idempotent_resource_id
+from app.core.processing_fencing import clear_processing_ownership
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
 from app.models.resume import CandidateProfile, Resume, ResumeEducation, ResumeExperience
@@ -682,6 +683,7 @@ async def update_resume_parsed_data(
             match.resume_revision = locked_resume.revision
             match.job_revision = job_revisions[match.job_id]
             match.status = "PENDING"
+            clear_processing_ownership(match)
             match.overall_score = None
             match.skill_score = None
             match.semantic_score = None

@@ -23,6 +23,13 @@ from app.ai.matching_schemas import (
     SkillEvidence,
     SkillImportance,
 )
+from app.core.processing_fencing import (
+    ProcessingAttemptGuard,
+    claim_match_attempt,
+    match_fence,
+    terminal_ownership_values,
+    unowned_processing,
+)
 from app.core.version_guard import claim_match_generation
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
@@ -53,6 +60,7 @@ class MatchTaskGuard(TypedDict):
     expected_resume_revision: int
     expected_job_revision: int
     algorithm_version: str
+    attempt_guard: ProcessingAttemptGuard | None
 
 
 @dataclass(frozen=True)
@@ -87,8 +95,14 @@ async def _load_computation_context(
     expected_resume_revision: int,
     expected_job_revision: int,
     algorithm_version: str,
+    attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> MatchComputationContext | None:
     async with session_factory() as session:
+        ownership_guard = (
+            match_fence(attempt_guard)
+            if attempt_guard is not None
+            else unowned_processing(MatchResult)
+        )
         row = (
             await session.execute(
                 select(MatchResult, Resume, JobDescription)
@@ -101,6 +115,7 @@ async def _load_computation_context(
                     MatchResult.job_revision == expected_job_revision,
                     MatchResult.algorithm_version == algorithm_version,
                     MatchResult.status == "PROCESSING",
+                    *ownership_guard,
                     Resume.revision == expected_resume_revision,
                     Resume.is_deleted.is_(False),
                     JobDescription.revision == expected_job_revision,
@@ -217,7 +232,11 @@ async def _terminal_resource_ids(
     expected_resume_revision: int,
     expected_job_revision: int,
     algorithm_version: str,
+    attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID] | None:
+    ownership_guard = (
+        match_fence(attempt_guard) if attempt_guard is not None else unowned_processing(MatchResult)
+    )
     row = (
         await session.execute(
             select(MatchResult.resume_id, MatchResult.job_id).where(
@@ -227,6 +246,7 @@ async def _terminal_resource_ids(
                 MatchResult.job_revision == expected_job_revision,
                 MatchResult.algorithm_version == algorithm_version,
                 MatchResult.status == "PROCESSING",
+                *ownership_guard,
             )
         )
     ).one_or_none()
@@ -240,6 +260,7 @@ async def _lock_current_resources(
     job_id: uuid.UUID,
     expected_resume_revision: int,
     expected_job_revision: int,
+    require_ready: bool,
 ) -> bool:
     # Criteria updates also lock Job first. Keep this order for both terminal
     # outcomes so an invalidation cannot hold Job while waiting on our Resume.
@@ -248,10 +269,12 @@ async def _lock_current_resources(
     )
     if job is None or job.revision != expected_job_revision or job.is_deleted:
         return False
+    if require_ready and (job.parsing_status != "PARSED" or not job.is_criteria_verified):
+        return False
     resume = await session.scalar(select(Resume).where(Resume.id == resume_id).with_for_update())
-    return (
-        resume is not None and resume.revision == expected_resume_revision and not resume.is_deleted
-    )
+    if resume is None or resume.revision != expected_resume_revision or resume.is_deleted:
+        return False
+    return not require_ready or resume.parsing_status == "PARSED"
 
 
 def _terminal_guard(
@@ -263,8 +286,9 @@ def _terminal_guard(
     expected_resume_revision: int,
     expected_job_revision: int,
     algorithm_version: str,
+    attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> tuple[Any, ...]:
-    return (
+    base = (
         MatchResult.id == match_id,
         MatchResult.resume_id == resume_id,
         MatchResult.job_id == job_id,
@@ -273,6 +297,12 @@ def _terminal_guard(
         MatchResult.job_revision == expected_job_revision,
         MatchResult.algorithm_version == algorithm_version,
         MatchResult.status == "PROCESSING",
+    )
+    if attempt_guard is not None:
+        return (*base, *match_fence(attempt_guard))
+    return (
+        *base,
+        *unowned_processing(MatchResult),
     )
 
 
@@ -285,6 +315,8 @@ async def _terminal_update(
     expected_job_revision: int,
     algorithm_version: str,
     values: dict[str, Any],
+    attempt_guard: ProcessingAttemptGuard | None = None,
+    require_ready: bool = True,
 ) -> bool:
     async with session_factory() as session:
         try:
@@ -295,6 +327,7 @@ async def _terminal_update(
                 expected_resume_revision=expected_resume_revision,
                 expected_job_revision=expected_job_revision,
                 algorithm_version=algorithm_version,
+                attempt_guard=attempt_guard,
             )
             if resource_ids is None:
                 await session.rollback()
@@ -306,6 +339,7 @@ async def _terminal_update(
                 job_id=job_id,
                 expected_resume_revision=expected_resume_revision,
                 expected_job_revision=expected_job_revision,
+                require_ready=require_ready,
             ):
                 await session.rollback()
                 return False
@@ -320,9 +354,13 @@ async def _terminal_update(
                         expected_resume_revision=expected_resume_revision,
                         expected_job_revision=expected_job_revision,
                         algorithm_version=algorithm_version,
+                        attempt_guard=attempt_guard,
                     )
                 )
-                .values(**values)
+                .values(
+                    **values,
+                    **(terminal_ownership_values() if attempt_guard is not None else {}),
+                )
                 .returning(MatchResult.id)
             )
             if result.scalar_one_or_none() is None:
@@ -332,7 +370,7 @@ async def _terminal_update(
             return True
         except Exception:
             await session.rollback()
-            raise
+            raise RuntimeError("Match terminal persistence failed") from None
 
 
 async def _persist_success(
@@ -345,6 +383,7 @@ async def _persist_success(
     algorithm_version: str,
     context: MatchComputationContext,
     computed: MatchComputationResult,
+    attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> bool:
     now = datetime.now(UTC)
     return await _terminal_update(
@@ -354,6 +393,7 @@ async def _persist_success(
         expected_resume_revision=expected_resume_revision,
         expected_job_revision=expected_job_revision,
         algorithm_version=algorithm_version,
+        attempt_guard=attempt_guard,
         values={
             "status": "COMPLETED",
             "overall_score": computed.overall_score,
@@ -382,6 +422,7 @@ async def _mark_failed(
     expected_job_revision: int,
     algorithm_version: str,
     message: str,
+    attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> MatchTaskOutcome:
     now = datetime.now(UTC)
     try:
@@ -392,6 +433,8 @@ async def _mark_failed(
             expected_resume_revision=expected_resume_revision,
             expected_job_revision=expected_job_revision,
             algorithm_version=algorithm_version,
+            attempt_guard=attempt_guard,
+            require_ready=False,
             values={
                 "status": "FAILED",
                 "overall_score": None,
@@ -441,19 +484,34 @@ async def process_match_task(
     *,
     session_factory: SessionFactory,
     date_provider: DateProvider = _utc_today,
+    processing_fencing_enabled: bool = False,
+    processing_fencing_lease_seconds: int = 1_800,
 ) -> MatchTaskOutcome:
     if algorithm_version != ALGORITHM_VERSION:
         return _log_outcome(match_id, expected_generation, MatchTaskOutcome.DISCARDED)
 
     async with session_factory() as claim_session:
-        claimed = await claim_match_generation(
-            claim_session,
-            match_id=match_id,
-            expected_generation=expected_generation,
-            expected_resume_revision=expected_resume_revision,
-            expected_job_revision=expected_job_revision,
-            algorithm_version=algorithm_version,
-        )
+        attempt_guard = None
+        if processing_fencing_enabled:
+            attempt_guard = await claim_match_attempt(
+                claim_session,
+                match_id=match_id,
+                expected_generation=expected_generation,
+                expected_resume_revision=expected_resume_revision,
+                expected_job_revision=expected_job_revision,
+                algorithm_version=algorithm_version,
+                lease_seconds=processing_fencing_lease_seconds,
+            )
+            claimed = attempt_guard is not None
+        else:
+            claimed = await claim_match_generation(
+                claim_session,
+                match_id=match_id,
+                expected_generation=expected_generation,
+                expected_resume_revision=expected_resume_revision,
+                expected_job_revision=expected_job_revision,
+                algorithm_version=algorithm_version,
+            )
     if not claimed:
         return _log_outcome(match_id, expected_generation, MatchTaskOutcome.DISCARDED)
 
@@ -463,6 +521,7 @@ async def process_match_task(
         "expected_resume_revision": expected_resume_revision,
         "expected_job_revision": expected_job_revision,
         "algorithm_version": algorithm_version,
+        "attempt_guard": attempt_guard,
     }
     try:
         context = await _load_computation_context(session_factory, **task)

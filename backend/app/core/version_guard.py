@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.processing_fencing import unowned_processing
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
 from app.models.resume import Resume
@@ -24,6 +25,7 @@ async def claim_resume_revision(
             Resume.revision == expected_revision,
             Resume.parsing_status == "PENDING",
             Resume.is_deleted.is_(False),
+            *unowned_processing(Resume),
         )
         .values(
             parsing_status="PROCESSING",
@@ -54,6 +56,7 @@ async def fail_resume_revision(
             Resume.revision == expected_revision,
             Resume.parsing_status == "PROCESSING",
             Resume.is_deleted.is_(False),
+            *unowned_processing(Resume),
         )
         .values(
             parsing_status="FAILED",
@@ -83,6 +86,7 @@ async def claim_job_revision(
             JobDescription.revision == expected_revision,
             JobDescription.parsing_status == "PENDING",
             JobDescription.is_deleted.is_(False),
+            *unowned_processing(JobDescription),
         )
         .values(
             parsing_status="PROCESSING",
@@ -113,6 +117,7 @@ async def fail_job_revision(
             JobDescription.revision == expected_revision,
             JobDescription.parsing_status == "PROCESSING",
             JobDescription.is_deleted.is_(False),
+            *unowned_processing(JobDescription),
         )
         .values(
             parsing_status="FAILED",
@@ -163,6 +168,7 @@ async def claim_match_generation(
             MatchResult.job_revision == expected_job_revision,
             MatchResult.algorithm_version == algorithm_version,
             MatchResult.status == "PENDING",
+            *unowned_processing(MatchResult),
             resume_is_current,
             job_is_current,
         )

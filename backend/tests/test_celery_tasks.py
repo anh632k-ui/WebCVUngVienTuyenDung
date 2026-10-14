@@ -307,7 +307,11 @@ def test_shared_worker_runtime_reuses_runner_engine_for_resume_job_match_resume(
 
     async def process_match(*args: Any, **kwargs: Any) -> MatchTaskOutcome:
         assert args == (match_id, 8, 3, 7, "hybrid-v1")
-        assert set(kwargs) == {"session_factory"}
+        assert set(kwargs) == {
+            "session_factory",
+            "processing_fencing_enabled",
+            "processing_fencing_lease_seconds",
+        }
         resource_observations.append(
             ("match", id(asyncio.get_running_loop()), id(kwargs["session_factory"]), 0)
         )
@@ -318,6 +322,11 @@ def test_shared_worker_runtime_reuses_runner_engine_for_resume_job_match_resume(
     monkeypatch.setattr(worker_runtime, "process_resume_parse_task", process_resume)
     monkeypatch.setattr(worker_runtime, "process_job_parse_task", process_job)
     monkeypatch.setattr(worker_runtime, "process_match_task", process_match)
+
+    async def schema_ready(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+
+    monkeypatch.setattr(worker_runtime, "verify_processing_fencing_schema", schema_ready)
     monkeypatch.setattr(worker_runtime, "async_sessionmaker", lambda *args, **kwargs: object())
     runtime = worker_runtime.ParseWorkerRuntime(
         Settings(_env_file=None),

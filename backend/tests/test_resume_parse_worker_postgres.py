@@ -5,8 +5,8 @@ import hashlib
 import io
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,13 @@ from app.ai.schemas import ParsedExperience, ParsedResumeResult, ParsedSkill
 from app.ai.vector_embedding import BGE_M3_EMBEDDING_DIMENSION, BGE_M3_MODEL_NAME
 from app.core.config import Settings
 from app.core.database import create_engine
+from app.core.processing_fencing import (
+    BIGINT_MAX,
+    ProcessingAttemptGuard,
+    ProcessingResourceKind,
+    activate_reclaimed_attempt,
+    claim_resume_attempt,
+)
 from app.core.version_guard import claim_resume_revision, fail_resume_revision
 from app.models.resume import CandidateProfile, Resume, ResumeEducation, ResumeExperience
 from app.models.skill import ResumeSkill, Skill
@@ -269,6 +276,7 @@ async def test_real_parser_taxonomy_storage_and_aggregate_success(
         session_factory=harness.session_factory,
         storage=harness.storage,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
     duplicate = await process_resume_parse_task(
         resume.id,
@@ -276,6 +284,7 @@ async def test_real_parser_taxonomy_storage_and_aggregate_success(
         session_factory=harness.session_factory,
         storage=harness.storage,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
 
     async with harness.session_factory() as session:
@@ -308,6 +317,11 @@ async def test_real_parser_taxonomy_storage_and_aggregate_success(
     assert stored.embedding_model == BGE_M3_MODEL_NAME
     assert stored.embedding_preprocessing_version == RESUME_TEXT_PREPROCESSING_VERSION
     assert stored.parsed_at is not None and stored.error_message is None
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None
+    assert stored.processing_activation_token is None
+    assert stored.processing_heartbeat_at is None
+    assert stored.processing_lease_expires_at is None
     assert profile is not None and profile.full_name == "Jane Candidate"
     assert [item.skill_id for item in resume_skills] == [skill.id]
     assert resume_skills[0].proficiency_level is None
@@ -335,20 +349,34 @@ class MutatingStorage:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("race", ["delete", "revision"])
+@pytest.mark.parametrize("race", ["delete", "revision", "owner", "activation", "expired"])
 async def test_terminal_cas_blocks_delete_or_stale_revision_without_aggregate(
     postgres_worker: PostgreSQLWorkerHarness,
     race: str,
 ) -> None:
     harness = postgres_worker
     resume = await harness.create_resume(make_docx())
+    harness.setup_session.add(
+        ResumeExperience(
+            resume_id=resume.id,
+            company_name="Preserved Company",
+            job_title="Preserved Role",
+        )
+    )
+    await harness.setup_session.commit()
 
     async def mutate_after_claim() -> None:
         values: dict[str, Any]
         if race == "delete":
             values = {"is_deleted": True, "deleted_at": datetime.now(UTC)}
-        else:
+        elif race == "revision":
             values = {"revision": 2, "parsing_status": "PENDING"}
+        elif race == "owner":
+            values = {"processing_owner_token": uuid.uuid4()}
+        elif race == "activation":
+            values = {"processing_activation_token": uuid.uuid4()}
+        else:
+            values = {"processing_lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
         async with harness.session_factory() as session:
             await session.execute(update(Resume).where(Resume.id == resume.id).values(**values))
             await session.commit()
@@ -359,6 +387,7 @@ async def test_terminal_cas_blocks_delete_or_stale_revision_without_aggregate(
         session_factory=harness.session_factory,
         storage=MutatingStorage(harness.storage, mutate_after_claim),
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
 
     async with harness.session_factory() as session:
@@ -370,7 +399,7 @@ async def test_terminal_cas_blocks_delete_or_stale_revision_without_aggregate(
         )
     assert outcome is ResumeParseTaskOutcome.DISCARDED
     assert stored is not None and stored.parsing_status != "PARSED"
-    assert stored.raw_text is None and child_count == 0
+    assert stored.raw_text is None and child_count == 1
 
 
 @pytest.mark.asyncio
@@ -404,6 +433,7 @@ async def test_storage_or_embedding_failure_is_controlled_and_revision_is_unchan
         session_factory=harness.session_factory,
         storage=harness.storage,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
     third = await process_resume_parse_task(
         embedding_failure.id,
@@ -482,6 +512,7 @@ async def test_aggregate_constraint_failure_rolls_back_parsed_and_marks_failed(
         session_factory=harness.session_factory,
         storage=harness.storage,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
 
     async with harness.session_factory() as session:
@@ -589,6 +620,217 @@ async def test_two_independent_sessions_race_one_claim_wins() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fenced_claim_activation_and_legacy_bypass_are_real_postgres_cas() -> None:
+    settings = integration_database_settings()
+    engine = create_engine(settings)
+    assert engine is not None
+    user = make_user("fenced-race")
+    resume_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    setup = AsyncSession(engine, expire_on_commit=False)
+    cleanup = AsyncSession(engine, expire_on_commit=False)
+    try:
+        setup.add(user)
+        await setup.commit()
+        setup.add(
+            Resume(
+                id=resume_id,
+                owner_user_id=user.id,
+                file_name="fenced-race.pdf",
+                storage_key=f"worker-fenced-race/{resume_id}/source",
+                file_size=10,
+                mime_type="application/pdf",
+                create_request_fingerprint=uuid.uuid4().hex * 2,
+                revision=1,
+                parsing_status="PENDING",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await setup.commit()
+
+        async def claim() -> ProcessingAttemptGuard | None:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                return await claim_resume_attempt(
+                    session,
+                    resume_id=resume_id,
+                    expected_revision=1,
+                    lease_seconds=1_800,
+                )
+
+        claims = await asyncio.gather(claim(), claim())
+        winners = [item for item in claims if item is not None]
+        assert len(winners) == 1
+        initial_guard = winners[0]
+        assert initial_guard.attempt_epoch == 1
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            assert not await fail_resume_revision(
+                session,
+                resume_id=resume_id,
+                expected_revision=1,
+                error_message="legacy bypass",
+            )
+
+        reclaimed_owner = uuid.uuid4()
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await session.execute(
+                update(Resume)
+                .where(Resume.id == resume_id)
+                .values(
+                    processing_attempt_epoch=2,
+                    processing_owner_token=reclaimed_owner,
+                    processing_activation_token=None,
+                    processing_heartbeat_at=func.clock_timestamp(),
+                    processing_lease_expires_at=func.clock_timestamp() + timedelta(minutes=30),
+                )
+            )
+            await session.commit()
+        reclaimed = ProcessingAttemptGuard(
+            ProcessingResourceKind.RESUME,
+            resume_id,
+            1,
+            2,
+            reclaimed_owner,
+            None,
+        )
+
+        async def activate(
+            candidate: ProcessingAttemptGuard = reclaimed,
+        ) -> ProcessingAttemptGuard | None:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                return await activate_reclaimed_attempt(session, candidate, lease_seconds=1_800)
+
+        activations = await asyncio.gather(activate(), activate())
+        activated = [item for item in activations if item is not None]
+        assert len(activated) == 1
+        assert activated[0].activation_token is not None
+        assert await activate(replace(reclaimed, owner_token=uuid.uuid4())) is None
+        assert await activate(replace(reclaimed, attempt_epoch=3)) is None
+        with pytest.raises(ValueError, match="must not already"):
+            await activate(activated[0])
+
+        def session_factory() -> AsyncSession:
+            return AsyncSession(engine, expire_on_commit=False)
+
+        assert (
+            await resume_parse_worker._mark_failed(
+                session_factory,
+                resume_id=resume_id,
+                expected_revision=1,
+                message="wrong owner",
+                attempt_guard=replace(activated[0], owner_token=uuid.uuid4()),
+            )
+            is ResumeParseTaskOutcome.DISCARDED
+        )
+        assert (
+            await resume_parse_worker._mark_failed(
+                session_factory,
+                resume_id=resume_id,
+                expected_revision=1,
+                message="wrong activation",
+                attempt_guard=replace(activated[0], activation_token=uuid.uuid4()),
+            )
+            is ResumeParseTaskOutcome.DISCARDED
+        )
+
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await session.execute(
+                update(Resume)
+                .where(Resume.id == resume_id)
+                .values(
+                    processing_lease_expires_at=func.clock_timestamp() - timedelta(seconds=1),
+                )
+            )
+            await session.commit()
+        assert (
+            await resume_parse_worker._mark_failed(
+                session_factory,
+                resume_id=resume_id,
+                expected_revision=1,
+                message="expired terminal",
+                attempt_guard=activated[0],
+            )
+            is ResumeParseTaskOutcome.DISCARDED
+        )
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await session.execute(
+                update(Resume)
+                .where(Resume.id == resume_id)
+                .values(processing_lease_expires_at=func.clock_timestamp() + timedelta(minutes=30))
+            )
+            await session.commit()
+
+        async def terminal_failure() -> ResumeParseTaskOutcome:
+            return await resume_parse_worker._mark_failed(
+                session_factory,
+                resume_id=resume_id,
+                expected_revision=1,
+                message="controlled failure",
+                attempt_guard=activated[0],
+            )
+
+        async def terminal_success() -> bool:
+            return await resume_parse_worker._persist_success(
+                session_factory,
+                resume_id=resume_id,
+                expected_revision=1,
+                parsed=ParsedResumeResult(raw_text="terminal race payload"),
+                embedding=[0.125] * BGE_M3_EMBEDDING_DIMENSION,
+                attempt_guard=activated[0],
+            )
+
+        success_result, failure_result = await asyncio.gather(
+            terminal_success(), terminal_failure()
+        )
+        assert success_result is (failure_result is ResumeParseTaskOutcome.DISCARDED)
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            stored = await session.get(Resume, resume_id)
+            assert stored is not None
+            assert stored.parsing_status in {"PARSED", "FAILED"}
+            assert stored.processing_attempt_epoch == 2
+            assert stored.processing_owner_token is None
+            assert stored.processing_activation_token is None
+            await session.execute(
+                update(Resume)
+                .where(Resume.id == resume_id)
+                .values(
+                    parsing_status="PROCESSING",
+                    error_message=None,
+                    processing_attempt_epoch=3,
+                    processing_owner_token=reclaimed_owner,
+                    processing_activation_token=None,
+                    processing_heartbeat_at=func.clock_timestamp(),
+                    processing_lease_expires_at=func.clock_timestamp() - timedelta(seconds=1),
+                )
+            )
+            await session.commit()
+        expired_reclaimed = replace(reclaimed, attempt_epoch=3)
+        assert await activate(expired_reclaimed) is None
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await session.execute(
+                update(Resume)
+                .where(Resume.id == resume_id)
+                .values(
+                    parsing_status="PENDING",
+                    processing_attempt_epoch=BIGINT_MAX,
+                    processing_owner_token=None,
+                    processing_activation_token=None,
+                    processing_heartbeat_at=None,
+                    processing_lease_expires_at=None,
+                )
+            )
+            await session.commit()
+        assert await claim() is None
+    finally:
+        await setup.close()
+        await cleanup.execute(delete(Resume).where(Resume.id == resume_id))
+        await cleanup.execute(delete(User).where(User.id == user.id))
+        await cleanup.commit()
+        await cleanup.close()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
     postgres_worker: PostgreSQLWorkerHarness,
     monkeypatch: pytest.MonkeyPatch,
@@ -607,6 +849,7 @@ async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
         session_factory=harness.session_factory,
         storage=harness.storage,
         embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
     )
 
     async with harness.session_factory() as session:
@@ -615,3 +858,55 @@ async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
     assert stored is not None and stored.parsing_status == "FAILED"
     assert stored.error_message == "Resume parsing timed out"
     assert stored.raw_text is None and stored.resume_embedding is None
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None
+    assert stored.processing_activation_token is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_processes_new_revision_after_fenced_completion(
+    postgres_worker: PostgreSQLWorkerHarness,
+) -> None:
+    harness = postgres_worker
+    resume = await harness.create_resume(make_docx("Python"))
+
+    first = await process_resume_parse_task(
+        resume.id,
+        1,
+        session_factory=harness.session_factory,
+        storage=harness.storage,
+        embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
+    )
+    assert first is ResumeParseTaskOutcome.PARSED
+
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Resume)
+            .where(Resume.id == resume.id)
+            .values(
+                revision=2,
+                parsing_status="PENDING",
+                raw_text=None,
+                resume_embedding=None,
+                embedding_model=None,
+                embedding_preprocessing_version=None,
+                parsed_at=None,
+            )
+        )
+        await session.commit()
+
+    second = await process_resume_parse_task(
+        resume.id,
+        2,
+        session_factory=harness.session_factory,
+        storage=harness.storage,
+        embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=False,
+    )
+    stored = await harness.load_resume(resume.id)
+
+    assert second is ResumeParseTaskOutcome.PARSED
+    assert stored.parsing_status == "PARSED"
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None

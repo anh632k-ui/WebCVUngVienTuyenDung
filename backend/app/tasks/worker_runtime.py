@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.ai.vector_embedding import BgeM3EmbeddingProvider
 from app.core.config import Settings, get_settings
 from app.core.engine_factory import create_engine
+from app.core.processing_fencing import verify_processing_fencing_schema
 from app.storage.resume_storage import LocalResumeStorage, ResumeStorage
 from app.workers.job_parse_worker import JobParseTaskOutcome, process_job_parse_task
 from app.workers.match_worker import MatchTaskOutcome, process_match_task
@@ -42,14 +43,23 @@ class ParseWorkerRuntime:
         )
         self._storage = storage or LocalResumeStorage(settings.resume_storage_root)
         self._embedding_provider = embedding_provider or BgeM3EmbeddingProvider()
+        self._processing_fencing_enabled = settings.processing_fencing_enabled
+        self._processing_fencing_lease_seconds = settings.processing_fencing_lease_seconds
         self._runner = asyncio.Runner()
         self._runner_lock = threading.Lock()
         self._closed = False
+        self._schema_ready = False
+
+    def _ensure_schema_ready(self) -> None:
+        if not self._schema_ready:
+            self._runner.run(verify_processing_fencing_schema(self._session_factory))
+            self._schema_ready = True
 
     def run_resume(self, resume_id: uuid.UUID, expected_revision: int) -> ResumeParseTaskOutcome:
         with self._runner_lock:
             if self._closed:
                 raise RuntimeError("Parse worker runtime is closed")
+            self._ensure_schema_ready()
             return self._runner.run(
                 process_resume_parse_task(
                     resume_id,
@@ -57,6 +67,8 @@ class ParseWorkerRuntime:
                     session_factory=self._session_factory,
                     storage=self._storage,
                     embedding_provider=self._embedding_provider,
+                    processing_fencing_enabled=self._processing_fencing_enabled,
+                    processing_fencing_lease_seconds=self._processing_fencing_lease_seconds,
                 )
             )
 
@@ -64,12 +76,15 @@ class ParseWorkerRuntime:
         with self._runner_lock:
             if self._closed:
                 raise RuntimeError("Parse worker runtime is closed")
+            self._ensure_schema_ready()
             return self._runner.run(
                 process_job_parse_task(
                     job_id,
                     expected_revision,
                     session_factory=self._session_factory,
                     embedding_provider=self._embedding_provider,
+                    processing_fencing_enabled=self._processing_fencing_enabled,
+                    processing_fencing_lease_seconds=self._processing_fencing_lease_seconds,
                 )
             )
 
@@ -89,6 +104,7 @@ class ParseWorkerRuntime:
         with self._runner_lock:
             if self._closed:
                 raise RuntimeError("Match worker runtime is closed")
+            self._ensure_schema_ready()
             return self._runner.run(
                 process_match_task(
                     match_id,
@@ -97,6 +113,8 @@ class ParseWorkerRuntime:
                     expected_job_revision,
                     algorithm_version,
                     session_factory=self._session_factory,
+                    processing_fencing_enabled=self._processing_fencing_enabled,
+                    processing_fencing_lease_seconds=self._processing_fencing_lease_seconds,
                 )
             )
 
