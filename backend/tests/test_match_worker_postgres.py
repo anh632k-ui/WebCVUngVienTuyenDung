@@ -1075,3 +1075,104 @@ async def test_terminal_and_criteria_update_serialize_without_deadlock_or_stale_
         assert resume is not None and resume.revision == 1
         assert criterion is not None and criterion.importance == "OPTIONAL"
         assert criterion.min_years_required == Decimal("2.0")
+
+
+@pytest.mark.asyncio
+async def test_flag_off_processes_new_generation_after_fenced_completion(
+    postgres_match_worker: PostgreSQLMatchHarness,
+) -> None:
+    harness = postgres_match_worker
+    graph = await harness.create_graph()
+
+    first = await process_match_task(
+        graph.match_id,
+        1,
+        1,
+        1,
+        ALGORITHM_VERSION,
+        session_factory=harness.session_factory,
+        processing_fencing_enabled=True,
+    )
+    assert first is MatchTaskOutcome.COMPLETED
+
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(MatchResult)
+            .where(MatchResult.id == graph.match_id)
+            .values(
+                generation=2,
+                status="PENDING",
+                overall_score=None,
+                skill_score=None,
+                semantic_score=None,
+                experience_score=None,
+                matched_skills=[],
+                missing_skills=[],
+                embedding_model=None,
+                embedding_preprocessing_version=None,
+                calculated_at=None,
+            )
+        )
+        await session.commit()
+
+    second = await process_match_task(
+        graph.match_id,
+        2,
+        1,
+        1,
+        ALGORITHM_VERSION,
+        session_factory=harness.session_factory,
+        processing_fencing_enabled=False,
+    )
+    stored = await harness.load_match(graph.match_id)
+
+    assert second is MatchTaskOutcome.COMPLETED
+    assert stored.status == "COMPLETED"
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unready_state", ["resume", "job", "criteria"])
+async def test_unready_current_context_transitions_to_failed_without_sticking_processing(
+    postgres_match_worker: PostgreSQLMatchHarness,
+    unready_state: str,
+) -> None:
+    harness = postgres_match_worker
+    graph = await harness.create_graph()
+    async with harness.session_factory() as session:
+        if unready_state == "resume":
+            await session.execute(
+                update(Resume).where(Resume.id == graph.resume_id).values(parsing_status="PENDING")
+            )
+        elif unready_state == "job":
+            await session.execute(
+                update(JobDescription)
+                .where(JobDescription.id == graph.job_id)
+                .values(parsing_status="PENDING")
+            )
+        else:
+            await session.execute(
+                update(JobDescription)
+                .where(JobDescription.id == graph.job_id)
+                .values(is_criteria_verified=False)
+            )
+        await session.commit()
+
+    outcome = await process_match_task(
+        graph.match_id,
+        1,
+        1,
+        1,
+        ALGORITHM_VERSION,
+        session_factory=harness.session_factory,
+        processing_fencing_enabled=True,
+    )
+    stored = await harness.load_match(graph.match_id)
+
+    assert outcome is MatchTaskOutcome.FAILED
+    assert stored.status == "FAILED"
+    assert stored.error_message
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None
+    assert stored.processing_activation_token is None

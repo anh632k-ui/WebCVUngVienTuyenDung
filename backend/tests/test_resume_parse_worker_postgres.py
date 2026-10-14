@@ -861,3 +861,52 @@ async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
     assert stored.processing_attempt_epoch == 1
     assert stored.processing_owner_token is None
     assert stored.processing_activation_token is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_processes_new_revision_after_fenced_completion(
+    postgres_worker: PostgreSQLWorkerHarness,
+) -> None:
+    harness = postgres_worker
+    resume = await harness.create_resume(make_docx("Python"))
+
+    first = await process_resume_parse_task(
+        resume.id,
+        1,
+        session_factory=harness.session_factory,
+        storage=harness.storage,
+        embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
+    )
+    assert first is ResumeParseTaskOutcome.COMPLETED
+
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Resume)
+            .where(Resume.id == resume.id)
+            .values(
+                revision=2,
+                parsing_status="PENDING",
+                raw_text=None,
+                resume_embedding=None,
+                embedding_model=None,
+                embedding_preprocessing_version=None,
+                parsed_at=None,
+            )
+        )
+        await session.commit()
+
+    second = await process_resume_parse_task(
+        resume.id,
+        2,
+        session_factory=harness.session_factory,
+        storage=harness.storage,
+        embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=False,
+    )
+    stored = await harness.load_resume(resume.id)
+
+    assert second is ResumeParseTaskOutcome.COMPLETED
+    assert stored.parsing_status == "PARSED"
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None

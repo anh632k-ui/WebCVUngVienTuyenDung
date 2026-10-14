@@ -1,7 +1,37 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from app.core.config import Settings
 from app.core.database import check_database_connection, create_engine
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+
+def test_unit_pytest_bootstrap_cannot_load_database_url_from_dotenv() -> None:
+    environment = os.environ.copy()
+    environment.pop("DATABASE_URL", None)
+    script = (
+        "import runpy; "
+        "runpy.run_path('tests/conftest.py'); "
+        "from app.core.config import get_settings; "
+        "from app.core.database import engine; "
+        "assert get_settings().database_url is None; "
+        "assert engine is None"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=BACKEND_DIR,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.asyncio

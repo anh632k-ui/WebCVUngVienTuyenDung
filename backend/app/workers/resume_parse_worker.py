@@ -27,6 +27,7 @@ from app.core.processing_fencing import (
     claim_resume_attempt,
     resume_fence,
     terminal_ownership_values,
+    unowned_processing,
 )
 from app.core.version_guard import claim_resume_revision, fail_resume_revision
 from app.models.resume import CandidateProfile, Resume, ResumeEducation, ResumeExperience
@@ -66,15 +67,7 @@ async def _load_parse_context(
 ) -> ResumeParseContext | None:
     async with session_factory() as session:
         ownership_guard = (
-            resume_fence(attempt_guard)
-            if attempt_guard is not None
-            else (
-                Resume.processing_attempt_epoch == 0,
-                Resume.processing_owner_token.is_(None),
-                Resume.processing_activation_token.is_(None),
-                Resume.processing_heartbeat_at.is_(None),
-                Resume.processing_lease_expires_at.is_(None),
-            )
+            resume_fence(attempt_guard) if attempt_guard is not None else unowned_processing(Resume)
         )
         resume_row = (
             await session.execute(
@@ -231,11 +224,7 @@ async def _persist_success(
                     Resume.revision == expected_revision,
                     Resume.parsing_status == "PROCESSING",
                     Resume.is_deleted.is_(False),
-                    Resume.processing_attempt_epoch == 0,
-                    Resume.processing_owner_token.is_(None),
-                    Resume.processing_activation_token.is_(None),
-                    Resume.processing_heartbeat_at.is_(None),
-                    Resume.processing_lease_expires_at.is_(None),
+                    *unowned_processing(Resume),
                 )
                 .values(
                     parsing_status="PARSED",

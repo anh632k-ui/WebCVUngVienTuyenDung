@@ -11,6 +11,7 @@ from sqlalchemy.sql import Select
 
 from app.ai.matching_engine import ALGORITHM_VERSION
 from app.core.exceptions import APIError
+from app.core.processing_fencing import clear_processing_ownership
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
 from app.models.resume import Resume
@@ -94,6 +95,7 @@ def _reset_match(
     match.job_revision = job_revision
     match.algorithm_version = ALGORITHM_VERSION
     match.status = MatchStatus.PENDING.value
+    clear_processing_ownership(match)
     match.overall_score = None
     match.skill_score = None
     match.semantic_score = None

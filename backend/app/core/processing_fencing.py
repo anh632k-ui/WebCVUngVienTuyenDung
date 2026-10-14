@@ -73,6 +73,24 @@ def _cleared_ownership() -> dict[str, Any]:
     }
 
 
+def unowned_processing(model: Any) -> tuple[Any, ...]:
+    """Match rows with no active persisted fencing capability, at any epoch."""
+
+    return (
+        model.processing_owner_token.is_(None),
+        model.processing_activation_token.is_(None),
+        model.processing_heartbeat_at.is_(None),
+        model.processing_lease_expires_at.is_(None),
+    )
+
+
+def clear_processing_ownership(resource: Any) -> None:
+    """Invalidate an in-flight capability during a locked business mutation."""
+
+    for field_name in _cleared_ownership():
+        setattr(resource, field_name, None)
+
+
 def terminal_ownership_values() -> dict[str, Any]:
     """Values every fenced terminal transition must apply."""
 
@@ -439,16 +457,47 @@ _READINESS_SQL = text(
         AND (rc.column_name <> 'processing_attempt_epoch'
              OR c.column_default IN ('0', '0::bigint'))),
       (SELECT count(*) FROM required_indexes ri
-       JOIN pg_class idx ON idx.relname = ri.indexname
-       JOIN pg_index i ON i.indexrelid = idx.oid AND i.indisvalid AND i.indisready
-       JOIN pg_class tbl ON tbl.oid = i.indrelid AND tbl.relname = ri.table_name
-       JOIN pg_namespace ns ON ns.oid = tbl.relnamespace AND ns.nspname = current_schema()
-       WHERE (SELECT array_agg(att.attname ORDER BY key.ordinality)
-              FROM unnest(i.indkey) WITH ORDINALITY AS key(attnum, ordinality)
-              JOIN pg_attribute att ON att.attrelid = tbl.oid AND att.attnum = key.attnum)
-             = ARRAY['processing_lease_expires_at', 'id']::name[]
-         AND pg_get_expr(i.indpred, i.indrelid) ILIKE '%' || ri.status_column || '%PROCESSING%'
-         AND pg_get_expr(i.indpred, i.indrelid) ILIKE '%processing_lease_expires_at%IS NOT NULL%')
+       JOIN pg_namespace idx_ns
+         ON idx_ns.nspname = current_schema()
+       JOIN pg_class idx
+         ON idx.relnamespace = idx_ns.oid
+        AND idx.relname = ri.indexname
+        AND idx.relkind = 'i'
+       JOIN pg_index i
+         ON i.indexrelid = idx.oid
+        AND i.indisvalid
+        AND i.indisready
+        AND NOT i.indisunique
+        AND i.indnkeyatts = 2
+        AND i.indnatts = 2
+       JOIN pg_class tbl
+         ON tbl.oid = i.indrelid
+        AND tbl.relname = ri.table_name
+       JOIN pg_namespace tbl_ns
+         ON tbl_ns.oid = tbl.relnamespace
+        AND tbl_ns.nspname = current_schema()
+       JOIN pg_am access_method
+         ON access_method.oid = idx.relam
+        AND access_method.amname = 'btree'
+       WHERE ARRAY(
+               SELECT att.attname::text
+               FROM unnest(i.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+               JOIN pg_attribute att
+                 ON att.attrelid = tbl.oid
+                AND att.attnum = key.attnum
+               ORDER BY key.ordinality
+             ) = ARRAY['processing_lease_expires_at', 'id']::text[]
+         AND regexp_replace(
+               replace(
+                 replace(
+                   replace(pg_get_expr(i.indpred, i.indrelid), '::text', ''),
+                   '(', ''
+                 ),
+                 ')', ''
+               ),
+               '[[:space:]]', '', 'g'
+             ) IS NOT DISTINCT FROM
+             ri.status_column || '=''PROCESSING''ANDprocessing_lease_expires_atISNOTNULL')
     """
 )
 

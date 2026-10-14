@@ -643,3 +643,49 @@ async def test_parser_subprocess_timeout_uses_guarded_failed_cas(
     assert stored.processing_attempt_epoch == 1
     assert stored.processing_owner_token is None
     assert stored.processing_activation_token is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_processes_new_revision_after_fenced_completion(
+    postgres_job_worker: PostgreSQLJobWorkerHarness,
+) -> None:
+    harness = postgres_job_worker
+    job = await harness.create_job()
+
+    first = await process_job_parse_task(
+        job.id,
+        1,
+        session_factory=harness.session_factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=True,
+    )
+    assert first is JobParseTaskOutcome.COMPLETED
+
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(JobDescription)
+            .where(JobDescription.id == job.id)
+            .values(
+                revision=2,
+                parsing_status="PENDING",
+                job_embedding=None,
+                embedding_model=None,
+                embedding_preprocessing_version=None,
+                parsed_at=None,
+            )
+        )
+        await session.commit()
+
+    second = await process_job_parse_task(
+        job.id,
+        2,
+        session_factory=harness.session_factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        processing_fencing_enabled=False,
+    )
+    stored = await harness.load_job(job.id)
+
+    assert second is JobParseTaskOutcome.COMPLETED
+    assert stored.parsing_status == "PARSED"
+    assert stored.processing_attempt_epoch == 1
+    assert stored.processing_owner_token is None

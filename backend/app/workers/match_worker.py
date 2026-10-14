@@ -28,6 +28,7 @@ from app.core.processing_fencing import (
     claim_match_attempt,
     match_fence,
     terminal_ownership_values,
+    unowned_processing,
 )
 from app.core.version_guard import claim_match_generation
 from app.models.job import JobDescription
@@ -100,13 +101,7 @@ async def _load_computation_context(
         ownership_guard = (
             match_fence(attempt_guard)
             if attempt_guard is not None
-            else (
-                MatchResult.processing_attempt_epoch == 0,
-                MatchResult.processing_owner_token.is_(None),
-                MatchResult.processing_activation_token.is_(None),
-                MatchResult.processing_heartbeat_at.is_(None),
-                MatchResult.processing_lease_expires_at.is_(None),
-            )
+            else unowned_processing(MatchResult)
         )
         row = (
             await session.execute(
@@ -240,15 +235,7 @@ async def _terminal_resource_ids(
     attempt_guard: ProcessingAttemptGuard | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID] | None:
     ownership_guard = (
-        match_fence(attempt_guard)
-        if attempt_guard is not None
-        else (
-            MatchResult.processing_attempt_epoch == 0,
-            MatchResult.processing_owner_token.is_(None),
-            MatchResult.processing_activation_token.is_(None),
-            MatchResult.processing_heartbeat_at.is_(None),
-            MatchResult.processing_lease_expires_at.is_(None),
-        )
+        match_fence(attempt_guard) if attempt_guard is not None else unowned_processing(MatchResult)
     )
     row = (
         await session.execute(
@@ -273,27 +260,21 @@ async def _lock_current_resources(
     job_id: uuid.UUID,
     expected_resume_revision: int,
     expected_job_revision: int,
+    require_ready: bool,
 ) -> bool:
     # Criteria updates also lock Job first. Keep this order for both terminal
     # outcomes so an invalidation cannot hold Job while waiting on our Resume.
     job = await session.scalar(
         select(JobDescription).where(JobDescription.id == job_id).with_for_update()
     )
-    if (
-        job is None
-        or job.revision != expected_job_revision
-        or job.is_deleted
-        or job.parsing_status != "PARSED"
-        or not job.is_criteria_verified
-    ):
+    if job is None or job.revision != expected_job_revision or job.is_deleted:
+        return False
+    if require_ready and (job.parsing_status != "PARSED" or not job.is_criteria_verified):
         return False
     resume = await session.scalar(select(Resume).where(Resume.id == resume_id).with_for_update())
-    return (
-        resume is not None
-        and resume.revision == expected_resume_revision
-        and not resume.is_deleted
-        and resume.parsing_status == "PARSED"
-    )
+    if resume is None or resume.revision != expected_resume_revision or resume.is_deleted:
+        return False
+    return not require_ready or resume.parsing_status == "PARSED"
 
 
 def _terminal_guard(
@@ -321,11 +302,7 @@ def _terminal_guard(
         return (*base, *match_fence(attempt_guard))
     return (
         *base,
-        MatchResult.processing_attempt_epoch == 0,
-        MatchResult.processing_owner_token.is_(None),
-        MatchResult.processing_activation_token.is_(None),
-        MatchResult.processing_heartbeat_at.is_(None),
-        MatchResult.processing_lease_expires_at.is_(None),
+        *unowned_processing(MatchResult),
     )
 
 
@@ -339,6 +316,7 @@ async def _terminal_update(
     algorithm_version: str,
     values: dict[str, Any],
     attempt_guard: ProcessingAttemptGuard | None = None,
+    require_ready: bool = True,
 ) -> bool:
     async with session_factory() as session:
         try:
@@ -361,6 +339,7 @@ async def _terminal_update(
                 job_id=job_id,
                 expected_resume_revision=expected_resume_revision,
                 expected_job_revision=expected_job_revision,
+                require_ready=require_ready,
             ):
                 await session.rollback()
                 return False
@@ -455,6 +434,7 @@ async def _mark_failed(
             expected_job_revision=expected_job_revision,
             algorithm_version=algorithm_version,
             attempt_guard=attempt_guard,
+            require_ready=False,
             values={
                 "status": "FAILED",
                 "overall_score": None,

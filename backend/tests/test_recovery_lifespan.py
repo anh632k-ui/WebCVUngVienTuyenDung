@@ -57,6 +57,7 @@ async def test_lifespan_starts_and_stops_all_recovery_loops_before_engine_dispos
     monkeypatch.setattr(main, "stop_match_recovery", stop_match)
     monkeypatch.setattr(main, "dispose_engine", dispose)
     monkeypatch.setattr(main, "verify_processing_fencing_schema", schema_ready)
+    monkeypatch.setattr(main, "SessionFactory", object())
 
     async with main.lifespan(main.app):
         events.append("running")

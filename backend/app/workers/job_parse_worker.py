@@ -29,6 +29,7 @@ from app.core.processing_fencing import (
     claim_job_attempt,
     job_fence,
     terminal_ownership_values,
+    unowned_processing,
 )
 from app.core.version_guard import claim_job_revision, fail_job_revision
 from app.models.job import JobDescription
@@ -69,13 +70,7 @@ async def _load_parse_context(
         ownership_guard = (
             job_fence(attempt_guard)
             if attempt_guard is not None
-            else (
-                JobDescription.processing_attempt_epoch == 0,
-                JobDescription.processing_owner_token.is_(None),
-                JobDescription.processing_activation_token.is_(None),
-                JobDescription.processing_heartbeat_at.is_(None),
-                JobDescription.processing_lease_expires_at.is_(None),
-            )
+            else unowned_processing(JobDescription)
         )
         raw_content = await session.scalar(
             select(JobDescription.raw_content).where(
@@ -195,11 +190,7 @@ async def _persist_success(
                     JobDescription.revision == expected_revision,
                     JobDescription.parsing_status == "PROCESSING",
                     JobDescription.is_deleted.is_(False),
-                    JobDescription.processing_attempt_epoch == 0,
-                    JobDescription.processing_owner_token.is_(None),
-                    JobDescription.processing_activation_token.is_(None),
-                    JobDescription.processing_heartbeat_at.is_(None),
-                    JobDescription.processing_lease_expires_at.is_(None),
+                    *unowned_processing(JobDescription),
                 )
                 .values(
                     min_experience_years=parsed.min_experience_years,

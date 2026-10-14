@@ -13,6 +13,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.exceptions import APIError
 from app.core.idempotency import JOB_CREATE_ROUTE, derive_idempotent_resource_id
+from app.core.processing_fencing import clear_processing_ownership
 from app.models.job import JobDescription
 from app.models.match_result import MatchResult
 from app.models.resume import CandidateProfile, Resume
@@ -225,6 +226,7 @@ async def update_job(
             job.revision += 1
             job.status = JobStatus.DRAFT.value
             job.parsing_status = ParsingStatus.PENDING.value
+            clear_processing_ownership(job)
             job.is_criteria_verified = False
             job.job_embedding = None
             job.embedding_model = None
@@ -238,6 +240,7 @@ async def update_job(
                 match.resume_revision = resume_revisions[match.resume_id]
                 match.job_revision = job.revision
                 match.status = MatchStatus.PENDING.value
+                clear_processing_ownership(match)
                 match.overall_score = None
                 match.skill_score = None
                 match.semantic_score = None
@@ -464,6 +467,7 @@ async def update_job_weights(
             match.resume_revision = resume_revisions[match.resume_id]
             match.job_revision = job.revision
             match.status = MatchStatus.PENDING.value
+            clear_processing_ownership(match)
             match.overall_score = None
             match.skill_score = None
             match.semantic_score = None
@@ -608,6 +612,7 @@ async def update_job_criteria(
             match.resume_revision = resume_revisions[match.resume_id]
             match.job_revision = job.revision
             match.status = MatchStatus.PENDING.value
+            clear_processing_ownership(match)
             match.overall_score = None
             match.skill_score = None
             match.semantic_score = None
