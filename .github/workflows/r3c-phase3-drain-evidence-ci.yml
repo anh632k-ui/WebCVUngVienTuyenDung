@@ -1,0 +1,68 @@
+name: R3C Phase 3 Drain Evidence CI
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'backend/scripts/r3c_phase3_drain_evidence.py'
+      - 'backend/tests/test_r3c_phase3_drain_evidence.py'
+      - 'docs/09_delivery/task6c_r3c_phase3_*'
+      - '.github/workflows/r3c-phase3-drain-evidence-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-evidence-validator:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg18
+        env:
+          POSTGRES_USER: r3c_phase3_ci
+          POSTGRES_PASSWORD: r3c-phase3-ci-only
+          POSTGRES_DB: r3c_phase3_inventory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U r3c_phase3_ci -d r3c_phase3_inventory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      R3C_PHASE3_POSTGRES_INTEGRATION: 'true'
+      R3C_PHASE3_DATABASE_URL: postgresql://r3c_phase3_ci:r3c-phase3-ci-only@127.0.0.1:5432/r3c_phase3_inventory
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install backend test dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run Phase 3 offline validator tests
+        run: python -m pytest -q tests/test_r3c_phase3_drain_evidence.py
+
+      - name: Run Ruff lint for Phase 3 artifacts
+        run: >-
+          python -m ruff check
+          scripts/r3c_phase3_drain_evidence.py
+          tests/test_r3c_phase3_drain_evidence.py
+
+      - name: Check Ruff formatting for Phase 3 artifacts
+        run: >-
+          python -m ruff format --check
+          scripts/r3c_phase3_drain_evidence.py
+          tests/test_r3c_phase3_drain_evidence.py
+
+      - name: Run mypy for the offline validator
+        run: python -m mypy scripts/r3c_phase3_drain_evidence.py
