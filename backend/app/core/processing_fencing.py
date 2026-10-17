@@ -25,6 +25,12 @@ class ProcessingResourceKind(StrEnum):
     MATCH = "match"
 
 
+class ProcessingHeartbeatOutcome(StrEnum):
+    RENEWED = "RENEWED"
+    LOST_OWNERSHIP = "LOST_OWNERSHIP"
+    PERSISTENCE_ERROR = "PERSISTENCE_ERROR"
+
+
 class ProcessingFencingPersistenceError(RuntimeError):
     """Credential- and token-free persistence failure."""
 
@@ -54,14 +60,18 @@ def _clock() -> Any:
     return func.clock_timestamp()
 
 
-def _lease(lease_seconds: int) -> Any:
+def _lease_duration(lease_seconds: int) -> timedelta:
     if (
         isinstance(lease_seconds, bool)
         or not isinstance(lease_seconds, int)
         or not 60 <= lease_seconds <= 86_400
     ):
         raise ValueError("Processing fencing lease must be between 60 and 86400 seconds")
-    return _clock() + timedelta(seconds=lease_seconds)
+    return timedelta(seconds=lease_seconds)
+
+
+def _lease(lease_seconds: int) -> Any:
+    return _clock() + _lease_duration(lease_seconds)
 
 
 def _cleared_ownership() -> dict[str, Any]:
@@ -164,6 +174,158 @@ def match_fence(guard: ProcessingAttemptGuard) -> tuple[Any, ...]:
         MatchResult.processing_activation_token == guard.activation_token,
         MatchResult.processing_lease_expires_at > _clock(),
     )
+
+
+async def renew_processing_attempt_lease(
+    session: AsyncSession,
+    guard: ProcessingAttemptGuard,
+    *,
+    lease_seconds: int,
+) -> ProcessingHeartbeatOutcome:
+    """Renew one activated attempt without creating or recovering ownership.
+
+    This is an inactive persistence primitive. Runtime scheduling is deliberately
+    outside its scope. A persistence error is outcome-ambiguous: callers must
+    re-read durable state before making another ownership-dependent decision.
+    """
+
+    lease_duration = _lease_duration(lease_seconds)
+    if guard.activation_token is None:
+        raise ValueError("A fully activated processing attempt guard is required")
+    if guard.resource_kind is ProcessingResourceKind.MATCH and (
+        guard.resume_revision is None
+        or guard.job_revision is None
+        or guard.algorithm_version is None
+    ):
+        raise ValueError("A complete Match attempt guard is required")
+    if not isinstance(guard.resource_kind, ProcessingResourceKind):
+        raise ValueError("Unsupported processing resource kind")
+
+    model: Any
+    predicates: tuple[Any, ...]
+    locked_id: Any | None
+    try:
+        if guard.resource_kind is ProcessingResourceKind.RESUME:
+            model = Resume
+            locked_id = await session.scalar(
+                select(Resume.id).where(Resume.id == guard.resource_id).with_for_update()
+            )
+            predicates = (
+                Resume.id == guard.resource_id,
+                Resume.revision == guard.snapshot,
+                Resume.parsing_status == "PROCESSING",
+                Resume.is_deleted.is_(False),
+                Resume.processing_attempt_epoch == guard.attempt_epoch,
+                Resume.processing_owner_token == guard.owner_token,
+                Resume.processing_activation_token == guard.activation_token,
+            )
+        elif guard.resource_kind is ProcessingResourceKind.JOB:
+            model = JobDescription
+            locked_id = await session.scalar(
+                select(JobDescription.id)
+                .where(JobDescription.id == guard.resource_id)
+                .with_for_update()
+            )
+            predicates = (
+                JobDescription.id == guard.resource_id,
+                JobDescription.revision == guard.snapshot,
+                JobDescription.parsing_status == "PROCESSING",
+                JobDescription.is_deleted.is_(False),
+                JobDescription.processing_attempt_epoch == guard.attempt_epoch,
+                JobDescription.processing_owner_token == guard.owner_token,
+                JobDescription.processing_activation_token == guard.activation_token,
+            )
+        elif guard.resource_kind is ProcessingResourceKind.MATCH:
+            resource_ids = (
+                await session.execute(
+                    select(MatchResult.resume_id, MatchResult.job_id).where(
+                        MatchResult.id == guard.resource_id
+                    )
+                )
+            ).one_or_none()
+            if resource_ids is None:
+                await session.rollback()
+                return ProcessingHeartbeatOutcome.LOST_OWNERSHIP
+            resume_id, job_id = resource_ids
+            # Match terminal and Job mutation paths use this same Job -> Resume
+            # order. Locks make linked revision/deletion changes visible before CAS.
+            current_job = await session.scalar(
+                select(JobDescription.id)
+                .where(
+                    JobDescription.id == job_id,
+                    JobDescription.revision == guard.job_revision,
+                    JobDescription.is_deleted.is_(False),
+                )
+                .with_for_update()
+            )
+            current_resume = None
+            if current_job is not None:
+                current_resume = await session.scalar(
+                    select(Resume.id)
+                    .where(
+                        Resume.id == resume_id,
+                        Resume.revision == guard.resume_revision,
+                        Resume.is_deleted.is_(False),
+                    )
+                    .with_for_update()
+                )
+            if current_job is None or current_resume is None:
+                await session.rollback()
+                return ProcessingHeartbeatOutcome.LOST_OWNERSHIP
+            model = MatchResult
+            locked_id = await session.scalar(
+                select(MatchResult.id).where(MatchResult.id == guard.resource_id).with_for_update()
+            )
+            predicates = (
+                MatchResult.id == guard.resource_id,
+                MatchResult.resume_id == resume_id,
+                MatchResult.job_id == job_id,
+                MatchResult.generation == guard.snapshot,
+                MatchResult.resume_revision == guard.resume_revision,
+                MatchResult.job_revision == guard.job_revision,
+                MatchResult.algorithm_version == guard.algorithm_version,
+                MatchResult.status == "PROCESSING",
+                MatchResult.processing_attempt_epoch == guard.attempt_epoch,
+                MatchResult.processing_owner_token == guard.owner_token,
+                MatchResult.processing_activation_token == guard.activation_token,
+            )
+        else:  # pragma: no cover - guarded above; narrows runtime enum exhaustiveness
+            raise AssertionError("unreachable processing resource kind")
+    except Exception:
+        with suppress(Exception):
+            await session.rollback()
+        return ProcessingHeartbeatOutcome.PERSISTENCE_ERROR
+
+    if locked_id is None:
+        await session.rollback()
+        return ProcessingHeartbeatOutcome.LOST_OWNERSHIP
+
+    # Lock acquisition is a separate statement, so this sample is necessarily
+    # taken after any lock wait. The CTE supplies the same instant to the lease
+    # predicate and both mutation expressions.
+    heartbeat_clock = select(_clock().label("heartbeat_at")).cte("heartbeat_clock")
+    heartbeat_at = heartbeat_clock.c.heartbeat_at
+    predicates = (*predicates, model.processing_lease_expires_at > heartbeat_at)
+
+    statement = (
+        update(model)
+        .where(*predicates)
+        .values(
+            processing_heartbeat_at=heartbeat_at,
+            processing_lease_expires_at=func.greatest(
+                model.processing_lease_expires_at,
+                heartbeat_at + lease_duration,
+            ),
+        )
+        .returning(model.id)
+    )
+    try:
+        renewed = await _returning_cas(session, statement)
+    except ProcessingFencingPersistenceError:
+        return ProcessingHeartbeatOutcome.PERSISTENCE_ERROR
+    if renewed is None:
+        return ProcessingHeartbeatOutcome.LOST_OWNERSHIP
+    return ProcessingHeartbeatOutcome.RENEWED
 
 
 async def claim_resume_attempt(
